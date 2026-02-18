@@ -1,0 +1,13 @@
+# amigactld configuration
+# Copy this file to S:amigactld.conf on your Amiga.
+
+# TCP port to listen on (default: 6800)
+PORT 6800
+
+# IP addresses allowed to connect. If no ALLOW lines are present,
+# all IPs are permitted. Add one ALLOW line per permitted host.
+ALLOW 192.168.6.100
+
+# Uncomment to allow remote SHUTDOWN CONFIRM commands.
+# When disabled (default), SHUTDOWN CONFIRM returns ERR 201.
+# ALLOW_REMOTE_SHUTDOWN YES

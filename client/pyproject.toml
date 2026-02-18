@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amigactl"
+version = "0.1.0"
+description = "Python client for amigactld, an Amiga remote access daemon"
+license = "GPL-3.0-only"
+requires-python = ">=3.8"
+
+[project.scripts]
+amigactl = "amigactl.__main__:main"

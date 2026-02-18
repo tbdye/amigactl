@@ -1,0 +1,13 @@
+# Build artifacts
+amigactld
+obj/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Local planning docs (not part of the repo)
+architecture_plan.md
+phase1_plan.md
