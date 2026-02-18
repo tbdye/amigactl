@@ -33,10 +33,11 @@ Host                              Amiga
 
 ## Current Status
 
-**Phase 1 -- Connection Skeleton.** The daemon accepts TCP connections, checks
-IP ACLs, sends a banner, and handles four lifecycle commands: VERSION, PING,
-QUIT, and SHUTDOWN. The Python client library and CLI support these commands.
-File operations, EXEC, ARexx, and system queries are planned for later phases.
+**Phase 2 -- File Operations.** The daemon accepts TCP connections, checks IP
+ACLs, sends a banner, and handles lifecycle commands (VERSION, PING, QUIT,
+SHUTDOWN) plus eight file commands: DIR, STAT, READ, WRITE, DELETE, RENAME,
+MAKEDIR, and PROTECT. The Python client library and CLI support all commands.
+EXEC, ARexx, and system queries are planned for later phases.
 
 ## Requirements
 
@@ -136,8 +137,18 @@ are required (stdlib only).
 from amigactl import AmigaConnection
 
 with AmigaConnection("192.168.6.200") as amiga:
-    print(amiga.version())   # "amigactld 0.1.0"
+    print(amiga.version())          # "amigactld 0.2.0"
     amiga.ping()
+
+    # File operations
+    entries = amiga.dir("SYS:S")
+    data = amiga.read("SYS:S/Startup-Sequence")
+    amiga.write("RAM:test.txt", b"hello world")
+    info = amiga.stat("RAM:test.txt")
+    amiga.rename("RAM:test.txt", "RAM:renamed.txt")
+    amiga.delete("RAM:renamed.txt")
+    amiga.makedir("RAM:mydir")
+    prot = amiga.protect("RAM:mydir")
 ```
 
 The host and port can also be set via the `AMIGACTL_HOST` and `AMIGACTL_PORT`
@@ -149,6 +160,15 @@ environment variables.
 amigactl --host 192.168.6.200 version
 amigactl --host 192.168.6.200 ping
 amigactl --host 192.168.6.200 shutdown    # sends SHUTDOWN CONFIRM
+amigactl --host 192.168.6.200 dir SYS:S
+amigactl --host 192.168.6.200 stat SYS:S/Startup-Sequence
+amigactl --host 192.168.6.200 read SYS:S/Startup-Sequence > startup.txt
+amigactl --host 192.168.6.200 write RAM:test.txt < localfile.txt
+amigactl --host 192.168.6.200 delete RAM:test.txt
+amigactl --host 192.168.6.200 rename RAM:old.txt RAM:new.txt
+amigactl --host 192.168.6.200 makedir RAM:newdir
+amigactl --host 192.168.6.200 protect RAM:file.txt
+amigactl --host 192.168.6.200 protect RAM:file.txt 0f
 ```
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
@@ -197,6 +217,7 @@ amigactl/
 |   +-- daemon.h                     # Shared structures, constants, error codes
 |   +-- net.c / net.h                # Socket helpers, protocol I/O
 |   +-- config.c / config.h          # Config file parsing, ACL
+|   +-- file.c / file.h              # File operation command handlers
 +-- client/
 |   +-- amigactl/
 |   |   +-- __init__.py              # AmigaConnection class
@@ -206,6 +227,7 @@ amigactl/
 +-- tests/
 |   +-- conftest.py                  # Fixtures, CLI options
 |   +-- test_connection.py           # Connection, auth, lifecycle
+|   +-- test_file.py                 # File operation tests
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
 +-- docs/
@@ -215,18 +237,18 @@ amigactl/
 
 ## Roadmap
 
-### Phase 1: Connection Skeleton (current)
+### Phase 1: Connection Skeleton (complete)
 
 TCP server with WaitSelect event loop, IP ACL, banner, and lifecycle commands
 (VERSION, PING, QUIT, SHUTDOWN). Python client library and CLI. Documentation
 and test suite.
 
-### Phase 2: File Operations
+### Phase 2: File Operations (complete)
 
 DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, and PROTECT commands. Chunked
 binary transfer for READ/WRITE. Atomic writes via temp file and rename.
 
-### Phase 3: EXEC and System Info
+### Phase 3: EXEC and System Info (next)
 
 CLI command execution with captured output (EXEC). System introspection
 (SYSINFO, ASSIGNS).
