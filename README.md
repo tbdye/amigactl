@@ -18,7 +18,7 @@ Host                              Amiga
 | (Python)        |               | (m68k C daemon)  |
 +-----------------+               |                  |
                                   | - File I/O (DOS) |
-+-----------------+               | - EXEC (System)  |
++-----------------+               | - EXEC / Proc    |
 | Python library  |--TCP:6800---->| - ARexx dispatch |
 | (host)          |               | - System queries |
 +-----------------+               +------------------+
@@ -248,20 +248,22 @@ and test suite.
 DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, and PROTECT commands. Chunked
 binary transfer for READ/WRITE. Atomic writes via temp file and rename.
 
-### Phase 3: EXEC and System Info (next)
+### Phase 3: EXEC, Process Management, and System Info (next)
 
-CLI command execution with captured output (EXEC). System introspection
-(SYSINFO, ASSIGNS).
+CLI command execution with captured output (EXEC). Asynchronous process
+launching with signal and kill support. System introspection (SYSINFO, ASSIGNS,
+PORTS, VOLUMES, TASKS).
 
 ### Phase 4: ARexx
 
 Non-blocking ARexx command dispatch to named ports, with timeout handling and
 reply matching via WaitSelect signal integration.
 
-### Phase 5: Polish
+### Phase 5: Polish and Interactive Shell
 
-Interactive shell mode, LHA packaging for Amiga distribution, Workbench icon,
-final documentation pass.
+Interactive shell mode with persistent connection, readline support, and
+human-friendly command names. LHA packaging for Amiga distribution, Workbench
+icon, final documentation pass.
 
 ## License
 

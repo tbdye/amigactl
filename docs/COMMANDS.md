@@ -1015,6 +1015,11 @@ in the current version produces `ERR 100 Unknown command`.
 | Command | Description |
 |---------|-------------|
 | `EXEC [CD=<path>] <command>` | Execute CLI command, capture output (CD= sets working directory) |
+| `EXEC ASYNC [CD=<path>] <command>` | Launch command asynchronously, return process ID |
+| `PROCLIST` | List daemon-launched processes (tab-separated: id, command, status, rc) |
+| `PROCSTAT <id>` | Status of a specific tracked process (key=value pairs: id, command, status, rc) |
+| `SIGNAL <id> [CTRL_C\|CTRL_D\|CTRL_E\|CTRL_F]` | Send break signal to tracked process (default CTRL_C) |
+| `KILL <id>` | Force-terminate tracked process via RemTask() (requires `ALLOW_REMOTE_SHUTDOWN YES`) |
 | `SYSINFO` | System information (key=value pairs) |
 | `ASSIGNS` | List logical assigns |
 | `PORTS` | List active Exec message ports |
