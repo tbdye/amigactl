@@ -126,6 +126,12 @@ int net_set_nonblocking(LONG fd)
     return IoctlSocket(fd, FIONBIO, (char *)&one);
 }
 
+int net_set_blocking(LONG fd)
+{
+    LONG zero = 0;
+    return IoctlSocket(fd, FIONBIO, (char *)&zero);
+}
+
 void net_close(LONG fd)
 {
     if (fd >= 0)
@@ -136,7 +142,7 @@ void net_close(LONG fd)
 
 /* Send exactly len bytes, looping on partial send().
  * Returns 0 on success, -1 on error. */
-static int send_all(LONG fd, const char *buf, int len)
+int send_all(LONG fd, const char *buf, int len)
 {
     int sent;
     LONG n;
@@ -210,6 +216,27 @@ int send_sentinel(LONG fd)
     return send_all(fd, ".\n", 2);
 }
 
+int send_data_chunk(LONG fd, const char *data, int len)
+{
+    char hdr[16];
+    int hdr_len;
+
+    hdr_len = sprintf(hdr, "DATA %d\n", len);
+    if (send_all(fd, hdr, hdr_len) < 0)
+        return -1;
+    return send_all(fd, data, len);
+}
+
+int send_end(LONG fd)
+{
+    return send_all(fd, "END\n", 4);
+}
+
+int send_ready(LONG fd)
+{
+    return send_all(fd, "READY\n", 6);
+}
+
 int recv_into_buf(struct client *c)
 {
     LONG n;
@@ -263,4 +290,46 @@ int extract_command(struct client *c, char *cmd, int cmd_max)
     }
 
     return 0;
+}
+
+int recv_exact_from_client(struct client *c, char *buf, int len)
+{
+    int from_buf, remaining, got;
+    LONG n;
+
+    from_buf = (c->recv_len < len) ? c->recv_len : len;
+    if (from_buf > 0) {
+        memcpy(buf, c->recv_buf, from_buf);
+        remaining = c->recv_len - from_buf;
+        if (remaining > 0)
+            memmove(c->recv_buf, c->recv_buf + from_buf, remaining);
+        c->recv_len = remaining;
+    }
+
+    got = from_buf;
+    while (got < len) {
+        n = recv(c->fd, (STRPTR)(buf + got), len - got, 0);
+        if (n <= 0)
+            return -1;
+        got += n;
+    }
+    return 0;
+}
+
+int recv_line_blocking(struct client *c, char *cmd, int cmd_max)
+{
+    int result;
+    LONG n;
+
+    while (1) {
+        result = extract_command(c, cmd, cmd_max);
+        if (result == 1)
+            return 0;
+        if (result == -1)
+            return -1;
+
+        n = recv_into_buf(c);
+        if (n <= 0)
+            return -1;
+    }
 }

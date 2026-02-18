@@ -10,7 +10,7 @@
 #include <exec/types.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.1.0"
+#define AMIGACTLD_VERSION "0.2.0"
 
 /* Limits */
 #define MAX_CLIENTS      8

@@ -9,9 +9,11 @@
 #include "daemon.h"
 #include "config.h"
 #include "net.h"
+#include "file.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <dos/dosextens.h>
 #include <proto/icon.h>
 #include <proto/bsdsocket.h>
 #include <workbench/startup.h>
@@ -73,6 +75,14 @@ int main(int argc, char **argv)
 
     memset(args, 0, sizeof(args));
     memset(&daemon, 0, sizeof(daemon));
+
+    /* Suppress "Please insert volume" and similar system requesters.
+     * A daemon must never block on UI prompts. */
+    {
+        struct Process *pr = (struct Process *)FindTask(NULL);
+        pr->pr_WindowPtr = (APTR)-1;
+    }
+
     daemon.listener_fd = -1;
     daemon.running = 1;
 
@@ -283,6 +293,10 @@ static void handle_accept(struct daemon_state *d)
         return;
     }
 
+    /* Ensure the accepted socket is blocking -- on some stacks,
+     * accept() inherits the listener's non-blocking flag. */
+    net_set_blocking(fd);
+
     /* Initialize client state.  Socket stays blocking. */
     d->clients[slot].fd = fd;
     d->clients[slot].addr = peer_addr;
@@ -369,6 +383,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     struct client *c = &d->clients[idx];
     char *verb;
     char *rest;
+    int rc = 0;
 
     /* Split command into verb and rest */
     verb = cmd;
@@ -430,9 +445,40 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
         send_sentinel(c->fd);
         d->running = 0;
 
+    /* --- Phase 2 handlers (use rc for disconnect signaling) --- */
+
+    } else if (stricmp(verb, "DIR") == 0) {
+        rc = cmd_dir(c, rest);
+
+    } else if (stricmp(verb, "STAT") == 0) {
+        rc = cmd_stat(c, rest);
+
+    } else if (stricmp(verb, "READ") == 0) {
+        rc = cmd_read(c, rest);
+
+    } else if (stricmp(verb, "WRITE") == 0) {
+        rc = cmd_write(c, rest);
+
+    } else if (stricmp(verb, "DELETE") == 0) {
+        rc = cmd_delete(c, rest);
+
+    } else if (stricmp(verb, "RENAME") == 0) {
+        rc = cmd_rename(c, rest);
+
+    } else if (stricmp(verb, "MAKEDIR") == 0) {
+        rc = cmd_makedir(c, rest);
+
+    } else if (stricmp(verb, "PROTECT") == 0) {
+        rc = cmd_protect(c, rest);
+
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");
         send_sentinel(c->fd);
+    }
+
+    /* Disconnect client if a Phase 2 handler signaled failure */
+    if (rc < 0) {
+        disconnect_client(d, idx);
     }
 }
 

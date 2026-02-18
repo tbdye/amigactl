@@ -12,7 +12,8 @@ TARGET   = amigactld
 SRCS = \
 	daemon/main.c \
 	daemon/config.c \
-	daemon/net.c
+	daemon/net.c \
+	daemon/file.c
 
 OBJS = $(SRCS:daemon/%.c=$(OBJDIR)/%.o)
 

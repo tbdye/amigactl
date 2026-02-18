@@ -28,6 +28,10 @@ LONG net_accept(LONG listener, ULONG *peer_addr);
  * Returns 0 on success, -1 on failure. */
 int net_set_nonblocking(LONG fd);
 
+/* Set a socket to blocking mode via IoctlSocket(FIONBIO).
+ * Returns 0 on success, -1 on failure. */
+int net_set_blocking(LONG fd);
+
 /* Close a socket if fd >= 0. */
 void net_close(LONG fd);
 
@@ -58,6 +62,20 @@ int send_payload_line(LONG fd, const char *line);
  * Every command handler must call this as its final action. */
 int send_sentinel(LONG fd);
 
+/* Send exactly len bytes, looping on partial send().
+ * Returns 0 on success, -1 on error. */
+int send_all(LONG fd, const char *buf, int len);
+
+/* Send a DATA chunk: "DATA <len>\n" header followed by exactly len
+ * raw bytes.  Returns 0 on success, -1 on error. */
+int send_data_chunk(LONG fd, const char *data, int len);
+
+/* Send "END\n".  Returns 0 on success, -1 on error. */
+int send_end(LONG fd);
+
+/* Send "READY\n".  Returns 0 on success, -1 on error. */
+int send_ready(LONG fd);
+
 /* Receive data into a client's recv_buf at offset recv_len.
  * Returns bytes received (>0), 0 for EOF, -1 for error. */
 int recv_into_buf(struct client *c);
@@ -68,5 +86,15 @@ int recv_into_buf(struct client *c);
  * Returns 1 if a command was extracted, 0 if no complete line yet,
  * -1 on overflow (buffer full with no \n -- sets c->discarding). */
 int extract_command(struct client *c, char *cmd, int cmd_max);
+
+/* Receive exactly len bytes, first draining c->recv_buf, then from
+ * the socket.  Returns 0 on success, -1 on error/EOF. */
+int recv_exact_from_client(struct client *c, char *buf, int len);
+
+/* Block until a complete line is available in c->recv_buf, extract it
+ * into cmd (NUL-terminated).  Calls extract_command() before recv to
+ * avoid deadlock when data is already buffered.
+ * Returns 0 on success, -1 on error/EOF/overflow. */
+int recv_line_blocking(struct client *c, char *cmd, int cmd_max);
 
 #endif /* AMIGACTLD_NET_H */

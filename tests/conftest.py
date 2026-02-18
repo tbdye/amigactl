@@ -18,6 +18,116 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Phase 2 protocol helpers (binary data, WRITE handshake, RENAME)
+# ---------------------------------------------------------------------------
+
+def _recv_exact(sock, nbytes):
+    """Receive exactly nbytes from sock, looping on partial recv."""
+    buf = bytearray()
+    while len(buf) < nbytes:
+        chunk = sock.recv(nbytes - len(buf))
+        if not chunk:
+            raise ConnectionError(
+                "EOF while reading {} bytes (got {})".format(nbytes, len(buf))
+            )
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def read_data_response(sock):
+    """Read a binary data response: OK line, DATA/END chunks, sentinel.
+
+    Returns (info_str, raw_bytes).
+
+    The OK info field contains the declared size (e.g. "1234").
+    raw_bytes is the concatenated content from all DATA chunks.
+
+    Also handles ERR -> sentinel (returns (status_line, b"")).
+    After the DATA/END loop, validates that total received bytes match
+    the declared size.
+    """
+    status_line = _read_line(sock)
+    if status_line.startswith("ERR "):
+        sentinel = _read_line(sock)
+        assert sentinel == "."
+        return status_line, b""
+
+    assert status_line.startswith("OK"), \
+        "Expected OK or ERR, got: {!r}".format(status_line)
+    info = status_line[3:].strip()
+
+    data = bytearray()
+    while True:
+        line = _read_line(sock)
+        if line == "END":
+            break
+        assert line.startswith("DATA "), \
+            "Expected DATA or END, got: {!r}".format(line)
+        chunk_len = int(line[5:])
+        chunk = _recv_exact(sock, chunk_len)
+        data.extend(chunk)
+
+    # Read sentinel
+    sentinel = _read_line(sock)
+    assert sentinel == "."
+
+    # Validate received size matches declared size
+    declared_size = int(info)
+    assert len(data) == declared_size, \
+        "Size mismatch: OK declared {} bytes but received {}".format(
+            declared_size, len(data))
+
+    return info, bytes(data)
+
+
+def send_write_data(sock, path, data):
+    """Execute a complete WRITE handshake.
+
+    data must be bytes. Sends WRITE command, reads READY, sends
+    DATA/END chunks, reads final response.
+
+    Returns (status_line, payload_lines) from the final response.
+    Raises AssertionError if READY is not received.
+    """
+    send_command(sock, "WRITE {} {}".format(path, len(data)))
+
+    # Read READY or ERR
+    ready_line = _read_line(sock)
+    if ready_line.startswith("ERR "):
+        sentinel = _read_line(sock)
+        assert sentinel == "."
+        return ready_line, []
+
+    assert ready_line == "READY", \
+        "Expected READY, got: {!r}".format(ready_line)
+
+    # Send data in chunks
+    CHUNK_SIZE = 4096
+    offset = 0
+    while offset < len(data):
+        chunk = data[offset:offset + CHUNK_SIZE]
+        header = "DATA {}\n".format(len(chunk)).encode("iso-8859-1")
+        sock.sendall(header + chunk)
+        offset += len(chunk)
+
+    # For 0-byte writes, no DATA chunks are sent
+    sock.sendall(b"END\n")
+
+    # Read final response
+    return read_response(sock)
+
+
+def send_rename(sock, old_path, new_path):
+    """Send a RENAME command in three-line format and read the response.
+
+    Returns (status_line, payload_lines) from read_response().
+    """
+    msg = "RENAME\n{}\n{}\n".format(old_path, new_path)
+    sock.sendall(msg.encode("iso-8859-1"))
+    return read_response(sock)
+
+
+# ---------------------------------------------------------------------------
 # Command-line options
 # ---------------------------------------------------------------------------
 
@@ -77,6 +187,64 @@ def raw_connection(amiga_host, amiga_port):
     banner = _read_line(sock)
     yield sock, banner
     sock.close()
+
+
+# ---------------------------------------------------------------------------
+# Cleanup fixture (Phase 2)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cleanup_paths(amiga_host, amiga_port):
+    """Fixture that tracks created paths for cleanup.
+
+    Usage: cleanup_paths.add("RAM:testfile.txt")
+
+    On teardown, issues DELETE commands in reverse order via a fresh
+    connection. Errors are silently ignored.
+    """
+    tracker = _CleanupTracker(amiga_host, amiga_port)
+    yield tracker
+    tracker.cleanup()
+
+
+class _CleanupTracker:
+    """Track files/directories created during a test for cleanup.
+
+    All created paths must be individually registered. Registering only
+    a parent directory is not sufficient -- DELETE cannot remove
+    non-empty directories.
+    """
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.paths = []
+
+    def add(self, path):
+        """Register a path for cleanup on teardown.
+
+        Register paths in creation order (parent directories before
+        child files). Cleanup deletes in reverse order.
+        """
+        self.paths.append(path)
+
+    def cleanup(self):
+        if not self.paths:
+            return
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((self.host, self.port))
+            _read_line(sock)  # banner
+            for path in reversed(self.paths):
+                send_command(sock, "DELETE {}".format(path))
+                try:
+                    read_response(sock)
+                except Exception:
+                    pass
+            sock.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

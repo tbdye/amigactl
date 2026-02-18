@@ -14,12 +14,16 @@ Usage::
 import socket
 from typing import Dict, List, Optional, Tuple, Type
 
-from .protocol import ENCODING, ProtocolError, read_line, read_response, send_command
+from .protocol import (
+    BinaryTransferError, ENCODING, ProtocolError, read_binary_response,
+    read_line, read_response, recv_exact, send_command, send_data_chunks,
+)
 
 
 __all__ = [
     "AmigaConnection",
     "AmigactlError",
+    "BinaryTransferError",
     "CommandSyntaxError",
     "NotFoundError",
     "PermissionDeniedError",
@@ -277,3 +281,163 @@ class AmigaConnection:
             pass
         self._sock = None
         return info
+
+    # -- File operations ---------------------------------------------------
+
+    def dir(self, path: str, recursive: bool = False) -> List[dict]:
+        """List directory contents.
+
+        Returns a list of dicts with keys: type, name, size, protection,
+        datestamp.
+        """
+        cmd = "DIR {}".format(path)
+        if recursive:
+            cmd += " RECURSIVE"
+        info, payload = self._send_command(cmd)
+        entries = []
+        for line in payload:
+            parts = line.split("\t")
+            if len(parts) != 5:
+                raise ProtocolError(
+                    "DIR entry has {} fields, expected 5: {!r}".format(
+                        len(parts), line))
+            try:
+                size = int(parts[2])
+            except ValueError:
+                raise ProtocolError(
+                    "DIR entry has non-numeric size: {!r}".format(line))
+            entries.append({
+                "type": parts[0],
+                "name": parts[1],
+                "size": size,
+                "protection": parts[3],
+                "datestamp": parts[4],
+            })
+        return entries
+
+    def stat(self, path: str) -> dict:
+        """Get file/directory metadata.
+
+        Returns a dict with keys: type, name, size, protection,
+        datestamp, comment.
+        """
+        info, payload = self._send_command("STAT {}".format(path))
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        if "size" in result:
+            try:
+                result["size"] = int(result["size"])
+            except ValueError:
+                raise ProtocolError(
+                    "STAT has non-numeric size: {!r}".format(result["size"]))
+        return result
+
+    def read(self, path: str) -> bytes:
+        """Download a file.
+
+        Returns the file contents as bytes.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+        send_command(self._sock, "READ {}".format(path))
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            # Read sentinel and raise
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        info = status_line[3:].strip()
+        try:
+            data = read_binary_response(self._sock)
+        except BinaryTransferError as e:
+            _raise_for_error(e.err_info)
+            raise  # unreachable; _raise_for_error always raises
+
+        try:
+            declared_size = int(info)
+        except ValueError:
+            raise ProtocolError(
+                "READ OK line missing numeric size: {!r}".format(info))
+        if len(data) != declared_size:
+            raise ProtocolError(
+                "Size mismatch: server declared {} bytes but sent {}".format(
+                    declared_size, len(data)))
+        return data
+
+    def write(self, path: str, data: bytes) -> int:
+        """Upload a file.
+
+        data must be bytes. The file is written atomically on the Amiga.
+        Returns the number of bytes written.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+        send_command(self._sock,
+                     "WRITE {} {}".format(path, len(data)))
+
+        # Read READY or ERR
+        line = read_line(self._sock)
+        if line == "ERR" or line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(line[4:])
+        if line != "READY":
+            raise ProtocolError(
+                "Expected READY, got: {!r}".format(line))
+
+        # Send DATA chunks + END
+        send_data_chunks(self._sock, data)
+
+        # Read final response
+        status, info, payload = read_response(self._sock)
+        if status == "ERR":
+            _raise_for_error(info)
+        stripped = info.strip()
+        if not stripped:
+            return 0
+        try:
+            return int(stripped)
+        except ValueError:
+            raise ProtocolError(
+                "WRITE OK line missing numeric size: {!r}".format(info))
+
+    def delete(self, path: str) -> None:
+        """Delete a file or empty directory."""
+        self._send_command("DELETE {}".format(path))
+
+    def rename(self, old_path: str, new_path: str) -> None:
+        """Rename/move a file or directory."""
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+        msg = "RENAME\n{}\n{}\n".format(old_path, new_path)
+        self._sock.sendall(msg.encode(ENCODING))
+
+        status, info, payload = read_response(self._sock)
+        if status == "ERR":
+            _raise_for_error(info)
+
+    def makedir(self, path: str) -> None:
+        """Create a directory."""
+        self._send_command("MAKEDIR {}".format(path))
+
+    def protect(self, path: str, value: Optional[str] = None) -> str:
+        """Get or set protection bits.
+
+        If value is None, returns current protection as hex string.
+        If value is a hex string, sets protection and returns new value.
+        """
+        if value is not None:
+            cmd = "PROTECT {} {}".format(path, value)
+        else:
+            cmd = "PROTECT {}".format(path)
+
+        info, payload = self._send_command(cmd)
+        result = {}
+        for line in payload:
+            key, _, val = line.partition("=")
+            result[key] = val
+        return result.get("protection", "")
