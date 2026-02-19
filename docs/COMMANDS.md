@@ -1020,6 +1020,7 @@ in the current version produces `ERR 100 Unknown command`.
 | `PROCSTAT <id>` | Status of a specific tracked process (key=value pairs: id, command, status, rc) |
 | `SIGNAL <id> [CTRL_C\|CTRL_D\|CTRL_E\|CTRL_F]` | Send break signal to tracked process (default CTRL_C) |
 | `KILL <id>` | Force-terminate tracked process via RemTask() (requires `ALLOW_REMOTE_SHUTDOWN YES`) |
+| `SETDATE <path> <datestamp>` | Set file/directory datestamp (`YYYY-MM-DD HH:MM:SS` format) |
 | `SYSINFO` | System information (key=value pairs) |
 | `ASSIGNS` | List logical assigns |
 | `PORTS` | List active Exec message ports |

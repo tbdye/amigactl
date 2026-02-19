@@ -377,7 +377,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.1.0\n
+S: AMIGACTL 0.2.0\n
 
 C: PING\n
 S: OK\n
@@ -385,7 +385,7 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.1.0\n
+S: amigactld 0.2.0\n
 S: .\n
 
 C: FOOBAR\n

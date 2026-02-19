@@ -2,12 +2,13 @@
 
 Remote access daemon for AmigaOS.
 
-There is no SSH equivalent for AmigaOS. Managing an emulated Amiga (or a
-real one) remotely requires stitching together VNC, FTP, and telnet -- none of
-which provide programmatic access to the filesystem, ARexx, or system
-introspection. amigactl fills this gap: a single TCP daemon that exposes file
-operations, CLI command execution, ARexx dispatch, and system queries over a
-clean, simple protocol.
+Traditional remote access tools give you a shell session or a file transfer
+channel -- not structured, programmatic access to AmigaOS internals. amigactl
+is a lightweight TCP daemon that exposes file operations, CLI command execution,
+ARexx dispatch, and system introspection (assigns, volumes, ports, tasks) over
+a simple text protocol with machine-parseable responses. A Python client library
+provides first-class scripting support for automation on trusted LANs and
+emulator setups.
 
 ## Architecture
 
@@ -160,15 +161,16 @@ environment variables.
 amigactl --host 192.168.6.200 version
 amigactl --host 192.168.6.200 ping
 amigactl --host 192.168.6.200 shutdown    # sends SHUTDOWN CONFIRM
-amigactl --host 192.168.6.200 dir SYS:S
+amigactl --host 192.168.6.200 ls SYS:S
 amigactl --host 192.168.6.200 stat SYS:S/Startup-Sequence
-amigactl --host 192.168.6.200 read SYS:S/Startup-Sequence > startup.txt
-amigactl --host 192.168.6.200 write RAM:test.txt < localfile.txt
-amigactl --host 192.168.6.200 delete RAM:test.txt
-amigactl --host 192.168.6.200 rename RAM:old.txt RAM:new.txt
-amigactl --host 192.168.6.200 makedir RAM:newdir
-amigactl --host 192.168.6.200 protect RAM:file.txt
-amigactl --host 192.168.6.200 protect RAM:file.txt 0f
+amigactl --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
+amigactl --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
+amigactl --host 192.168.6.200 put localfile.txt RAM:test.txt
+amigactl --host 192.168.6.200 rm RAM:test.txt
+amigactl --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
+amigactl --host 192.168.6.200 mkdir RAM:newdir
+amigactl --host 192.168.6.200 chmod RAM:file.txt
+amigactl --host 192.168.6.200 chmod RAM:file.txt 0f
 ```
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
@@ -252,7 +254,7 @@ binary transfer for READ/WRITE. Atomic writes via temp file and rename.
 
 CLI command execution with captured output (EXEC). Asynchronous process
 launching with signal and kill support. System introspection (SYSINFO, ASSIGNS,
-PORTS, VOLUMES, TASKS).
+PORTS, VOLUMES, TASKS). Datestamp setting (SETDATE).
 
 ### Phase 4: ARexx
 
