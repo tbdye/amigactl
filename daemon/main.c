@@ -87,6 +87,7 @@ int main(int argc, char **argv)
     daemon.listener_fd = -1;
     daemon.running = 1;
     daemon.next_proc_id = 1;
+    DateStamp(&daemon.startup_stamp);
 
     /* Initialize all client slots */
     for (i = 0; i < MAX_CLIENTS; i++) {
@@ -472,6 +473,37 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
         send_sentinel(c->fd);
         d->running = 0;
 
+    } else if (stricmp(verb, "REBOOT") == 0) {
+        {
+            char keyword[16];
+            int ki = 0;
+            const char *rp = rest;
+
+            while (*rp && *rp != ' ' && *rp != '\t' &&
+                   ki < (int)sizeof(keyword) - 1)
+                keyword[ki++] = *rp++;
+            keyword[ki] = '\0';
+
+            if (ki == 0 || stricmp(keyword, "CONFIRM") != 0) {
+                send_error(c->fd, ERR_SYNTAX,
+                           "REBOOT requires CONFIRM keyword");
+                send_sentinel(c->fd);
+                return;
+            }
+        }
+
+        if (!d->config.allow_remote_shutdown) {
+            send_error(c->fd, ERR_PERMISSION,
+                       "Remote reboot not permitted");
+            send_sentinel(c->fd);
+            return;
+        }
+
+        /* Send response before rebooting -- ColdReboot() never returns */
+        send_ok(c->fd, "Rebooting");
+        send_sentinel(c->fd);
+        ColdReboot();
+
     /* --- Phase 2 file handlers --- */
 
     } else if (stricmp(verb, "DIR") == 0) {
@@ -532,6 +564,28 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
     } else if (stricmp(verb, "TASKS") == 0) {
         rc = cmd_tasks(c, rest);
+
+    } else if (stricmp(verb, "UPTIME") == 0) {
+        {
+            struct DateStamp now;
+            LONG days_diff;
+            LONG mins_diff;
+            LONG ticks_diff;
+            LONG total_seconds;
+            static char uptimebuf[32];
+
+            DateStamp(&now);
+            days_diff = now.ds_Days - d->startup_stamp.ds_Days;
+            mins_diff = now.ds_Minute - d->startup_stamp.ds_Minute;
+            ticks_diff = now.ds_Tick - d->startup_stamp.ds_Tick;
+            total_seconds = days_diff * 86400 + mins_diff * 60
+                            + ticks_diff / 50;
+
+            sprintf(uptimebuf, "seconds=%ld", (long)total_seconds);
+            send_ok(c->fd, NULL);
+            send_payload_line(c->fd, uptimebuf);
+            send_sentinel(c->fd);
+        }
 
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");

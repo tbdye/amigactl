@@ -285,6 +285,39 @@ class AmigaConnection:
         self._sock = None
         return info
 
+    def reboot(self) -> str:
+        """Send REBOOT CONFIRM and return the server's info string.
+
+        Returns the info text from the OK response (e.g. "Rebooting").
+        Raises PermissionDeniedError (201) if remote reboot is not
+        permitted, or CommandSyntaxError (100) on protocol issues.
+        The connection is closed after reading the response.
+        """
+        info, _payload = self._send_command("REBOOT CONFIRM")
+        # Connection will be closed by the server after this
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+        self._sock = None
+        return info
+
+    def uptime(self) -> int:
+        """Send UPTIME and return daemon uptime in seconds.
+
+        Returns a non-negative integer representing the number of seconds
+        the daemon has been running.
+        """
+        _info, payload = self._send_command("UPTIME")
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        try:
+            return int(result["seconds"])
+        except (KeyError, ValueError):
+            raise ProtocolError("UPTIME missing seconds field")
+
     # -- File operations ---------------------------------------------------
 
     def dir(self, path: str, recursive: bool = False) -> List[dict]:

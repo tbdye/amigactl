@@ -34,6 +34,37 @@ def cmd_shutdown(conn, args):
         print("Shutdown initiated")
 
 
+def cmd_reboot(conn, args):
+    """Handle the 'reboot' subcommand."""
+    info = conn.reboot()
+    if info:
+        print(info)
+    else:
+        print("Reboot initiated")
+
+
+def cmd_uptime(conn, args):
+    """Handle the 'uptime' subcommand."""
+    seconds = conn.uptime()
+    days = seconds // 86400
+    seconds %= 86400
+    hours = seconds // 3600
+    seconds %= 3600
+    minutes = seconds // 60
+    secs = seconds % 60
+    parts = []
+    if days:
+        parts.append("{}d".format(days))
+    if hours:
+        parts.append("{}h".format(hours))
+    if minutes:
+        parts.append("{}m".format(minutes))
+    # Always show seconds (even 0) if nothing else, or if non-zero
+    if secs or not parts:
+        parts.append("{}s".format(secs))
+    print(" ".join(parts))
+
+
 def cmd_ls(conn, args):
     """Handle the 'ls' subcommand."""
     entries = conn.dir(args.path, recursive=args.recursive)
@@ -252,6 +283,7 @@ def main() -> None:
     subparsers.add_parser("version", help="Print daemon version")
     subparsers.add_parser("ping", help="Ping the daemon")
     subparsers.add_parser("shutdown", help="Shut down the daemon (sends SHUTDOWN CONFIRM)")
+    subparsers.add_parser("reboot", help="Reboot the Amiga (sends REBOOT CONFIRM)")
 
     p_ls = subparsers.add_parser("ls", help="List directory contents")
     p_ls.add_argument("path", help="Amiga path to list")
@@ -323,6 +355,7 @@ def main() -> None:
     subparsers.add_parser("ports", help="List active Exec message ports")
     subparsers.add_parser("volumes", help="List mounted volumes")
     subparsers.add_parser("tasks", help="List running tasks/processes")
+    subparsers.add_parser("uptime", help="Show daemon uptime")
 
     p_touch = subparsers.add_parser("touch", help="Set file datestamp")
     p_touch.add_argument("path", help="Amiga path")
@@ -335,6 +368,7 @@ def main() -> None:
         "version": cmd_version,
         "ping": cmd_ping,
         "shutdown": cmd_shutdown,
+        "reboot": cmd_reboot,
         "ls": cmd_ls,
         "stat": cmd_stat,
         "cat": cmd_cat,
@@ -355,6 +389,7 @@ def main() -> None:
         "ports": cmd_ports,
         "volumes": cmd_volumes,
         "tasks": cmd_tasks,
+        "uptime": cmd_uptime,
         "touch": cmd_touch,
     }
 

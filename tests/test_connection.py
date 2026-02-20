@@ -289,6 +289,73 @@ class TestShutdown:
 
 
 # ---------------------------------------------------------------------------
+# REBOOT
+# ---------------------------------------------------------------------------
+
+class TestReboot:
+    """Tests for the REBOOT command."""
+
+    def test_reboot_not_permitted(self, raw_connection):
+        """REBOOT CONFIRM with default config returns ERR 201."""
+        sock, _banner = raw_connection
+        send_command(sock, "REBOOT CONFIRM")
+        status, payload = read_response(sock)
+        assert status == "ERR 201 Remote reboot not permitted"
+        assert payload == []
+
+    def test_reboot_missing_confirm(self, raw_connection):
+        """REBOOT without CONFIRM returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "REBOOT")
+        status, payload = read_response(sock)
+        assert status == "ERR 100 REBOOT requires CONFIRM keyword"
+        assert payload == []
+
+    def test_reboot_wrong_keyword(self, raw_connection):
+        """REBOOT NOW returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "REBOOT NOW")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100"), (
+            "Expected ERR 100, got: {!r}".format(status)
+        )
+        assert "REBOOT requires CONFIRM keyword" in status
+        assert payload == []
+
+
+# ---------------------------------------------------------------------------
+# UPTIME
+# ---------------------------------------------------------------------------
+
+class TestUptime:
+    """Tests for the UPTIME command."""
+
+    def test_uptime_response_format(self, raw_connection):
+        """UPTIME returns OK with seconds=N payload."""
+        sock, _banner = raw_connection
+        send_command(sock, "UPTIME")
+        status, payload = read_response(sock)
+        assert status == "OK"
+        assert len(payload) == 1
+        assert payload[0].startswith("seconds=")
+        seconds = int(payload[0].split("=")[1])
+        assert seconds >= 0
+
+    def test_uptime_increases(self, raw_connection):
+        """UPTIME seconds value should increase over time."""
+        import time
+        sock, _banner = raw_connection
+        send_command(sock, "UPTIME")
+        status1, payload1 = read_response(sock)
+        s1 = int(payload1[0].split("=")[1])
+        time.sleep(2)
+        send_command(sock, "UPTIME")
+        status2, payload2 = read_response(sock)
+        s2 = int(payload2[0].split("=")[1])
+        assert s2 >= s1 + 1  # at least 1 second passed
+
+
+# ---------------------------------------------------------------------------
 # Manual / skipped tests
 # ---------------------------------------------------------------------------
 

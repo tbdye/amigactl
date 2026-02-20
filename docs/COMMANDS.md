@@ -57,6 +57,8 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [PORTS](#ports)
 - [VOLUMES](#volumes)
 - [TASKS](#tasks)
+- [REBOOT](#reboot)
+- [UPTIME](#uptime)
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
   - [Oversized Command Lines](#oversized-command-lines)
@@ -1981,6 +1983,117 @@ S> input.device	TASK	20	wait	4096
 S> amigactld	PROCESS	0	run	65536
 S> ramlib	PROCESS	0	wait	4096
 S> Shell Process	PROCESS	0	wait	16384
+S> .
+```
+
+---
+
+## REBOOT
+
+Requests a system reboot. Like SHUTDOWN, this requires the `CONFIRM`
+keyword as a safety measure and must be enabled in the daemon
+configuration. After sending the response, the daemon calls
+`ColdReboot()`, which immediately reboots the AmigaOS system. The daemon
+does not perform any cleanup (closing sockets, freeing resources)
+because `ColdReboot()` is instantaneous and never returns.
+
+### Syntax
+
+```
+REBOOT CONFIRM
+```
+
+The first whitespace-delimited token after `REBOOT` must be `CONFIRM`
+(case-insensitive). Additional tokens after `CONFIRM` are ignored.
+
+### Response (success)
+
+```
+OK Rebooting
+.
+```
+
+After sending the response, the daemon calls `ColdReboot()`. The client
+should expect the TCP connection to be dropped (the remote system is
+rebooting).
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| `CONFIRM` keyword missing or wrong | `ERR 100 REBOOT requires CONFIRM keyword` |
+| `ALLOW_REMOTE_SHUTDOWN` is not `YES` in config | `ERR 201 Remote reboot not permitted` |
+
+Error checking order: the `CONFIRM` keyword is validated first. If the
+keyword is missing, the server returns ERR 100 regardless of the
+`ALLOW_REMOTE_SHUTDOWN` setting.
+
+### Examples
+
+**Successful reboot (ALLOW_REMOTE_SHUTDOWN YES in config):**
+
+```
+C> REBOOT CONFIRM
+S> OK Rebooting
+S> .
+(system reboots; TCP connection drops)
+```
+
+Note: both the command verb and the `CONFIRM` keyword are case-insensitive.
+`reboot confirm`, `Reboot CONFIRM`, and `REBOOT Confirm` are all
+equivalent.
+
+**Missing CONFIRM keyword:**
+
+```
+C> REBOOT
+S> ERR 100 REBOOT requires CONFIRM keyword
+S> .
+```
+
+**Remote reboot not permitted (default configuration):**
+
+```
+C> REBOOT CONFIRM
+S> ERR 201 Remote reboot not permitted
+S> .
+```
+
+---
+
+## UPTIME
+
+Returns the daemon's uptime -- how long since the daemon process started.
+
+### Syntax
+
+```
+UPTIME
+```
+
+No arguments. Any trailing text after `UPTIME` is ignored.
+
+### Response
+
+```
+OK
+seconds=<total_seconds>
+.
+```
+
+The payload is a single key=value line with the total uptime in seconds
+as an unsigned integer.
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Example
+
+```
+C> UPTIME
+S> OK
+S> seconds=3661
 S> .
 ```
 

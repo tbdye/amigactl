@@ -36,7 +36,7 @@ Host                              Amiga
 
 **Phase 3 -- EXEC, Process Management, and System Info.** The daemon accepts
 TCP connections, checks IP ACLs, sends a banner, and handles lifecycle commands
-(VERSION, PING, QUIT, SHUTDOWN), eight file commands (DIR, STAT, READ, WRITE,
+(VERSION, PING, QUIT, SHUTDOWN, REBOOT, UPTIME), eight file commands (DIR, STAT, READ, WRITE,
 DELETE, RENAME, MAKEDIR, PROTECT), synchronous and asynchronous command execution
 (EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL, KILL),
 system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS), and datestamp
@@ -161,6 +161,9 @@ with AmigaConnection("192.168.6.200") as amiga:
     info = amiga.procstat(proc_id)
     amiga.signal(proc_id)
 
+    # Lifecycle
+    uptime_secs = amiga.uptime()
+
     # System info
     sysinfo = amiga.sysinfo()
     assigns = amiga.assigns()
@@ -179,6 +182,8 @@ environment variables.
 amigactl --host 192.168.6.200 version
 amigactl --host 192.168.6.200 ping
 amigactl --host 192.168.6.200 shutdown    # sends SHUTDOWN CONFIRM
+amigactl --host 192.168.6.200 reboot     # sends REBOOT CONFIRM
+amigactl --host 192.168.6.200 uptime
 amigactl --host 192.168.6.200 ls SYS:S
 amigactl --host 192.168.6.200 stat SYS:S/Startup-Sequence
 amigactl --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt

@@ -77,6 +77,7 @@ struct daemon_state {
     int running;
     struct tracked_proc procs[MAX_TRACKED_PROCS];
     int next_proc_id;               /* monotonically incrementing, starts at 1 */
+    struct DateStamp startup_stamp; /* recorded at startup for UPTIME */
 };
 
 #endif /* AMIGACTLD_DAEMON_H */
