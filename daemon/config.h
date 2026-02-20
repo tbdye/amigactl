@@ -8,7 +8,7 @@
 #include "daemon.h"
 
 /* Initialize config with default values.
- * Port 6800, no ACL (allow all), remote shutdown disabled. */
+ * Port 6800, no ACL (allow all), remote shutdown/reboot disabled. */
 void config_defaults(struct daemon_config *cfg);
 
 /* Load configuration from file.

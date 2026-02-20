@@ -98,6 +98,10 @@ ALLOW 192.168.6.50
 # Allow the SHUTDOWN command from remote clients (default: NO).
 # When NO, SHUTDOWN CONFIRM returns ERR 201.
 ALLOW_REMOTE_SHUTDOWN NO
+
+# Allow the REBOOT command from remote clients (default: NO).
+# When NO, REBOOT CONFIRM returns ERR 201.
+ALLOW_REMOTE_REBOOT NO
 ```
 
 An example config is provided in `dist/amigactld.conf.example`.

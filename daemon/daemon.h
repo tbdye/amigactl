@@ -54,6 +54,7 @@ struct acl_entry {
 struct daemon_config {
     int port;
     int allow_remote_shutdown;
+    int allow_remote_reboot;
     struct acl_entry acl[MAX_ACL_ENTRIES];
     int acl_count;
 };

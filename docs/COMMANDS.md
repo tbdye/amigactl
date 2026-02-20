@@ -2022,15 +2022,15 @@ rebooting).
 | Condition | Response |
 |-----------|----------|
 | `CONFIRM` keyword missing or wrong | `ERR 100 REBOOT requires CONFIRM keyword` |
-| `ALLOW_REMOTE_SHUTDOWN` is not `YES` in config | `ERR 201 Remote reboot not permitted` |
+| `ALLOW_REMOTE_REBOOT` is not `YES` in config | `ERR 201 Remote reboot not permitted` |
 
 Error checking order: the `CONFIRM` keyword is validated first. If the
 keyword is missing, the server returns ERR 100 regardless of the
-`ALLOW_REMOTE_SHUTDOWN` setting.
+`ALLOW_REMOTE_REBOOT` setting.
 
 ### Examples
 
-**Successful reboot (ALLOW_REMOTE_SHUTDOWN YES in config):**
+**Successful reboot (ALLOW_REMOTE_REBOOT YES in config):**
 
 ```
 C> REBOOT CONFIRM

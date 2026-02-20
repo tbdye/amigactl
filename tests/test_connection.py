@@ -295,14 +295,6 @@ class TestShutdown:
 class TestReboot:
     """Tests for the REBOOT command."""
 
-    def test_reboot_not_permitted(self, raw_connection):
-        """REBOOT CONFIRM with default config returns ERR 201."""
-        sock, _banner = raw_connection
-        send_command(sock, "REBOOT CONFIRM")
-        status, payload = read_response(sock)
-        assert status == "ERR 201 Remote reboot not permitted"
-        assert payload == []
-
     def test_reboot_missing_confirm(self, raw_connection):
         """REBOOT without CONFIRM returns ERR 100."""
         sock, _banner = raw_connection
@@ -386,6 +378,22 @@ class TestManual:
         S:amigactld.conf.  Send 'SHUTDOWN CONFIRM' and verify the response
         is 'OK Shutting down', followed by the daemon closing all
         connections and exiting."""
+
+    @pytest.mark.skip(
+        reason="Manual test: requires ALLOW_REMOTE_REBOOT NO"
+    )
+    def test_reboot_not_permitted(self):
+        """Start the daemon with ALLOW_REMOTE_REBOOT NO (or absent) in
+        S:amigactld.conf.  Send 'REBOOT CONFIRM' and verify the response
+        is 'ERR 201 Remote reboot not permitted'."""
+
+    @pytest.mark.skip(
+        reason="Manual test: requires ALLOW_REMOTE_REBOOT YES"
+    )
+    def test_reboot_permitted(self):
+        """Start the daemon with ALLOW_REMOTE_REBOOT YES in
+        S:amigactld.conf.  Send 'REBOOT CONFIRM' and verify the response
+        is 'OK Rebooting', followed by the system rebooting."""
 
 
 # ---------------------------------------------------------------------------

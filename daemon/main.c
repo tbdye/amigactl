@@ -492,7 +492,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
             }
         }
 
-        if (!d->config.allow_remote_shutdown) {
+        if (!d->config.allow_remote_reboot) {
             send_error(c->fd, ERR_PERMISSION,
                        "Remote reboot not permitted");
             send_sentinel(c->fd);

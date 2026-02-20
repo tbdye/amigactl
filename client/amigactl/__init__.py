@@ -289,12 +289,18 @@ class AmigaConnection:
         """Send REBOOT CONFIRM and return the server's info string.
 
         Returns the info text from the OK response (e.g. "Rebooting").
-        Raises PermissionDeniedError (201) if remote reboot is not
-        permitted, or CommandSyntaxError (100) on protocol issues.
-        The connection is closed after reading the response.
+        ColdReboot() may kill the TCP stack before the response arrives,
+        so ConnectionResetError and BrokenPipeError are treated as
+        success (the reboot happened).  Raises PermissionDeniedError
+        (201) if remote reboot is not permitted, or CommandSyntaxError
+        (100) on protocol issues.  The connection is closed after this
+        call.
         """
-        info, _payload = self._send_command("REBOOT CONFIRM")
-        # Connection will be closed by the server after this
+        try:
+            info, _payload = self._send_command("REBOOT CONFIRM")
+        except (ProtocolError, OSError):
+            # ColdReboot() killed the connection before the OK arrived
+            info = "Rebooting"
         try:
             self._sock.close()
         except Exception:

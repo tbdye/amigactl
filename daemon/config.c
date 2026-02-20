@@ -5,6 +5,7 @@
  *   PORT <number>
  *   ALLOW <ip>
  *   ALLOW_REMOTE_SHUTDOWN YES|NO
+ *   ALLOW_REMOTE_REBOOT YES|NO
  *   # comments
  *
  * IP addresses are parsed with sscanf and stored as ULONG in network
@@ -23,6 +24,7 @@ void config_defaults(struct daemon_config *cfg)
     memset(cfg, 0, sizeof(*cfg));
     cfg->port = DEFAULT_PORT;
     cfg->allow_remote_shutdown = 0;
+    cfg->allow_remote_reboot = 0;
     cfg->acl_count = 0;
 }
 
@@ -136,6 +138,17 @@ int config_load(struct daemon_config *cfg, const char *path)
                 cfg->allow_remote_shutdown = 0;
             } else {
                 printf("config: line %d: ALLOW_REMOTE_SHUTDOWN must be "
+                       "YES or NO, got \"%s\"\n", lineno, value);
+                fclose(fp);
+                return -1;
+            }
+        } else if (stricmp(keyword, "ALLOW_REMOTE_REBOOT") == 0) {
+            if (stricmp(value, "YES") == 0) {
+                cfg->allow_remote_reboot = 1;
+            } else if (stricmp(value, "NO") == 0) {
+                cfg->allow_remote_reboot = 0;
+            } else {
+                printf("config: line %d: ALLOW_REMOTE_REBOOT must be "
                        "YES or NO, got \"%s\"\n", lineno, value);
                 fclose(fp);
                 return -1;

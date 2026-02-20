@@ -11,3 +11,7 @@ ALLOW 192.168.6.100
 # Uncomment to allow remote SHUTDOWN CONFIRM commands.
 # When disabled (default), SHUTDOWN CONFIRM returns ERR 201.
 # ALLOW_REMOTE_SHUTDOWN YES
+
+# Allow REBOOT CONFIRM to remotely reboot the Amiga (default: NO).
+# When NO, REBOOT CONFIRM returns ERR 201.
+# ALLOW_REMOTE_REBOOT YES
