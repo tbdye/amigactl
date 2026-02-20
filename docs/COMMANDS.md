@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.2.0 (Phase 2 -- file operations)
+**Version**: 0.3.0 (Phase 3 -- execution, process management, system info)
 
 **Conventions used in this document:**
 
@@ -44,6 +44,19 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [RENAME](#rename)
 - [MAKEDIR](#makedir)
 - [PROTECT](#protect)
+- [SETDATE](#setdate)
+- [EXEC](#exec)
+  - [EXEC (Synchronous)](#exec-synchronous)
+  - [EXEC ASYNC](#exec-async)
+- [PROCLIST](#proclist)
+- [PROCSTAT](#procstat)
+- [SIGNAL](#signal)
+- [KILL](#kill)
+- [SYSINFO](#sysinfo)
+- [ASSIGNS](#assigns)
+- [PORTS](#ports)
+- [VOLUMES](#volumes)
+- [TASKS](#tasks)
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
   - [Oversized Command Lines](#oversized-command-lines)
@@ -62,7 +75,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.2.0`).
+The version string matches the daemon version (currently `0.3.0`).
 
 ### Behavior
 
@@ -77,7 +90,7 @@ The version string matches the daemon version (currently `0.2.0`).
 ### Example
 
 ```
-S> AMIGACTL 0.2.0
+S> AMIGACTL 0.3.0
 ```
 
 ---
@@ -114,7 +127,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.2.0
+S> amigactld 0.3.0
 S> .
 ```
 
@@ -934,6 +947,1045 @@ S> .
 
 ---
 
+## SETDATE
+
+Sets the AmigaOS datestamp (modification time) on a file or directory.
+
+### Syntax
+
+```
+SETDATE <path> <datestamp>
+```
+
+Both `<path>` and `<datestamp>` are mandatory. The datestamp format is
+`YYYY-MM-DD HH:MM:SS` (always exactly 19 characters).
+
+**Parsing rule**: The daemon extracts the datestamp as the last 19
+characters of the argument string. Everything before those 19 characters
+(trimmed of trailing whitespace) is the path. This means the path and
+datestamp are separated by at least one space, and the datestamp always
+occupies a fixed-width suffix.
+
+### Response
+
+```
+OK
+datestamp=<YYYY-MM-DD HH:MM:SS>
+.
+```
+
+The payload is a single key=value line echoing the applied datestamp.
+The echoed datestamp is re-formatted from the internal DateStamp
+representation for consistency (confirming what was actually applied).
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing arguments (no path or datestamp) | `ERR 100 Missing arguments` |
+| Invalid datestamp format (not `YYYY-MM-DD HH:MM:SS`, out-of-range values) | `ERR 100 Invalid datestamp format` |
+| Path not found | `ERR 200 <dos error message>` |
+| SetFileDate failure (e.g., write-protected disk) | `ERR <code> <dos error message>` |
+
+Error checking order: argument presence is validated first, then the
+datestamp string is parsed and validated, then the DOS call is attempted.
+
+**Datestamp validation**: Year must be >= 1978 (AmigaOS epoch). Month
+must be 1-12. Day must be 1 through the number of days in the given
+month (accounting for leap years). Hours must be 0-23, minutes 0-59,
+seconds 0-59.
+
+### Edge Cases / Notes
+
+- SETDATE precision is limited to 1 second. AmigaOS DateStamp supports
+  1/50th second resolution (ticks), but the `YYYY-MM-DD HH:MM:SS`
+  format does not carry sub-second precision. Ticks are set to
+  `seconds * TICKS_PER_SECOND`.
+- SETDATE works on both files and directories.
+- The path may contain spaces only in the portion before the final 19
+  characters (which are always the datestamp).
+
+### Examples
+
+**Set datestamp on a file:**
+
+```
+C> SETDATE RAM:test.txt 2024-06-15 14:30:00
+S> OK
+S> datestamp=2024-06-15 14:30:00
+S> .
+```
+
+**Verify via STAT:**
+
+```
+C> STAT RAM:test.txt
+S> OK
+S> type=file
+S> name=test.txt
+S> size=100
+S> protection=00000000
+S> datestamp=2024-06-15 14:30:00
+S> comment=
+S> .
+```
+
+**Nonexistent path:**
+
+```
+C> SETDATE RAM:NoSuchFile 2024-06-15 14:30:00
+S> ERR 200 Object not found
+S> .
+```
+
+**Invalid datestamp format:**
+
+```
+C> SETDATE RAM:test.txt 2024-13-01 00:00:00
+S> ERR 100 Invalid datestamp format
+S> .
+```
+
+**Missing arguments:**
+
+```
+C> SETDATE
+S> ERR 100 Missing arguments
+S> .
+```
+
+---
+
+## EXEC
+
+Executes a CLI command on the Amiga. EXEC supports two modes:
+synchronous (blocking, with output capture) and asynchronous
+(non-blocking, no output capture). The mode is selected by the presence
+of the `ASYNC` keyword.
+
+The daemon first checks if the argument text after `EXEC` starts with
+the keyword `ASYNC` (case-insensitive). If so, the remainder is passed
+to the async handler. Otherwise, the text is parsed for an optional
+`CD=` prefix and treated as a synchronous command.
+
+### EXEC (Synchronous)
+
+Executes a CLI command synchronously, captures stdout, and returns the
+output along with the command's return code. **This blocks the daemon's
+event loop** -- all other clients are blocked until the command
+completes. Commands from other clients queue in the TCP receive buffer
+and execute sequentially when the event loop resumes.
+
+#### Syntax
+
+```
+EXEC [CD=<path>] <command>
+```
+
+`<command>` is mandatory. `CD=<path>` is an optional prefix that sets
+the working directory for the executed command.
+
+**CD= parsing**: The path extends from `=` to the next whitespace
+character. Paths containing spaces are NOT supported with the `CD=`
+prefix. The `CD=` prefix is case-insensitive (`cd=`, `Cd=`, and `CD=`
+are equivalent).
+
+The `CD=` path affects only the child command's working directory. The
+daemon's own current directory is saved before the command and restored
+afterward. Subsequent commands (with or without `CD=`) are not affected.
+
+#### Response
+
+```
+OK rc=<return_code>
+DATA <chunk_len>
+<raw bytes: exactly chunk_len bytes>
+...
+END
+.
+```
+
+The OK status line includes `rc=<N>` where N is the AmigaOS return code
+from the command (0 for success, 5 for WARN, 10 for ERROR, 20 for FAIL).
+The captured output follows using DATA/END chunked binary framing (same
+framing as READ). Output encoding is ISO-8859-1.
+
+If the command produces no output, the response contains no DATA chunks:
+
+```
+OK rc=<return_code>
+END
+.
+```
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing command (no text after EXEC or after CD=path) | `ERR 100 Missing command` |
+| CD= path not found | `ERR 200 Directory not found` |
+| Command execution failed (SystemTags returned -1, e.g., shell unavailable) | `ERR 500 Command execution failed` |
+
+**Note on non-zero return codes**: A command that runs but returns a
+non-zero return code (e.g., `failat 1` then a failing command) is NOT an
+error from the daemon's perspective. The daemon returns `OK rc=<N>` with
+the non-zero rc. Only a failure to launch the command at all produces an
+ERR response.
+
+#### Edge Cases / Notes
+
+- The event loop is blocked for the duration of the command. If a
+  command hangs, all clients are blocked. The Python client enforces a
+  configurable timeout (default 30s) and can reconnect. For
+  long-running commands, use `EXEC ASYNC` instead.
+- Output is captured to a temporary file (`T:amigactld_exec_<seq>.tmp`)
+  and read back after the command completes. Stale temp files from
+  previous daemon runs are cleaned up at daemon startup.
+- A command that does not exist (e.g., `EXEC nosuchcommand`) does NOT
+  produce an ERR response. AmigaOS returns a non-zero rc (typically 20)
+  with an error message in stdout (e.g., "Unknown command nosuchcommand").
+  The daemon returns `OK rc=20` with the shell's error output.
+- The command string is limited by the 4096-byte request line maximum
+  (see [PROTOCOL.md](PROTOCOL.md)), minus the `EXEC ` prefix and any
+  `CD=<path> ` prefix.
+
+#### Examples
+
+**Simple command:**
+
+```
+C> EXEC echo hello
+S> OK rc=0
+S> DATA 6
+S> hello
+S> END
+S> .
+```
+
+(The DATA body is 6 raw bytes: `hello\n`.)
+
+**Multi-line output:**
+
+```
+C> EXEC list SYS:S
+S> OK rc=0
+S> DATA 247
+S> <247 bytes of directory listing>
+S> END
+S> .
+```
+
+**Non-zero return code:**
+
+```
+C> EXEC search SYS:S nosuchpattern
+S> OK rc=5
+S> END
+S> .
+```
+
+**Empty output:**
+
+```
+C> EXEC cd SYS:
+S> OK rc=0
+S> END
+S> .
+```
+
+**With CD= working directory:**
+
+```
+C> EXEC CD=SYS:S list
+S> OK rc=0
+S> DATA 247
+S> <247 bytes of SYS:S listing>
+S> END
+S> .
+```
+
+**CD= path not found:**
+
+```
+C> EXEC CD=RAM:NoSuchDir echo hello
+S> ERR 200 Directory not found
+S> .
+```
+
+**Missing command:**
+
+```
+C> EXEC
+S> ERR 100 Missing command
+S> .
+```
+
+```
+C> EXEC CD=SYS:S
+S> ERR 100 Missing command
+S> .
+```
+
+---
+
+### EXEC ASYNC
+
+Launches a CLI command asynchronously and returns immediately with a
+daemon-assigned process ID. The command runs in a separate AmigaOS
+process. No output is captured for asynchronous commands.
+
+#### Syntax
+
+```
+EXEC ASYNC [CD=<path>] <command>
+```
+
+`<command>` is mandatory. `CD=<path>` follows the same parsing rules as
+synchronous EXEC (path extends to the next whitespace, spaces in path
+not supported, case-insensitive prefix).
+
+#### Response
+
+```
+OK <id>
+.
+```
+
+The OK status line includes the daemon-assigned process ID (a
+monotonically incrementing integer, starting at 1, never reused within
+a daemon session). No payload lines follow.
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing command (no text after ASYNC or after CD=path) | `ERR 100 Missing command` |
+| CD= path not found | `ERR 200 Directory not found` |
+| Process table full (all 16 slots are RUNNING) | `ERR 500 Process table full` |
+| Async exec unavailable (no signal bit allocated at daemon startup) | `ERR 500 Async exec unavailable` |
+
+#### Edge Cases / Notes
+
+- Async processes have no output capture. Stdout and stderr are directed
+  to `NIL:`.
+- The process table holds up to 16 tracked processes. EXITED entries are
+  evicted (oldest first by ID) to make room for new launches. If all 16
+  slots are RUNNING, the launch fails.
+- Process IDs are session-scoped -- they reset when the daemon restarts.
+- Use PROCLIST or PROCSTAT to check on async processes. Use SIGNAL to
+  send break signals or KILL as a last resort for hung processes.
+
+#### Examples
+
+**Launch an async command:**
+
+```
+C> EXEC ASYNC wait 10
+S> OK 1
+S> .
+```
+
+**Launch with CD=:**
+
+```
+C> EXEC ASYNC CD=SYS:S list >T:listing.txt
+S> OK 2
+S> .
+```
+
+**Missing command:**
+
+```
+C> EXEC ASYNC
+S> ERR 100 Missing command
+S> .
+```
+
+**Process table full:**
+
+```
+C> EXEC ASYNC wait 60
+S> ERR 500 Process table full
+S> .
+```
+
+---
+
+## PROCLIST
+
+Lists all daemon-launched asynchronous processes (both running and
+exited). This includes all entries in the process table, regardless of
+status.
+
+### Syntax
+
+```
+PROCLIST
+```
+
+No arguments. Any trailing text after `PROCLIST` is ignored.
+
+### Response
+
+```
+OK
+<id>\t<command>\t<status>\t<rc>
+<id>\t<command>\t<status>\t<rc>
+...
+.
+```
+
+Each payload line contains four tab-separated fields:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Daemon-assigned process ID (integer) |
+| `command` | The command string that was launched |
+| `status` | `RUNNING` or `EXITED` |
+| `rc` | Return code (integer) when EXITED; `-` when RUNNING |
+
+Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+
+If no processes have been launched (empty process table), the response
+contains no payload lines (just OK and sentinel).
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Examples
+
+**Processes in various states:**
+
+```
+C> PROCLIST
+S> OK
+S> 1	echo hello	EXITED	0
+S> 2	wait 60	RUNNING	-
+S> 3	search SYS:S pattern	EXITED	5
+S> .
+```
+
+**No processes:**
+
+```
+C> PROCLIST
+S> OK
+S> .
+```
+
+---
+
+## PROCSTAT
+
+Returns detailed status information for a single daemon-launched
+process.
+
+### Syntax
+
+```
+PROCSTAT <id>
+```
+
+`<id>` is mandatory. It must be a valid integer corresponding to a
+tracked process.
+
+### Response
+
+```
+OK
+id=<id>
+command=<command>
+status=<status>
+rc=<rc>
+.
+```
+
+The payload consists of key=value lines in a fixed order:
+
+| Key | Description |
+|-----|-------------|
+| `id` | Daemon-assigned process ID |
+| `command` | The command string that was launched |
+| `status` | `RUNNING` or `EXITED` |
+| `rc` | Return code (integer) when EXITED; `-` when RUNNING |
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing process ID | `ERR 100 Missing process ID` |
+| Invalid process ID (non-numeric) | `ERR 100 Invalid process ID` |
+| Process not found (no such ID in table) | `ERR 200 Process not found` |
+
+### Examples
+
+**Running process:**
+
+```
+C> PROCSTAT 2
+S> OK
+S> id=2
+S> command=wait 60
+S> status=RUNNING
+S> rc=-
+S> .
+```
+
+**Exited process:**
+
+```
+C> PROCSTAT 1
+S> OK
+S> id=1
+S> command=echo hello
+S> status=EXITED
+S> rc=0
+S> .
+```
+
+**Invalid ID:**
+
+```
+C> PROCSTAT abc
+S> ERR 100 Invalid process ID
+S> .
+```
+
+**Process not found:**
+
+```
+C> PROCSTAT 999
+S> ERR 200 Process not found
+S> .
+```
+
+---
+
+## SIGNAL
+
+Sends an AmigaOS break signal to a daemon-launched asynchronous process.
+This is the standard cooperative mechanism for requesting a process to
+stop (equivalent to pressing Ctrl-C in a shell).
+
+### Syntax
+
+```
+SIGNAL <id> [<signal>]
+```
+
+`<id>` is mandatory. `<signal>` is optional and defaults to `CTRL_C`.
+
+Valid signal names (case-insensitive):
+
+| Signal | AmigaOS Flag |
+|--------|-------------|
+| `CTRL_C` | `SIGBREAKF_CTRL_C` (default) |
+| `CTRL_D` | `SIGBREAKF_CTRL_D` |
+| `CTRL_E` | `SIGBREAKF_CTRL_E` |
+| `CTRL_F` | `SIGBREAKF_CTRL_F` |
+
+### Response
+
+```
+OK
+.
+```
+
+No payload lines. The signal has been delivered.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing process ID | `ERR 100 Missing process ID` |
+| Invalid process ID (non-numeric) | `ERR 100 Invalid process ID` |
+| Invalid signal name | `ERR 100 Invalid signal name` |
+| Process not found (no such ID in table) | `ERR 200 Process not found` |
+| Process not running (already EXITED) | `ERR 200 Process not running` |
+
+Error checking order: process ID is validated first (presence, format,
+existence), then status (must be RUNNING), then signal name (if
+provided). This ensures the most actionable error is reported first --
+a bad process ID or a non-running process is reported before an
+invalid signal name.
+
+### Edge Cases / Notes
+
+- Signal delivery is asynchronous with respect to the target process's
+  execution. The process may not act on the signal immediately.
+- Sending a signal to a process does not guarantee it will stop. The
+  process may ignore break signals.
+- After signaling, use PROCSTAT to poll for the process to transition to
+  EXITED state.
+
+### Examples
+
+**Signal with default CTRL_C:**
+
+```
+C> SIGNAL 2
+S> OK
+S> .
+```
+
+**Signal with explicit signal name:**
+
+```
+C> SIGNAL 2 CTRL_D
+S> OK
+S> .
+```
+
+**Process not running:**
+
+```
+C> SIGNAL 1
+S> ERR 200 Process not running
+S> .
+```
+
+**Invalid signal name:**
+
+```
+C> SIGNAL 2 HUP
+S> ERR 100 Invalid signal name
+S> .
+```
+
+---
+
+## KILL
+
+Force-terminates a daemon-launched asynchronous process using
+`RemTask()`. This is a **last-resort** operation for processes that do
+not respond to break signals.
+
+### Syntax
+
+```
+KILL <id>
+```
+
+`<id>` is mandatory.
+
+### Response
+
+```
+OK
+.
+```
+
+No payload lines. The process has been removed.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing process ID | `ERR 100 Missing process ID` |
+| Invalid process ID (non-numeric) | `ERR 100 Invalid process ID` |
+| Process not found (no such ID in table) | `ERR 200 Process not found` |
+| Process not running (already EXITED) | `ERR 200 Process not running` |
+| Remote kill not permitted (`ALLOW_REMOTE_SHUTDOWN` is `NO` in config) | `ERR 201 Remote kill not permitted` |
+
+Error checking order: permission is validated first (the
+`ALLOW_REMOTE_SHUTDOWN` configuration flag must be `YES`). Then process
+ID is validated (presence, format, existence), then status (must be
+RUNNING).
+
+### Edge Cases / Notes
+
+- KILL is gated behind the `ALLOW_REMOTE_SHUTDOWN YES` configuration
+  flag (the same flag that controls SHUTDOWN). When the flag is `NO`
+  (the default), KILL returns `ERR 201` regardless of the process ID.
+- **RemTask does not clean up resources.** The killed process's memory,
+  file handles, library bases, and other resources are leaked. If the
+  process was inside `SystemTags()`, the shell child process may
+  continue running as an orphan.
+- **Orphan shell processes** launched by `SystemTags()` may later
+  attempt to signal their destroyed parent, which can crash AmigaOS.
+  This is inherent to RemTask's unsafety and cannot be prevented.
+- After KILL, the process table entry transitions to EXITED with
+  `rc=-1`.
+- If the process completed naturally between the SIGNAL attempt and the
+  KILL request (race condition), the daemon detects this via the
+  completion flag and simply transitions the slot to EXITED without
+  calling RemTask.
+
+### Examples
+
+**Kill a hung process:**
+
+```
+C> KILL 2
+S> OK
+S> .
+```
+
+**Verify via PROCSTAT:**
+
+```
+C> PROCSTAT 2
+S> OK
+S> id=2
+S> command=wait 60
+S> status=EXITED
+S> rc=-1
+S> .
+```
+
+**Not permitted (default configuration):**
+
+```
+C> KILL 2
+S> ERR 201 Remote kill not permitted
+S> .
+```
+
+**Process not found (assumes ALLOW_REMOTE_SHUTDOWN YES; otherwise
+the response would be ERR 201 Remote kill not permitted):**
+
+```
+C> KILL 999
+S> ERR 200 Process not found
+S> .
+```
+
+---
+
+## SYSINFO
+
+Returns system information about the Amiga as key=value pairs. This
+includes memory statistics, OS version information, and the bsdsocket
+library version.
+
+### Syntax
+
+```
+SYSINFO
+```
+
+No arguments. Any trailing text after `SYSINFO` is ignored.
+
+### Response
+
+```
+OK
+chip_free=<bytes>
+fast_free=<bytes>
+total_free=<bytes>
+chip_total=<bytes>
+fast_total=<bytes>
+exec_version=<major.revision>
+kickstart=<revision>
+bsdsocket=<major.revision>
+.
+```
+
+The payload consists of key=value lines in a fixed order:
+
+| Key | Description |
+|-----|-------------|
+| `chip_free` | Free chip memory in bytes (`AvailMem(MEMF_CHIP)`) |
+| `fast_free` | Free fast memory in bytes (`AvailMem(MEMF_FAST)`) |
+| `total_free` | Total free memory in bytes (`AvailMem(MEMF_ANY)`) |
+| `chip_total` | Total chip memory in bytes (requires exec v39+; omitted on older systems) |
+| `fast_total` | Total fast memory in bytes (requires exec v39+; omitted on older systems) |
+| `exec_version` | exec.library version, dot-separated (e.g., `40.68`) |
+| `kickstart` | Kickstart revision number (e.g., `40`) |
+| `bsdsocket` | bsdsocket.library version, dot-separated (e.g., `4.364`) |
+
+Memory values are decimal integers (bytes). Version strings are
+dot-separated (major.revision) or plain integers (kickstart).
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Edge Cases / Notes
+
+- `chip_total` and `fast_total` use the `MEMF_TOTAL` flag, which was
+  introduced in AmigaOS 3.1 (exec.library v39). On systems running
+  exec.library older than v39, these keys are omitted from the response.
+- Memory values are a snapshot at the time of the call and may change
+  between calls.
+- The daemon requires bsdsocket.library at startup; the `bsdsocket`
+  key is always present.
+
+### Examples
+
+**Typical response on an AmigaOS 3.1+ system:**
+
+```
+C> SYSINFO
+S> OK
+S> chip_free=1843200
+S> fast_free=12582912
+S> total_free=14426112
+S> chip_total=2097152
+S> fast_total=16777216
+S> exec_version=40.68
+S> kickstart=40
+S> bsdsocket=4.364
+S> .
+```
+
+---
+
+## ASSIGNS
+
+Lists all logical assigns (device-name-to-path mappings) known to the
+system.
+
+### Syntax
+
+```
+ASSIGNS
+```
+
+No arguments. Any trailing text after `ASSIGNS` is ignored.
+
+### Response
+
+```
+OK
+<name>:\t<path>
+<name>:\t<path>
+...
+.
+```
+
+Each payload line contains two tab-separated fields:
+
+| Field | Description |
+|-------|-------------|
+| `name:` | Assign name including the trailing colon (e.g., `SYS:`, `S:`, `FONTS:`) |
+| `path` | Resolved path for the assign |
+
+Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+
+**Multi-directory assigns**: If an assign points to multiple directories,
+the paths are separated by semicolons within the path field (e.g.,
+`LIBS:\tSYS:Libs;WORK:Libs`).
+
+**Late and nonbinding assigns**: For late-binding and nonbinding assigns,
+the path field contains the unresolved assignment string rather than a
+resolved filesystem path.
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Examples
+
+**Typical response:**
+
+```
+C> ASSIGNS
+S> OK
+S> SYS:	DH0:
+S> S:	DH0:S
+S> C:	DH0:C
+S> L:	DH0:L
+S> LIBS:	DH0:Libs
+S> DEVS:	DH0:Devs
+S> FONTS:	DH0:Fonts
+S> .
+```
+
+**Multi-directory assign:**
+
+```
+C> ASSIGNS
+S> OK
+S> LIBS:	DH0:Libs;WORK:Libs
+S> ...
+S> .
+```
+
+---
+
+## PORTS
+
+Lists all active Exec message ports on the system.
+
+### Syntax
+
+```
+PORTS
+```
+
+No arguments. Any trailing text after `PORTS` is ignored.
+
+### Response
+
+```
+OK
+<port_name>
+<port_name>
+...
+.
+```
+
+Each payload line contains a single port name. Payload lines are
+dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+
+Ports with NULL names are skipped. Control characters (bytes 0x00-0x1F)
+in port names are replaced with `?` before sending.
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Examples
+
+**Typical response:**
+
+```
+C> PORTS
+S> OK
+S> REXX
+S> AREXX
+S> amigactld
+S> .
+```
+
+---
+
+## VOLUMES
+
+Lists all currently mounted volumes with disk usage statistics.
+
+### Syntax
+
+```
+VOLUMES
+```
+
+No arguments. Any trailing text after `VOLUMES` is ignored.
+
+### Response
+
+```
+OK
+<name>\t<used>\t<free>\t<capacity>\t<blocksize>
+<name>\t<used>\t<free>\t<capacity>\t<blocksize>
+...
+.
+```
+
+Each payload line contains five tab-separated fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Volume name (e.g., `System`, `Work`, `RAM Disk`) |
+| `used` | Used space in bytes |
+| `free` | Free space in bytes |
+| `capacity` | Total capacity in bytes |
+| `blocksize` | Block size in bytes (e.g., 512) |
+
+Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+
+Only mounted volumes (those with an active filesystem handler) are
+listed. Unmounted volumes are omitted.
+
+All numeric values are decimal integers.
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Edge Cases / Notes
+
+- A volume that becomes unmounted between the list scan and the
+  subsequent Info() probe is silently skipped.
+- RAM Disk always has a blocksize but the exact value is implementation-
+  dependent.
+- Volume names are returned without a trailing colon. To use a volume
+  name as a path, append `:` (e.g., `System:`).
+
+### Examples
+
+**Typical response:**
+
+```
+C> VOLUMES
+S> OK
+S> System	42991616	225738752	268730368	512
+S> Work	1073741824	3221225472	4294967296	512
+S> RAM Disk	0	1048576	1048576	512
+S> .
+```
+
+---
+
+## TASKS
+
+Lists all running tasks and processes on the system. This is the
+AmigaOS equivalent of a Unix `ps` command.
+
+### Syntax
+
+```
+TASKS
+```
+
+No arguments. Any trailing text after `TASKS` is ignored.
+
+### Response
+
+```
+OK
+<name>\t<type>\t<priority>\t<state>\t<stacksize>
+<name>\t<type>\t<priority>\t<state>\t<stacksize>
+...
+.
+```
+
+Each payload line contains five tab-separated fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Task/process name from `tc_Node.ln_Name`. Tasks with a NULL name are shown as `<unnamed>`. |
+| `type` | `TASK` or `PROCESS` (from `tc_Node.ln_Type`: NT_TASK=1 or NT_PROCESS=13) |
+| `priority` | Signed integer priority (from `tc_Node.ln_Pri`) |
+| `state` | `run` (currently executing), `ready` (ready to run), or `wait` (waiting for a signal) |
+| `stacksize` | Stack size in bytes (`tc_SPUpper - tc_SPLower`) |
+
+Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Edge Cases / Notes
+
+- The task list is a snapshot taken under `Forbid()`. All data is copied
+  to local buffers before `Permit()` is called and the response is sent.
+  The actual task states may have changed by the time the client reads
+  the response.
+- The currently executing task (the daemon itself, since it calls
+  `FindTask(NULL)`) is listed with state `run`.
+- Tasks from the `TaskReady` list have state `ready`. Tasks from the
+  `TaskWait` list have state `wait`.
+
+### Examples
+
+**Typical response:**
+
+```
+C> TASKS
+S> OK
+S> exec.library	TASK	126	ready	4096
+S> input.device	TASK	20	wait	4096
+S> amigactld	PROCESS	0	run	65536
+S> ramlib	PROCESS	0	wait	4096
+S> Shell Process	PROCESS	0	wait	16384
+S> .
+```
+
+---
+
 ## Error Handling
 
 ### Unknown Command
@@ -1009,23 +2061,6 @@ as they arrive, up to and including the next newline.
 
 The following commands are planned for future phases. Sending any of them
 in the current version produces `ERR 100 Unknown command`.
-
-### Phase 3: Execution and System Info
-
-| Command | Description |
-|---------|-------------|
-| `EXEC [CD=<path>] <command>` | Execute CLI command, capture output (CD= sets working directory) |
-| `EXEC ASYNC [CD=<path>] <command>` | Launch command asynchronously, return process ID |
-| `PROCLIST` | List daemon-launched processes (tab-separated: id, command, status, rc) |
-| `PROCSTAT <id>` | Status of a specific tracked process (key=value pairs: id, command, status, rc) |
-| `SIGNAL <id> [CTRL_C\|CTRL_D\|CTRL_E\|CTRL_F]` | Send break signal to tracked process (default CTRL_C) |
-| `KILL <id>` | Force-terminate tracked process via RemTask() (requires `ALLOW_REMOTE_SHUTDOWN YES`) |
-| `SETDATE <path> <datestamp>` | Set file/directory datestamp (`YYYY-MM-DD HH:MM:SS` format) |
-| `SYSINFO` | System information (key=value pairs) |
-| `ASSIGNS` | List logical assigns |
-| `PORTS` | List active Exec message ports |
-| `VOLUMES` | List mounted volumes with free space and capacity |
-| `TASKS` | List running tasks/processes |
 
 ### Phase 4: ARexx
 

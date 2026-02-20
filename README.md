@@ -34,11 +34,14 @@ Host                              Amiga
 
 ## Current Status
 
-**Phase 2 -- File Operations.** The daemon accepts TCP connections, checks IP
-ACLs, sends a banner, and handles lifecycle commands (VERSION, PING, QUIT,
-SHUTDOWN) plus eight file commands: DIR, STAT, READ, WRITE, DELETE, RENAME,
-MAKEDIR, and PROTECT. The Python client library and CLI support all commands.
-EXEC, ARexx, and system queries are planned for later phases.
+**Phase 3 -- EXEC, Process Management, and System Info.** The daemon accepts
+TCP connections, checks IP ACLs, sends a banner, and handles lifecycle commands
+(VERSION, PING, QUIT, SHUTDOWN), eight file commands (DIR, STAT, READ, WRITE,
+DELETE, RENAME, MAKEDIR, PROTECT), synchronous and asynchronous command execution
+(EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL, KILL),
+system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS), and datestamp
+setting (SETDATE). The Python client library and CLI support all commands. ARexx
+dispatch is planned for a later phase.
 
 ## Requirements
 
@@ -138,7 +141,7 @@ are required (stdlib only).
 from amigactl import AmigaConnection
 
 with AmigaConnection("192.168.6.200") as amiga:
-    print(amiga.version())          # "amigactld 0.2.0"
+    print(amiga.version())          # "amigactld 0.3.0"
     amiga.ping()
 
     # File operations
@@ -150,6 +153,21 @@ with AmigaConnection("192.168.6.200") as amiga:
     amiga.delete("RAM:renamed.txt")
     amiga.makedir("RAM:mydir")
     prot = amiga.protect("RAM:mydir")
+
+    # Command execution
+    rc, output = amiga.execute("list SYS:S")
+    proc_id = amiga.execute_async("wait 30")
+    procs = amiga.proclist()
+    info = amiga.procstat(proc_id)
+    amiga.signal(proc_id)
+
+    # System info
+    sysinfo = amiga.sysinfo()
+    assigns = amiga.assigns()
+    volumes = amiga.volumes()
+    ports = amiga.ports()
+    tasks = amiga.tasks()
+    amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
 ```
 
 The host and port can also be set via the `AMIGACTL_HOST` and `AMIGACTL_PORT`
@@ -171,6 +189,17 @@ amigactl --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
 amigactl --host 192.168.6.200 mkdir RAM:newdir
 amigactl --host 192.168.6.200 chmod RAM:file.txt
 amigactl --host 192.168.6.200 chmod RAM:file.txt 0f
+amigactl --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
+amigactl --host 192.168.6.200 exec echo hello
+amigactl --host 192.168.6.200 run wait 30
+amigactl --host 192.168.6.200 ps
+amigactl --host 192.168.6.200 status 1
+amigactl --host 192.168.6.200 signal 1
+amigactl --host 192.168.6.200 sysinfo
+amigactl --host 192.168.6.200 assigns
+amigactl --host 192.168.6.200 volumes
+amigactl --host 192.168.6.200 ports
+amigactl --host 192.168.6.200 tasks
 ```
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
@@ -220,6 +249,8 @@ amigactl/
 |   +-- net.c / net.h                # Socket helpers, protocol I/O
 |   +-- config.c / config.h          # Config file parsing, ACL
 |   +-- file.c / file.h              # File operation command handlers
+|   +-- exec.c / exec.h              # EXEC and process management
+|   +-- sysinfo.c / sysinfo.h        # System info command handlers
 +-- client/
 |   +-- amigactl/
 |   |   +-- __init__.py              # AmigaConnection class
@@ -230,6 +261,8 @@ amigactl/
 |   +-- conftest.py                  # Fixtures, CLI options
 |   +-- test_connection.py           # Connection, auth, lifecycle
 |   +-- test_file.py                 # File operation tests
+|   +-- test_exec.py                 # Exec and process management tests
+|   +-- test_sysinfo.py              # System info tests
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
 +-- docs/
@@ -250,13 +283,14 @@ and test suite.
 DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, and PROTECT commands. Chunked
 binary transfer for READ/WRITE. Atomic writes via temp file and rename.
 
-### Phase 3: EXEC, Process Management, and System Info (next)
+### Phase 3: EXEC, Process Management, and System Info (complete)
 
 CLI command execution with captured output (EXEC). Asynchronous process
-launching with signal and kill support. System introspection (SYSINFO, ASSIGNS,
-PORTS, VOLUMES, TASKS). Datestamp setting (SETDATE).
+launching with signal and kill support (EXEC ASYNC, PROCLIST, PROCSTAT, SIGNAL,
+KILL). System introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS).
+Datestamp setting (SETDATE).
 
-### Phase 4: ARexx
+### Phase 4: ARexx (next)
 
 Non-blocking ARexx command dispatch to named ports, with timeout handling and
 reply matching via WaitSelect signal integration.

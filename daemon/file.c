@@ -1,7 +1,7 @@
 /*
  * amigactld -- File operation command handlers (Phase 2)
  *
- * Implements DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT.
+ * Implements DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT, SETDATE.
  * All handlers follow the protocol framing conventions from net.h:
  * send OK/ERR + payload lines + sentinel, return 0 on success or
  * -1 to disconnect the client.
@@ -115,6 +115,71 @@ static void format_datestamp(const struct DateStamp *ds, char *buf)
 
     sprintf(buf, "%04d-%02d-%02d %02d:%02d:%02d",
             year, month, day, hours, minutes, seconds);
+}
+
+/* Parse "YYYY-MM-DD HH:MM:SS" into an AmigaOS DateStamp.
+ * Returns 0 on success, -1 on parse/range failure.
+ * This is the inverse of format_datestamp(). */
+static int parse_datestamp(const char *str, struct DateStamp *ds)
+{
+    static const int mdays[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    int year, month, day, hours, minutes, seconds;
+    int leap, dim, total_days;
+    int i;
+    char trailing;
+
+    /* Parse and reject trailing garbage via %c */
+    if (sscanf(str, "%d-%d-%d %d:%d:%d%c",
+               &year, &month, &day, &hours, &minutes, &seconds,
+               &trailing) != 6) {
+        return -1;
+    }
+
+    /* Validate ranges */
+    if (year < 1978)
+        return -1;
+    if (month < 1 || month > 12)
+        return -1;
+    if (hours < 0 || hours > 23)
+        return -1;
+    if (minutes < 0 || minutes > 59)
+        return -1;
+    if (seconds < 0 || seconds > 59)
+        return -1;
+
+    /* Determine max days for this month */
+    leap = ((year % 4 == 0) && (year % 100 != 0)) ||
+           (year % 400 == 0);
+    dim = mdays[month - 1];
+    if (month == 2 && leap)
+        dim = 29;
+    if (day < 1 || day > dim)
+        return -1;
+
+    /* Calculate days since 1978-01-01 */
+    total_days = 0;
+    for (i = 1978; i < year; i++) {
+        leap = ((i % 4 == 0) && (i % 100 != 0)) ||
+               (i % 400 == 0);
+        total_days += leap ? 366 : 365;
+    }
+    for (i = 0; i < month - 1; i++) {
+        total_days += mdays[i];
+        if (i == 1) {
+            leap = ((year % 4 == 0) && (year % 100 != 0)) ||
+                   (year % 400 == 0);
+            if (leap)
+                total_days++;
+        }
+    }
+    total_days += day - 1;
+
+    ds->ds_Days = total_days;
+    ds->ds_Minute = hours * 60 + minutes;
+    ds->ds_Tick = seconds * TICKS_PER_SECOND;
+    return 0;
 }
 
 /* Format a FileInfoBlock as a tab-separated directory entry.
@@ -898,5 +963,77 @@ int cmd_protect(struct client *c, const char *args)
         send_sentinel(c->fd);
     }
 
+    return 0;
+}
+
+int cmd_setdate(struct client *c, const char *args)
+{
+    char path[MAX_CMD_LEN + 1];
+    const char *ds_str;
+    struct DateStamp ds;
+    char datebuf[20];
+    char line[64];
+    int args_len;
+    int pathlen;
+
+    if (args[0] == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing arguments");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    args_len = strlen(args);
+
+    /* Datestamp is always the last 19 chars: "YYYY-MM-DD HH:MM:SS" */
+    if (args_len < 21) {
+        send_error(c->fd, ERR_SYNTAX, "Missing arguments");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    ds_str = args + args_len - 19;
+
+    /* There must be whitespace separating the path from the datestamp */
+    if (*(ds_str - 1) != ' ' && *(ds_str - 1) != '\t') {
+        send_error(c->fd, ERR_SYNTAX, "Invalid datestamp format");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Extract path, trimming trailing whitespace */
+    pathlen = (int)(ds_str - 1 - args);
+    while (pathlen > 0 && (args[pathlen - 1] == ' ' ||
+                           args[pathlen - 1] == '\t'))
+        pathlen--;
+
+    if (pathlen <= 0 || pathlen >= (int)sizeof(path)) {
+        send_error(c->fd, ERR_SYNTAX, "Missing arguments");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    memcpy(path, args, pathlen);
+    path[pathlen] = '\0';
+
+    /* Parse the datestamp */
+    if (parse_datestamp(ds_str, &ds) < 0) {
+        send_error(c->fd, ERR_SYNTAX, "Invalid datestamp format");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Apply it */
+    if (!SetFileDate((STRPTR)path, &ds)) {
+        send_dos_error(c->fd, "SetFileDate failed");
+        return 0;
+    }
+
+    /* Success: echo back the applied datestamp */
+    format_datestamp(&ds, datebuf);
+    sprintf(line, "datestamp=%s", datebuf);
+
+    send_ok(c->fd, NULL);
+    send_payload_line(c->fd, line);
+    send_sentinel(c->fd);
     return 0;
 }

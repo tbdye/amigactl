@@ -31,6 +31,18 @@ class BinaryTransferError(ProtocolError):
             "Server error during binary transfer: ERR {}".format(err_info))
 
 
+class ServerError(ProtocolError):
+    """Raised when the server returns an ERR status line.
+
+    Attributes:
+        err_info: The ERR line content after "ERR " (e.g. "200 Not found").
+    """
+
+    def __init__(self, err_info: str) -> None:
+        self.err_info = err_info
+        super().__init__("ERR {}".format(err_info))
+
+
 def read_line(sock: socket.socket) -> str:
     """Read a single line from the socket, byte-by-byte until LF.
 
@@ -141,21 +153,15 @@ def recv_exact(sock: socket.socket, nbytes: int) -> bytes:
     return bytes(buf)
 
 
-def read_binary_response(sock: socket.socket) -> bytes:
-    """Read DATA/END chunks + sentinel after an OK status line.
+def _read_data_chunks(sock: socket.socket) -> bytes:
+    """Read DATA/END chunks from the socket.
 
-    Assumes the caller has already read and validated the OK status line.
-    Reads DATA <len> / raw chunk pairs until END, then reads the
-    sentinel line.
+    Reads DATA <len> / raw-chunk pairs until END.  If the server sends
+    an ERR line mid-stream, raises BinaryTransferError with any partial
+    data.
 
-    Returns the concatenated bytes from all DATA chunks.
-
-    If the server sends an ERR line mid-stream (e.g. I/O error during
-    read), raises BinaryTransferError with the ERR info and any partial
-    data received so far.
-
-    Raises ProtocolError on framing errors (unexpected lines, EOF,
-    missing sentinel).
+    Returns the concatenated bytes.  The caller is responsible for
+    reading the sentinel line that follows END.
     """
     data = bytearray()
     while True:
@@ -181,6 +187,26 @@ def read_binary_response(sock: socket.socket) -> bytes:
                 "Invalid DATA chunk length: {!r}".format(line))
         chunk = recv_exact(sock, chunk_len)
         data.extend(chunk)
+    return bytes(data)
+
+
+def read_binary_response(sock: socket.socket) -> bytes:
+    """Read DATA/END chunks + sentinel after an OK status line.
+
+    Assumes the caller has already read and validated the OK status line.
+    Reads DATA <len> / raw chunk pairs until END, then reads the
+    sentinel line.
+
+    Returns the concatenated bytes from all DATA chunks.
+
+    If the server sends an ERR line mid-stream (e.g. I/O error during
+    read), raises BinaryTransferError with the ERR info and any partial
+    data received so far.
+
+    Raises ProtocolError on framing errors (unexpected lines, EOF,
+    missing sentinel).
+    """
+    data = _read_data_chunks(sock)
 
     # Read sentinel
     sentinel = read_line(sock)
@@ -188,7 +214,58 @@ def read_binary_response(sock: socket.socket) -> bytes:
         raise ProtocolError(
             "Expected sentinel, got: {!r}".format(sentinel))
 
-    return bytes(data)
+    return data
+
+
+def read_exec_response(sock: socket.socket) -> "Tuple[int, bytes]":
+    """Read a full EXEC response: status line + DATA/END chunks + sentinel.
+
+    Reads the OK rc=N status line (or ERR), the binary DATA/END body, and
+    the sentinel.  Unlike read_binary_response, this function reads the
+    status line itself and does not validate data length against a declared
+    file size (EXEC's info field is rc=N, not a byte count).
+
+    Returns (rc, data) where rc is the integer return code and data is
+    the raw binary output.
+
+    Raises ProtocolError on framing violations or if the response is ERR.
+    """
+    status_line = read_line(sock)
+
+    if status_line == "ERR" or status_line.startswith("ERR "):
+        # Read sentinel and return the error info for the caller to handle
+        sentinel = read_line(sock)
+        if sentinel != ".":
+            raise ProtocolError(
+                "Expected sentinel after ERR, got: {!r}".format(sentinel))
+        err_info = status_line[4:]
+        raise ServerError(err_info)
+
+    if not status_line.startswith("OK"):
+        raise ProtocolError(
+            "Expected OK, got: {!r}".format(status_line))
+
+    info = status_line[3:].strip()
+
+    # Parse rc=N from info field
+    if not info.startswith("rc="):
+        raise ProtocolError(
+            "EXEC OK line missing rc= field: {!r}".format(info))
+    try:
+        rc = int(info[3:])
+    except ValueError:
+        raise ProtocolError(
+            "EXEC OK line has non-numeric rc: {!r}".format(info))
+
+    data = _read_data_chunks(sock)
+
+    # Read sentinel
+    sentinel = read_line(sock)
+    if sentinel != ".":
+        raise ProtocolError(
+            "Expected sentinel, got: {!r}".format(sentinel))
+
+    return (rc, data)
 
 
 def send_data_chunks(sock: socket.socket, data: bytes, chunk_size: int = 4096) -> None:

@@ -15,8 +15,10 @@ import socket
 from typing import Dict, List, Optional, Tuple, Type
 
 from .protocol import (
-    BinaryTransferError, ENCODING, ProtocolError, read_binary_response,
-    read_line, read_response, recv_exact, send_command, send_data_chunks,
+    BinaryTransferError, ENCODING, ProtocolError, ServerError,
+    read_binary_response,
+    read_exec_response, read_line, read_response, recv_exact, send_command,
+    send_data_chunks,
 )
 
 
@@ -32,6 +34,7 @@ __all__ = [
     "RemoteTimeoutError",
     "InternalError",
     "ProtocolError",
+    "ServerError",
 ]
 
 
@@ -398,7 +401,7 @@ class AmigaConnection:
             _raise_for_error(info)
         stripped = info.strip()
         if not stripped:
-            return 0
+            raise ProtocolError("WRITE OK line missing byte count")
         try:
             return int(stripped)
         except ValueError:
@@ -441,3 +444,249 @@ class AmigaConnection:
             key, _, val = line.partition("=")
             result[key] = val
         return result.get("protection", "")
+
+    # -- Execution and process management ----------------------------------
+
+    def execute(self, command: str,
+                timeout: Optional[int] = None,
+                cd: Optional[str] = None) -> Tuple[int, str]:
+        """Execute a CLI command synchronously.
+
+        Returns (rc, output) where rc is the AmigaOS return code (int)
+        and output is the captured stdout decoded from ISO-8859-1.
+
+        If timeout is specified, sets the socket timeout for this command
+        (restores the original timeout afterward).
+
+        If cd is specified, prepends CD=<path> to the command.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "EXEC "
+        if cd is not None:
+            cmd += "CD={} ".format(cd)
+        cmd += command
+
+        if timeout is not None:
+            old_timeout = self._sock.gettimeout()
+            self._sock.settimeout(timeout)
+        try:
+            send_command(self._sock, cmd)
+            try:
+                rc, data = read_exec_response(self._sock)
+            except ServerError as e:
+                _raise_for_error(e.err_info)
+                raise  # unreachable
+            except BinaryTransferError as e:
+                _raise_for_error(e.err_info)
+                raise  # unreachable
+        finally:
+            if timeout is not None:
+                self._sock.settimeout(old_timeout)
+
+        output = data.decode(ENCODING)
+        return (rc, output)
+
+    def execute_async(self, command: str,
+                      cd: Optional[str] = None) -> int:
+        """Launch a command asynchronously.
+
+        Returns the daemon-assigned process ID (int).
+        """
+        cmd = "EXEC ASYNC "
+        if cd is not None:
+            cmd += "CD={} ".format(cd)
+        cmd += command
+
+        info, _payload = self._send_command(cmd)
+        try:
+            return int(info.strip())
+        except ValueError:
+            raise ProtocolError(
+                "EXEC ASYNC OK line missing numeric ID: {!r}".format(info))
+
+    def proclist(self) -> List[dict]:
+        """List daemon-launched processes.
+
+        Returns a list of dicts with keys: id (int), command (str),
+        status (str), rc (int or None).
+        """
+        _info, payload = self._send_command("PROCLIST")
+        entries = []
+        for line in payload:
+            parts = line.split("\t")
+            if len(parts) != 4:
+                raise ProtocolError(
+                    "PROCLIST entry has {} fields, expected 4: {!r}".format(
+                        len(parts), line))
+            try:
+                proc_id = int(parts[0])
+            except ValueError:
+                raise ProtocolError(
+                    "PROCLIST entry has non-numeric id: {!r}".format(line))
+            rc_str = parts[3]
+            if rc_str == "-":
+                rc = None
+            else:
+                try:
+                    rc = int(rc_str)
+                except ValueError:
+                    raise ProtocolError(
+                        "PROCLIST entry has non-numeric rc: {!r}".format(line))
+            entries.append({
+                "id": proc_id,
+                "command": parts[1],
+                "status": parts[2],
+                "rc": rc,
+            })
+        return entries
+
+    def procstat(self, proc_id: int) -> dict:
+        """Get status of a specific tracked process.
+
+        Returns a dict with keys: id (int), command (str),
+        status (str), rc (int or None).
+        """
+        _info, payload = self._send_command("PROCSTAT {}".format(proc_id))
+        result = {}  # type: dict
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        # Convert types
+        if "id" in result:
+            try:
+                result["id"] = int(result["id"])
+            except ValueError:
+                raise ProtocolError(
+                    "PROCSTAT id is non-numeric: {!r}".format(result["id"]))
+        if "rc" in result:
+            if result["rc"] == "-":
+                result["rc"] = None
+            else:
+                try:
+                    result["rc"] = int(result["rc"])
+                except ValueError:
+                    raise ProtocolError(
+                        "PROCSTAT rc is non-numeric: {!r}".format(result["rc"]))
+        return result
+
+    def signal(self, proc_id: int, sig: str = "CTRL_C") -> None:
+        """Send a break signal to a tracked process."""
+        cmd = "SIGNAL {}".format(proc_id)
+        if sig != "CTRL_C":
+            cmd += " {}".format(sig)
+        self._send_command(cmd)
+
+    def kill(self, proc_id: int) -> None:
+        """Force-terminate a tracked process."""
+        self._send_command("KILL {}".format(proc_id))
+
+    # -- System information ------------------------------------------------
+
+    def sysinfo(self) -> dict:
+        """Get system information.
+
+        Returns a dict of key=value pairs. Memory values are strings
+        (caller may convert to int as needed).
+        """
+        _info, payload = self._send_command("SYSINFO")
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        return result
+
+    def assigns(self) -> dict:
+        """List logical assigns.
+
+        Returns a dict mapping assign names (with trailing colon) to
+        path strings.
+        """
+        _info, payload = self._send_command("ASSIGNS")
+        result = {}
+        for line in payload:
+            parts = line.split("\t", 1)
+            if len(parts) != 2:
+                raise ProtocolError(
+                    "ASSIGNS entry missing tab separator: {!r}".format(line))
+            result[parts[0]] = parts[1]
+        return result
+
+    def ports(self) -> List[str]:
+        """List active Exec message ports.
+
+        Returns a list of port name strings.
+        """
+        _info, payload = self._send_command("PORTS")
+        return payload
+
+    def volumes(self) -> List[dict]:
+        """List mounted volumes.
+
+        Returns a list of dicts with keys: name (str), used (int),
+        free (int), capacity (int), blocksize (int).
+        """
+        _info, payload = self._send_command("VOLUMES")
+        entries = []
+        for line in payload:
+            parts = line.split("\t")
+            if len(parts) != 5:
+                raise ProtocolError(
+                    "VOLUMES entry has {} fields, expected 5: {!r}".format(
+                        len(parts), line))
+            try:
+                entries.append({
+                    "name": parts[0],
+                    "used": int(parts[1]),
+                    "free": int(parts[2]),
+                    "capacity": int(parts[3]),
+                    "blocksize": int(parts[4]),
+                })
+            except ValueError:
+                raise ProtocolError(
+                    "VOLUMES entry has non-numeric field: {!r}".format(line))
+        return entries
+
+    def tasks(self) -> List[dict]:
+        """List running tasks/processes.
+
+        Returns a list of dicts with keys: name (str), type (str),
+        priority (int), state (str), stacksize (int).
+        """
+        _info, payload = self._send_command("TASKS")
+        entries = []
+        for line in payload:
+            parts = line.split("\t")
+            if len(parts) != 5:
+                raise ProtocolError(
+                    "TASKS entry has {} fields, expected 5: {!r}".format(
+                        len(parts), line))
+            try:
+                entries.append({
+                    "name": parts[0],
+                    "type": parts[1],
+                    "priority": int(parts[2]),
+                    "state": parts[3],
+                    "stacksize": int(parts[4]),
+                })
+            except ValueError:
+                raise ProtocolError(
+                    "TASKS entry has non-numeric field: {!r}".format(line))
+        return entries
+
+    # -- File operations (continued) ---------------------------------------
+
+    def setdate(self, path: str, datestamp: str) -> str:
+        """Set file/directory datestamp.
+
+        datestamp is a string in YYYY-MM-DD HH:MM:SS format.
+        Returns the applied datestamp string.
+        """
+        info, payload = self._send_command(
+            "SETDATE {} {}".format(path, datestamp))
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        return result.get("datestamp", "")

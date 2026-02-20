@@ -50,7 +50,7 @@ On successful connection, the daemon sends a banner line:
 AMIGACTL <version>\n
 ```
 
-`<version>` is a dotted version string (e.g., `0.1.0`).  The client
+`<version>` is a dotted version string (e.g., `0.3.0`).  The client
 SHOULD read and validate the banner before sending any commands.  The
 banner is not followed by a sentinel -- it is a single line, not a
 response envelope.
@@ -294,9 +294,13 @@ END\n
 ```
 
 The `rc` field in the OK line is the AmigaOS return code from the
-executed command.  Because EXEC is synchronous, the command completes
-before the response is sent.  The return code and all captured output
-are available when the response begins.
+executed command.  Because synchronous EXEC blocks until the command
+completes, the return code and all captured output are available when
+the response begins.
+
+**EXEC ASYNC** does not use DATA/END framing.  It returns immediately
+with `OK <id>\n.\n` where `<id>` is the daemon-assigned process ID.
+No output is captured for asynchronous commands.
 
 ## Pipelining
 
@@ -310,6 +314,40 @@ undefined behavior.  The daemon may interpret the second command as part
 of the first command's input (for commands that accept multi-line input
 like RENAME), or it may be buffered and processed after the first
 response -- no guarantee is made.
+
+## Phase 3 Wire Format Patterns
+
+Phase 3 adds commands for system queries, process management, and
+command execution.  The wire formats for these commands use three
+patterns already defined in this protocol:
+
+### Key=Value Payload (Text Lines, Dot-Stuffed)
+
+Used by **PROCSTAT**, **SYSINFO**, **SETDATE**: the payload consists of `key=value`
+lines in a fixed order, one per line, subject to dot-stuffing.  These
+follow the same framing as other text-payload commands (STAT, PROTECT).
+
+### Tab-Separated Payload (Text Lines, Dot-Stuffed)
+
+Used by **PROCLIST**, **ASSIGNS**, **VOLUMES**, **TASKS**: the payload
+consists of lines with tab-separated fields, subject to dot-stuffing.
+These follow the same framing as DIR.
+
+**PORTS** uses one port name per payload line (no tabs), dot-stuffed.
+
+### Simple OK/ERR (No Payload)
+
+Used by **SIGNAL**, **KILL**: the response is `OK\n.\n` on success or
+`ERR <code> <message>\n.\n` on failure.  No payload lines.  These
+follow the same framing as DELETE and MAKEDIR.
+
+### DATA/END Binary Framing
+
+**EXEC** (synchronous) uses DATA/END chunked binary framing as
+described in the EXEC Response section above.  **EXEC ASYNC** does not
+use binary framing -- it returns `OK <id>\n.\n` with no payload.
+
+See COMMANDS.md for the specific fields and semantics of each command.
 
 ## Error Codes
 
@@ -377,7 +415,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.2.0\n
+S: AMIGACTL 0.3.0\n
 
 C: PING\n
 S: OK\n
@@ -385,7 +423,26 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.2.0\n
+S: amigactld 0.3.0\n
+S: .\n
+
+C: SYSINFO\n
+S: OK\n
+S: chip_free=1843200\n
+S: fast_free=12582912\n
+S: total_free=14426112\n
+S: chip_total=2097152\n
+S: fast_total=16777216\n
+S: exec_version=40.68\n
+S: kickstart=40\n
+S: bsdsocket=4.364\n
+S: .\n
+
+C: EXEC echo hello\n
+S: OK rc=0\n
+S: DATA 6\n
+S: hello\n
+S: END\n
 S: .\n
 
 C: FOOBAR\n

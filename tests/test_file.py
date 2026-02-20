@@ -909,3 +909,157 @@ class TestProtect:
             "Expected ERR 200, got: {!r}".format(status)
         )
         assert payload == []
+
+
+# ---------------------------------------------------------------------------
+# SETDATE
+# ---------------------------------------------------------------------------
+
+class TestSetdate:
+    """Tests for the SETDATE command."""
+
+    def test_setdate_roundtrip(self, raw_connection, cleanup_paths):
+        """SETDATE on a file, then STAT to verify the datestamp changed.
+        COMMANDS.md: 'The payload is a single key=value line echoing the
+        applied datestamp.'"""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate.txt"
+
+        # Create a test file
+        status, _payload = send_write_data(sock, path, b"setdate test")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+        cleanup_paths.add(path)
+
+        # Set a known datestamp
+        target_datestamp = "2024-06-15 14:30:00"
+        send_command(sock, "SETDATE {} {}".format(path, target_datestamp))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        assert len(payload) == 1, (
+            "Expected 1 payload line, got {}".format(len(payload))
+        )
+        assert payload[0].startswith("datestamp="), (
+            "Payload must start with 'datestamp=', got: {!r}".format(
+                payload[0])
+        )
+        applied_datestamp = payload[0][len("datestamp="):]
+        assert applied_datestamp == target_datestamp, (
+            "Applied datestamp should match target.\n"
+            "Expected: {!r}\nActual: {!r}".format(
+                target_datestamp, applied_datestamp)
+        )
+
+        # Verify via STAT
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["datestamp"] == target_datestamp, (
+            "STAT datestamp should match SETDATE target.\n"
+            "Expected: {!r}\nActual: {!r}".format(
+                target_datestamp, kv["datestamp"])
+        )
+
+    def test_setdate_nonexistent(self, raw_connection):
+        """SETDATE on a nonexistent path returns ERR 200.
+        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        sock, _banner = raw_connection
+        send_command(sock, "SETDATE RAM:nonexistent_amigactl_test 2024-06-15 14:30:00")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 200"), (
+            "Expected ERR 200, got: {!r}".format(status)
+        )
+        assert payload == []
+
+    def test_setdate_invalid_format(self, raw_connection, cleanup_paths):
+        """SETDATE with an invalid datestamp format returns ERR 100.
+        COMMANDS.md: 'Invalid datestamp format -> ERR 100'."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate_fmt.txt"
+
+        # Create a test file so the path exists
+        status, _payload = send_write_data(sock, path, b"format test")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+        cleanup_paths.add(path)
+
+        # Send an invalid datestamp (month 13 is out of range)
+        send_command(sock, "SETDATE {} 2024-13-01 00:00:00".format(path))
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100"), (
+            "Expected ERR 100, got: {!r}".format(status)
+        )
+        assert payload == []
+
+    def test_setdate_malformed_format(self, raw_connection, cleanup_paths):
+        """SETDATE with a structurally invalid datestamp returns ERR 100.
+        COMMANDS.md: 'Invalid datestamp format -> ERR 100'.  Tests the
+        format parser itself (not just range validation)."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate_mal.txt"
+
+        status, _payload = send_write_data(sock, path, b"malformed test")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+        cleanup_paths.add(path)
+
+        send_command(sock, "SETDATE {} not-a-datestamp".format(path))
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100"), (
+            "Expected ERR 100, got: {!r}".format(status)
+        )
+        assert payload == []
+
+    def test_setdate_write_then_set(self, raw_connection, cleanup_paths):
+        """WRITE a file, SETDATE it, STAT to verify the datestamp matches.
+        COMMANDS.md: 'SETDATE works on both files and directories.'"""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate_ws.txt"
+
+        # Write a file
+        status, _payload = send_write_data(sock, path, b"write then set")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+        cleanup_paths.add(path)
+
+        # Set a different datestamp
+        target_datestamp = "2020-01-01 00:00:00"
+        send_command(sock, "SETDATE {} {}".format(path, target_datestamp))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        assert len(payload) == 1
+        applied = payload[0][len("datestamp="):]
+        assert applied == target_datestamp
+
+        # Verify via STAT
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["datestamp"] == target_datestamp, (
+            "STAT datestamp should match SETDATE target.\n"
+            "Expected: {!r}\nActual: {!r}".format(
+                target_datestamp, kv["datestamp"])
+        )
+
+    def test_setdate_missing_args(self, raw_connection):
+        """SETDATE with no arguments returns ERR 100.
+        COMMANDS.md: 'Missing arguments -> ERR 100 Missing arguments'."""
+        sock, _banner = raw_connection
+        send_command(sock, "SETDATE")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100"), (
+            "Expected ERR 100, got: {!r}".format(status)
+        )
+        assert payload == []

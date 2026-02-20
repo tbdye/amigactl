@@ -12,6 +12,7 @@ environment variables.
 """
 
 import os
+import re
 import socket
 
 import pytest
@@ -317,3 +318,84 @@ def _read_line(sock):
     if line.endswith("\r"):
         line = line[:-1]
     return line
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 protocol helpers (EXEC binary response)
+# ---------------------------------------------------------------------------
+
+def read_exec_response(sock):
+    """Read an EXEC binary data response: OK rc=N, DATA/END chunks, sentinel.
+
+    Returns (rc, raw_bytes).
+
+    The OK info field contains ``rc=<N>`` where N is the command's return
+    code. raw_bytes is the concatenated content from all DATA chunks.
+
+    Also handles ERR -> sentinel (returns (status_line, b"")).
+    Unlike ``read_data_response()``, this does NOT validate that the total
+    received bytes match the info field -- EXEC's info field is ``rc=N``,
+    not a byte count.
+    """
+    status_line = _read_line(sock)
+    if status_line.startswith("ERR "):
+        sentinel = _read_line(sock)
+        assert sentinel == "."
+        return status_line, b""
+
+    assert status_line.startswith("OK"), \
+        "Expected OK or ERR, got: {!r}".format(status_line)
+    info = status_line[3:].strip()
+
+    # Parse rc=N from info field
+    match = re.match(r"^rc=(-?\d+)$", info)
+    assert match, \
+        "Expected rc=N in OK info field, got: {!r}".format(info)
+    rc = int(match.group(1))
+
+    data = bytearray()
+    while True:
+        line = _read_line(sock)
+        if line == "END":
+            break
+        assert line.startswith("DATA "), \
+            "Expected DATA or END, got: {!r}".format(line)
+        chunk_len = int(line[5:])
+        chunk = _recv_exact(sock, chunk_len)
+        data.extend(chunk)
+
+    # Read sentinel
+    sentinel = _read_line(sock)
+    assert sentinel == "."
+
+    return rc, bytes(data)
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped SHUTDOWN fixture (Phase 3)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def shutdown_daemon(request):
+    """Send SHUTDOWN CONFIRM at end of test session for clean teardown.
+
+    Only effective when ALLOW_REMOTE_SHUTDOWN YES is in daemon config.
+    Failure is silently ignored (daemon may not support remote shutdown,
+    or may have already exited).
+    """
+    yield
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+        _read_line(sock)  # banner
+        send_command(sock, "SHUTDOWN CONFIRM")
+        try:
+            read_response(sock)
+        except Exception:
+            pass
+        sock.close()
+    except Exception:
+        pass

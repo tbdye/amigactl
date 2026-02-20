@@ -8,9 +8,11 @@
 #define AMIGACTLD_DAEMON_H
 
 #include <exec/types.h>
+#include <exec/tasks.h>
+#include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.2.0"
+#define AMIGACTLD_VERSION "0.3.0"
 
 /* Limits */
 #define MAX_CLIENTS      8
@@ -19,6 +21,11 @@
 #define RECV_BUF_SIZE    4097  /* MAX_CMD_LEN + LF terminator */
 #define DEFAULT_PORT     6800
 #define CONFIG_LINE_MAX  256
+
+/* Process table */
+#define MAX_TRACKED_PROCS 16
+#define PROC_RUNNING 0
+#define PROC_EXITED  1
 
 /* Error codes (wire protocol) */
 #define ERR_SYNTAX       100
@@ -51,12 +58,25 @@ struct daemon_config {
     int acl_count;
 };
 
+/* Tracked async process */
+struct tracked_proc {
+    int id;                      /* daemon-assigned, monotonic, starts at 1 */
+    struct Task *task;           /* pointer to child process */
+    char command[256];           /* command string copy */
+    int status;                  /* PROC_RUNNING or PROC_EXITED */
+    int rc;                      /* return code (valid when EXITED) */
+    int completed;               /* set by wrapper under Forbid */
+    BPTR cd_lock;                /* optional CD lock for async */
+};
+
 /* Top-level daemon state */
 struct daemon_state {
     LONG listener_fd;
     struct client clients[MAX_CLIENTS];
     struct daemon_config config;
     int running;
+    struct tracked_proc procs[MAX_TRACKED_PROCS];
+    int next_proc_id;               /* monotonically incrementing, starts at 1 */
 };
 
 #endif /* AMIGACTLD_DAEMON_H */

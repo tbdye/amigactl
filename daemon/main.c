@@ -2,14 +2,15 @@
  * amigactld -- Amiga remote access daemon
  *
  * Entry point, startup (CLI + Workbench dual-mode), WaitSelect event
- * loop, command dispatch for Phase 1 lifecycle commands (VERSION, PING,
- * QUIT, SHUTDOWN).
+ * loop, command dispatch for Phase 1-3 commands.
  */
 
 #include "daemon.h"
 #include "config.h"
 #include "net.h"
 #include "file.h"
+#include "exec.h"
+#include "sysinfo.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -85,6 +86,7 @@ int main(int argc, char **argv)
 
     daemon.listener_fd = -1;
     daemon.running = 1;
+    daemon.next_proc_id = 1;
 
     /* Initialize all client slots */
     for (i = 0; i < MAX_CLIENTS; i++) {
@@ -183,6 +185,17 @@ int main(int argc, char **argv)
            AMIGACTLD_VERSION, daemon.config.port);
     fflush(stdout);
 
+    /* ---- Phase 3 initialization ---- */
+
+    g_daemon_state = &daemon;
+
+    if (exec_init() < 0) {
+        printf("Warning: EXEC ASYNC unavailable (no signal bit)\n");
+        fflush(stdout);
+    }
+
+    exec_cleanup_temp_files();
+
     /* ---- Event loop ---- */
 
     while (daemon.running) {
@@ -202,6 +215,8 @@ int main(int argc, char **argv)
         tv.tv_secs = 1;
         tv.tv_micro = 0;
         sigmask = SIGBREAKF_CTRL_C;
+        if (g_proc_sigbit >= 0)
+            sigmask |= (1L << g_proc_sigbit);
 
         rc = WaitSelect(nfds, &rfds, NULL, NULL, &tv, &sigmask);
 
@@ -211,6 +226,12 @@ int main(int argc, char **argv)
             fflush(stdout);
             daemon.running = 0;
             break;
+        }
+
+        /* Check for async process completion */
+        if (g_proc_sigbit >= 0 &&
+            (sigmask & (1L << g_proc_sigbit))) {
+            exec_scan_completed(&daemon);
         }
 
         if (rc < 0) {
@@ -234,6 +255,9 @@ int main(int argc, char **argv)
     /* ---- Cleanup ---- */
 
 cleanup:
+    /* Safely terminate tracked async processes */
+    exec_shutdown_procs(&daemon);
+
     /* Close all client sockets */
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (daemon.clients[i].fd >= 0) {
@@ -250,6 +274,9 @@ cleanup:
 
     /* Close bsdsocket.library */
     net_cleanup();
+
+    /* Free exec module resources (signal bit) */
+    exec_cleanup();
 
     if (rdargs)
         FreeArgs(rdargs);
@@ -445,7 +472,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
         send_sentinel(c->fd);
         d->running = 0;
 
-    /* --- Phase 2 handlers (use rc for disconnect signaling) --- */
+    /* --- Phase 2 file handlers --- */
 
     } else if (stricmp(verb, "DIR") == 0) {
         rc = cmd_dir(c, rest);
@@ -470,6 +497,41 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
     } else if (stricmp(verb, "PROTECT") == 0) {
         rc = cmd_protect(c, rest);
+
+    /* --- Phase 3 handlers --- */
+
+    } else if (stricmp(verb, "EXEC") == 0) {
+        rc = cmd_exec(c, rest);
+
+    } else if (stricmp(verb, "PROCLIST") == 0) {
+        rc = cmd_proclist(c, rest);
+
+    } else if (stricmp(verb, "PROCSTAT") == 0) {
+        rc = cmd_procstat(c, rest);
+
+    } else if (stricmp(verb, "SIGNAL") == 0) {
+        rc = cmd_signal_proc(c, rest);
+
+    } else if (stricmp(verb, "KILL") == 0) {
+        rc = cmd_kill(c, rest);
+
+    } else if (stricmp(verb, "SETDATE") == 0) {
+        rc = cmd_setdate(c, rest);
+
+    } else if (stricmp(verb, "SYSINFO") == 0) {
+        rc = cmd_sysinfo(c, rest);
+
+    } else if (stricmp(verb, "ASSIGNS") == 0) {
+        rc = cmd_assigns(c, rest);
+
+    } else if (stricmp(verb, "PORTS") == 0) {
+        rc = cmd_ports(c, rest);
+
+    } else if (stricmp(verb, "VOLUMES") == 0) {
+        rc = cmd_volumes(c, rest);
+
+    } else if (stricmp(verb, "TASKS") == 0) {
+        rc = cmd_tasks(c, rest);
 
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");
