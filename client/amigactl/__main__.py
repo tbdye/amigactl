@@ -404,6 +404,8 @@ def main() -> None:
                                     help="Stream file appends (Ctrl-C to stop)")
     p_tail.add_argument("path", help="Amiga file path to tail")
 
+    subparsers.add_parser("shell", help="Interactive shell mode")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -436,6 +438,16 @@ def main() -> None:
         "arexx": cmd_arexx,
         "tail": cmd_tail,
     }
+
+    # Shell subcommand manages its own connection lifecycle
+    if args.command == "shell":
+        from .shell import AmigaShell
+        sh = AmigaShell(args.host, args.port)
+        try:
+            sh.cmdloop()
+        except KeyboardInterrupt:
+            print()
+        return
 
     try:
         with AmigaConnection(args.host, args.port) as conn:

@@ -35,14 +35,16 @@ Host                              Amiga
 
 ## Current Status
 
-**Phase 4 -- ARexx and File Streaming.** The daemon accepts TCP connections,
+**Phase 5 -- Polish and Interactive Shell.** The daemon accepts TCP connections,
 checks IP ACLs, sends a banner, and handles lifecycle commands (VERSION, PING,
 QUIT, SHUTDOWN, REBOOT, UPTIME), file commands (DIR, STAT, READ, WRITE, DELETE,
 RENAME, MAKEDIR, PROTECT, SETDATE), synchronous and asynchronous command
 execution (EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL,
 KILL), system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS),
 non-blocking ARexx dispatch (AREXX), and live file streaming (TAIL, STOP). The
-Python client library and CLI support all commands.
+Python client includes an interactive shell with persistent connections, readline
+support, tab completion for Amiga paths, an `edit` command for remote file
+editing, and colorized output.
 
 ## Requirements
 
@@ -137,8 +139,9 @@ Types (`PORT`, `CONFIG`) in the icon's Info window.
 pip install -e client/
 ```
 
-This installs the `amigactl` library and CLI tool. No external dependencies
-are required (stdlib only).
+This installs the `amigactl` library and CLI tool in editable (development)
+mode. For a non-editable install, use `pip install client/` instead. No
+external dependencies are required (stdlib only).
 
 ### Library usage
 
@@ -219,10 +222,61 @@ amigactl --host 192.168.6.200 ports
 amigactl --host 192.168.6.200 tasks
 amigactl --host 192.168.6.200 arexx REXX -- return 1+2
 amigactl --host 192.168.6.200 tail RAM:logfile.txt               # Ctrl-C to stop
+amigactl --host 192.168.6.200 shell                              # interactive shell
 ```
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
 `192.168.6.200` if unset. `--port` defaults to `AMIGACTL_PORT` or `6800`.
+
+## Interactive Shell
+
+The `shell` subcommand starts an interactive session with a persistent
+connection, readline support (history, line editing), and tab completion
+for Amiga paths:
+
+    $ amigactl --host 192.168.6.200 shell
+    Connected to 192.168.6.200 (amigactld 0.4.0)
+    Type "help" for a list of commands, "exit" to disconnect.
+    amiga@192.168.6.200> cd SYS:S
+    amiga@192.168.6.200:SYS:S> ls
+      DIR  Config                      2026-01-15 08:00:00
+           Startup-Sequence      1.5K  2026-01-15 08:00:00
+           User-Startup           342  2026-02-19 10:30:00
+    amiga@192.168.6.200:SYS:S> cat Startup-Sequence
+    ; Startup-Sequence
+    ...
+    amiga@192.168.6.200:SYS:S> edit User-Startup
+    (opens $EDITOR, uploads changes on save)
+    amiga@192.168.6.200:SYS:S> cd /
+    amiga@192.168.6.200:SYS:> exec list S
+    ...
+    amiga@192.168.6.200:SYS:> exit
+    Disconnected.
+
+The shell supports `cd` and `pwd` for navigation -- relative paths are
+resolved client-side before sending to the daemon. Tab completion works
+with both absolute and relative Amiga paths.
+
+All CLI commands are available in the shell, plus shell-specific commands:
+ls, cat, stat, get, put, rm, mv, mkdir, chmod, touch, exec, run, ps,
+status, signal, kill, sysinfo, assigns, ports, volumes, tasks, uptime,
+arexx, tail, edit, version, ping, shutdown, reboot, cd, pwd, reconnect.
+
+Colors are auto-detected (disable with `NO_COLOR=1` or
+`AMIGACTL_COLOR=never`).
+
+## Amiga Installation
+
+Download the latest `.lha` archive from the Releases page, or build it:
+
+    sh dist/build_lha.sh
+
+Extract to any location on the Amiga. Copy `amigactld.conf.example` to
+`S:amigactld.conf` and edit the ALLOW lines for your network.
+
+To auto-start, add to `S:User-Startup`:
+
+    RUN >NIL: <path>/amigactld
 
 ## Protocol Overview
 
@@ -277,6 +331,8 @@ amigactl/
 |   |   +-- __init__.py              # AmigaConnection class
 |   |   +-- __main__.py              # CLI tool
 |   |   +-- protocol.py              # Wire protocol helpers
+|   |   +-- shell.py                 # Interactive shell
+|   |   +-- colors.py                # ANSI color support
 |   +-- pyproject.toml
 +-- tests/
 |   +-- conftest.py                  # Fixtures, CLI options
@@ -286,8 +342,11 @@ amigactl/
 |   +-- test_sysinfo.py              # System info tests
 |   +-- test_arexx.py                # ARexx dispatch tests
 |   +-- test_tail.py                 # File streaming tests
++-- tools/
+|   +-- mkicon.py                    # Workbench icon generator
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
+|   +-- build_lha.sh                 # LHA packaging script
 +-- docs/
 |   +-- PROTOCOL.md                  # Wire protocol spec
 |   +-- COMMANDS.md                  # Per-command spec
@@ -319,11 +378,12 @@ Non-blocking ARexx command dispatch to named ports, with timeout handling and
 reply matching via WaitSelect signal integration (AREXX). Live file streaming
 with truncation and deletion detection (TAIL, STOP).
 
-### Phase 5: Polish and Interactive Shell (next)
+### Phase 5: Polish and Interactive Shell (complete)
 
 Interactive shell mode with persistent connection, readline support, and
 human-friendly command names. Remote tab completion for Amiga paths,
-UTF-8/ISO-8859-1 conversion, LHA packaging for Amiga distribution.
+colorized output, `edit` command for remote file editing, UTF-8/ISO-8859-1
+conversion, LHA packaging for Amiga distribution.
 
 ## License
 

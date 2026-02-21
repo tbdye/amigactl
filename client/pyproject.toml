@@ -4,10 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amigactl"
-version = "0.4.0"
+version = "0.5.0"
 description = "Python client for amigactld, an Amiga remote access daemon"
 license = "GPL-3.0-only"
 requires-python = ">=3.8"
+authors = [
+    {name = "Thomas Dye", email = "thomas@tfenet.com"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.urls]
+Repository = "https://github.com/tbdye/amigactl"
 
 [project.scripts]
 amigactl = "amigactl.__main__:main"
