@@ -56,8 +56,9 @@ static int send_dos_error(LONG fd, const char *msg_prefix)
 {
     LONG ioerr;
     int code;
-    char fault_buf[128];
-    char msg_buf[256];
+    /* Static: single-threaded, non-recursive -- safe to reuse across calls */
+    static char fault_buf[128];
+    static char msg_buf[256];
 
     ioerr = IoErr();
     code = map_dos_error(ioerr);
@@ -206,20 +207,34 @@ static int format_dir_entry(const struct FileInfoBlock *fib,
     return len;
 }
 
-/* Recursive directory listing helper.
- * Sends formatted entries for all contents of path, prepending prefix
- * to each name.  Recurses into subdirectories.
- * Called after OK is already sent -- must never send ERR or sentinel.
- * Returns 0 on success, -1 on send failure. */
-static int dir_recurse(LONG fd, const char *path, const char *prefix)
-{
-    BPTR lock;
-    struct FileInfoBlock *fib;
+/* Maximum recursion depth for dir_recurse() to prevent runaway descent */
+#define DIR_MAX_DEPTH 32
+
+/* Heap-allocated work buffers for dir_recurse().
+ * Stack allocation would add 1536 bytes per recursion level, which
+ * overflows small stacks (e.g., 4096-byte RUN default). */
+struct dir_work {
     char entry_buf[512];
     char newpath[512];
     char newprefix[512];
+};
+
+/* Recursive directory listing helper.
+ * Sends formatted entries for all contents of path, prepending prefix
+ * to each name.  Recurses into subdirectories up to DIR_MAX_DEPTH levels.
+ * Called after OK is already sent -- must never send ERR or sentinel.
+ * Returns 0 on success, -1 on send failure. */
+static int dir_recurse(LONG fd, const char *path, const char *prefix,
+                       int depth)
+{
+    BPTR lock;
+    struct FileInfoBlock *fib;
+    struct dir_work *w;
     int rc = 0;
     int n;
+
+    if (depth >= DIR_MAX_DEPTH)
+        return 0; /* silently skip -- too deep */
 
     lock = Lock((STRPTR)path, ACCESS_READ);
     if (!lock)
@@ -231,31 +246,41 @@ static int dir_recurse(LONG fd, const char *path, const char *prefix)
         return 0; /* silently skip -- OK already sent */
     }
 
+    /* Heap-allocate work buffers: recursive, so static is unsafe */
+    w = (struct dir_work *)AllocMem(sizeof(struct dir_work), MEMF_ANY);
+    if (!w) {
+        FreeDosObject(DOS_FIB, fib);
+        UnLock(lock);
+        return 0; /* silently skip -- OK already sent */
+    }
+
     if (!Examine(lock, fib)) {
+        FreeMem(w, sizeof(struct dir_work));
         FreeDosObject(DOS_FIB, fib);
         UnLock(lock);
         return 0; /* silently skip -- OK already sent */
     }
 
     while (ExNext(lock, fib)) {
-        if (format_dir_entry(fib, prefix, entry_buf, sizeof(entry_buf)) < 0)
+        if (format_dir_entry(fib, prefix, w->entry_buf,
+                             sizeof(w->entry_buf)) < 0)
             continue; /* entry too long, skip */
-        if (send_payload_line(fd, entry_buf) < 0) {
+        if (send_payload_line(fd, w->entry_buf) < 0) {
             rc = -1;
             break;
         }
 
         if (fib->fib_DirEntryType > 0) {
             /* Subdirectory -- recurse */
-            n = snprintf(newprefix, sizeof(newprefix), "%s%s/",
+            n = snprintf(w->newprefix, sizeof(w->newprefix), "%s%s/",
                          prefix, fib->fib_FileName);
-            if (n < 0 || n >= (int)sizeof(newprefix))
+            if (n < 0 || n >= (int)sizeof(w->newprefix))
                 continue; /* path too long, skip entry */
-            n = snprintf(newpath, sizeof(newpath), "%s/%s",
+            n = snprintf(w->newpath, sizeof(w->newpath), "%s/%s",
                          path, fib->fib_FileName);
-            if (n < 0 || n >= (int)sizeof(newpath))
+            if (n < 0 || n >= (int)sizeof(w->newpath))
                 continue; /* path too long, skip entry */
-            rc = dir_recurse(fd, newpath, newprefix);
+            rc = dir_recurse(fd, w->newpath, w->newprefix, depth + 1);
             if (rc < 0)
                 break;
         }
@@ -269,6 +294,7 @@ static int dir_recurse(LONG fd, const char *path, const char *prefix)
         }
     }
 
+    FreeMem(w, sizeof(struct dir_work));
     FreeDosObject(DOS_FIB, fib);
     UnLock(lock);
     return rc;
@@ -280,8 +306,9 @@ int cmd_dir(struct client *c, const char *args)
 {
     BPTR lock;
     struct FileInfoBlock *fib;
-    char path[MAX_CMD_LEN + 1];
-    char entry_buf[512];
+    /* Static: single-threaded, non-recursive handler -- safe to reuse */
+    static char path[MAX_CMD_LEN + 1];
+    static char entry_buf[512];
     int recursive = 0;
     const char *last_space;
     int pathlen;
@@ -370,8 +397,9 @@ int cmd_dir(struct client *c, const char *args)
         }
 
         if (recursive && fib->fib_DirEntryType > 0) {
-            char subpath[512];
-            char subprefix[512];
+            /* Static: single-threaded, non-recursive context */
+            static char subpath[512];
+            static char subprefix[512];
             int n;
 
             n = snprintf(subprefix, sizeof(subprefix), "%s/",
@@ -382,7 +410,7 @@ int cmd_dir(struct client *c, const char *args)
                          path, fib->fib_FileName);
             if (n < 0 || n >= (int)sizeof(subpath))
                 continue; /* path too long, skip entry */
-            if (dir_recurse(c->fd, subpath, subprefix) < 0) {
+            if (dir_recurse(c->fd, subpath, subprefix, 0) < 0) {
                 FreeDosObject(DOS_FIB, fib);
                 UnLock(lock);
                 return -1;
@@ -394,9 +422,10 @@ int cmd_dir(struct client *c, const char *args)
     {
         LONG err = IoErr();
         if (err != ERROR_NO_MORE_ENTRIES) {
-            /* Send the error as a payload line -- OK already sent */
-            char fault_buf[128];
-            char msg_buf[256];
+            /* Send the error as a payload line -- OK already sent.
+             * Static: single-threaded, non-recursive handler */
+            static char fault_buf[128];
+            static char msg_buf[256];
             Fault(err, (STRPTR)"", (STRPTR)fault_buf, sizeof(fault_buf));
             sprintf(msg_buf, "ExNext failed%s", fault_buf);
             send_payload_line(c->fd, msg_buf);
@@ -415,7 +444,8 @@ int cmd_stat(struct client *c, const char *args)
     struct FileInfoBlock *fib;
     const char *type;
     char datebuf[20];
-    char line[256];
+    /* Static: single-threaded, non-recursive handler */
+    static char line[256];
 
     if (args[0] == '\0') {
         send_error(c->fd, ERR_SYNTAX, "Missing path argument");
@@ -558,8 +588,9 @@ int cmd_read(struct client *c, const char *args)
 
 int cmd_write(struct client *c, const char *args)
 {
-    char path[MAX_CMD_LEN + 1];
-    char temp_path[512];
+    /* Static: single-threaded, non-recursive handler -- safe to reuse */
+    static char path[MAX_CMD_LEN + 1];
+    static char temp_path[512];
     const char *size_str;
     const char *last_space;
     unsigned long declared_size;
@@ -813,7 +844,8 @@ int cmd_makedir(struct client *c, const char *args)
 
 int cmd_protect(struct client *c, const char *args)
 {
-    char path[MAX_CMD_LEN + 1];
+    /* Static: single-threaded, non-recursive handler -- safe to reuse */
+    static char path[MAX_CMD_LEN + 1];
     const char *last_space;
     const char *token;
     int set_mode = 0;
@@ -968,7 +1000,8 @@ int cmd_protect(struct client *c, const char *args)
 
 int cmd_setdate(struct client *c, const char *args)
 {
-    char path[MAX_CMD_LEN + 1];
+    /* Static: single-threaded, non-recursive handler -- safe to reuse */
+    static char path[MAX_CMD_LEN + 1];
     const char *ds_str;
     struct DateStamp ds;
     char datebuf[20];
