@@ -247,6 +247,38 @@ def cmd_touch(conn, args):
     print("datestamp={}".format(result))
 
 
+def cmd_arexx(conn, args):
+    """Handle the 'arexx' subcommand."""
+    parts = args.command
+    # argparse.REMAINDER may include a leading '--'; strip it
+    if parts and parts[0] == "--":
+        parts = parts[1:]
+    if not parts:
+        print("Error: no command specified", file=sys.stderr)
+        sys.exit(1)
+    command = " ".join(parts)
+    rc, result = conn.arexx(args.port, command)
+    if result:
+        print(result)
+    if rc != 0:
+        sys.exit(min(rc, 255))
+
+
+def cmd_tail(conn, args):
+    """Handle the 'tail' subcommand."""
+    def write_chunk(chunk):
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+
+    try:
+        conn.tail(args.path, write_chunk)
+    except KeyboardInterrupt:
+        try:
+            conn.stop_tail()
+        except Exception:
+            pass
+
+
 def main() -> None:
     """Parse arguments and dispatch to the appropriate subcommand."""
     default_host = os.environ.get("AMIGACTL_HOST", "192.168.6.200")
@@ -362,6 +394,16 @@ def main() -> None:
     p_touch.add_argument("date", help="Date (YYYY-MM-DD)")
     p_touch.add_argument("time", help="Time (HH:MM:SS)")
 
+    p_arexx = subparsers.add_parser("arexx",
+                                     help="Send ARexx command to named port")
+    p_arexx.add_argument("port", help="ARexx port name")
+    p_arexx.add_argument("command", nargs=argparse.REMAINDER,
+                          help="ARexx command string (use -- before flags)")
+
+    p_tail = subparsers.add_parser("tail",
+                                    help="Stream file appends (Ctrl-C to stop)")
+    p_tail.add_argument("path", help="Amiga file path to tail")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -391,6 +433,8 @@ def main() -> None:
         "tasks": cmd_tasks,
         "uptime": cmd_uptime,
         "touch": cmd_touch,
+        "arexx": cmd_arexx,
+        "tail": cmd_tail,
     }
 
     try:

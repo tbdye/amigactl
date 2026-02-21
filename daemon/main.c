@@ -2,7 +2,7 @@
  * amigactld -- Amiga remote access daemon
  *
  * Entry point, startup (CLI + Workbench dual-mode), WaitSelect event
- * loop, command dispatch for Phase 1-3 commands.
+ * loop, command dispatch for Phase 1-4 commands.
  */
 
 #include "daemon.h"
@@ -11,6 +11,8 @@
 #include "file.h"
 #include "exec.h"
 #include "sysinfo.h"
+#include "arexx.h"
+#include "tail.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -197,6 +199,21 @@ int main(int argc, char **argv)
 
     exec_cleanup_temp_files();
 
+    /* ---- Phase 4 initialization ---- */
+
+    arexx_init();
+    if (g_arexx_sigbit < 0) {
+        printf("Warning: AREXX unavailable (rexxsyslib.library not found)\n");
+        fflush(stdout);
+    }
+
+    if (tail_init() < 0) {
+        printf("Failed to allocate TAIL resources\n");
+        fflush(stdout);
+        exit_code = RETURN_FAIL;
+        goto cleanup;
+    }
+
     /* ---- Event loop ---- */
 
     while (daemon.running) {
@@ -205,7 +222,8 @@ int main(int argc, char **argv)
         nfds = daemon.listener_fd;
 
         for (i = 0; i < MAX_CLIENTS; i++) {
-            if (daemon.clients[i].fd >= 0) {
+            if (daemon.clients[i].fd >= 0 &&
+                !daemon.clients[i].arexx_pending) {
                 FD_SET(daemon.clients[i].fd, &rfds);
                 if (daemon.clients[i].fd > nfds)
                     nfds = daemon.clients[i].fd;
@@ -218,6 +236,8 @@ int main(int argc, char **argv)
         sigmask = SIGBREAKF_CTRL_C;
         if (g_proc_sigbit >= 0)
             sigmask |= (1L << g_proc_sigbit);
+        if (g_arexx_sigbit >= 0)
+            sigmask |= (1L << g_arexx_sigbit);
 
         rc = WaitSelect(nfds, &rfds, NULL, NULL, &tv, &sigmask);
 
@@ -235,6 +255,12 @@ int main(int argc, char **argv)
             exec_scan_completed(&daemon);
         }
 
+        /* Check for ARexx reply */
+        if (g_arexx_sigbit >= 0 &&
+            (sigmask & (1L << g_arexx_sigbit))) {
+            arexx_handle_replies(&daemon);
+        }
+
         if (rc < 0) {
             /* WaitSelect error -- could be spurious, continue */
             continue;
@@ -244,18 +270,43 @@ int main(int argc, char **argv)
         if (FD_ISSET(daemon.listener_fd, &rfds))
             handle_accept(&daemon);
 
-        /* Check each client for incoming data */
+        /* Process each client based on its current mode */
         for (i = 0; i < MAX_CLIENTS; i++) {
-            if (daemon.clients[i].fd >= 0 &&
-                FD_ISSET(daemon.clients[i].fd, &rfds)) {
-                handle_client(&daemon, i);
+            if (daemon.clients[i].fd < 0)
+                continue;
+
+            if (daemon.clients[i].tail.active) {
+                /* TAIL mode: check for STOP, poll file */
+                if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                    if (tail_handle_input(&daemon, i) < 0) {
+                        disconnect_client(&daemon, i);
+                        continue;
+                    }
+                }
+                if (daemon.clients[i].tail.active)
+                    if (tail_poll_file(&daemon, i) < 0) {
+                        disconnect_client(&daemon, i);
+                        continue;
+                    }
+            } else if (daemon.clients[i].arexx_pending) {
+                /* Waiting for ARexx reply -- skip command processing */
+            } else {
+                /* Normal command processing */
+                if (FD_ISSET(daemon.clients[i].fd, &rfds))
+                    handle_client(&daemon, i);
             }
         }
+
+        /* ARexx timeout housekeeping */
+        arexx_check_timeouts(&daemon);
     }
 
     /* ---- Cleanup ---- */
 
 cleanup:
+    /* Drain outstanding ARexx replies before closing connections */
+    arexx_shutdown_wait(&daemon);
+
     /* Safely terminate tracked async processes */
     exec_shutdown_procs(&daemon);
 
@@ -276,7 +327,9 @@ cleanup:
     /* Close bsdsocket.library */
     net_cleanup();
 
-    /* Free exec module resources (signal bit) */
+    /* Free module resources (reverse order of init) */
+    tail_cleanup();
+    arexx_cleanup();
     exec_cleanup();
 
     if (rdargs)
@@ -330,6 +383,8 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].addr = peer_addr;
     d->clients[slot].recv_len = 0;
     d->clients[slot].discarding = 0;
+    d->clients[slot].arexx_pending = 0;
+    d->clients[slot].tail.active = 0;
 
     send_banner(fd);
 }
@@ -587,6 +642,14 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
             send_sentinel(c->fd);
         }
 
+    /* --- Phase 4 handlers --- */
+
+    } else if (stricmp(verb, "AREXX") == 0) {
+        rc = cmd_arexx(d, idx, rest);
+
+    } else if (stricmp(verb, "TAIL") == 0) {
+        rc = cmd_tail(c, rest);
+
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");
         send_sentinel(c->fd);
@@ -602,6 +665,11 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
 static void disconnect_client(struct daemon_state *d, int idx)
 {
+    /* Clean up Phase 4 state before closing the connection */
+    d->clients[idx].tail.active = 0;
+    arexx_orphan_client(d, idx);
+    d->clients[idx].arexx_pending = 0;
+
     net_close(d->clients[idx].fd);
     d->clients[idx].fd = -1;
     d->clients[idx].recv_len = 0;

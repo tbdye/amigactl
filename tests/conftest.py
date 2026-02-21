@@ -14,8 +14,19 @@ environment variables.
 import os
 import re
 import socket
+import sys
 
 import pytest
+
+# Add the client library to the path so tests can import amigactl
+_client_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "client",
+)
+if _client_dir not in sys.path:
+    sys.path.insert(0, _client_dir)
+
+from amigactl import AmigaConnection
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +380,44 @@ def read_exec_response(sock):
     assert sentinel == "."
 
     return rc, bytes(data)
+
+
+# ---------------------------------------------------------------------------
+# High-level connection fixture (Phase 4)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def conn(amiga_host, amiga_port):
+    """Provide an AmigaConnection instance for tests.
+
+    The connection is opened before the test and closed afterward.
+    Tests that need the high-level client API (e.g. conn.arexx(),
+    conn.write()) use this fixture instead of raw_connection.
+    """
+    connection = AmigaConnection(amiga_host, amiga_port)
+    connection.connect()
+    yield connection
+    connection.close()
+
+
+# ---------------------------------------------------------------------------
+# Port-checking helpers (Phase 4)
+# ---------------------------------------------------------------------------
+
+def has_port(conn, port_name):
+    """Check if a named Exec message port exists on the Amiga.
+
+    Uses the PORTS command to query the live system.
+    """
+    ports = conn.ports()
+    return port_name in ports
+
+
+@pytest.fixture
+def rexx_available(conn):
+    """Skip test if the ARexx REXX port is not available."""
+    if not has_port(conn, "REXX"):
+        pytest.skip("ARexx REXX port not available")
 
 
 # ---------------------------------------------------------------------------

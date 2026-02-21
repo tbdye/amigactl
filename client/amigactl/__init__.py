@@ -12,7 +12,7 @@ Usage::
 """
 
 import socket
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 
 from .protocol import (
     BinaryTransferError, ENCODING, ProtocolError, ServerError,
@@ -729,3 +729,153 @@ class AmigaConnection:
             key, _, value = line.partition("=")
             result[key] = value
         return result.get("datestamp", "")
+
+    # -- ARexx and file streaming ------------------------------------------
+
+    def arexx(self, port: str, command: str,
+              timeout: int = 35) -> Tuple[int, str]:
+        """Send an ARexx command to a named port.
+
+        Returns (rc, result_string) where rc is the ARexx return code
+        (0=success) and result_string is the RESULT string decoded from
+        ISO-8859-1 (empty if the target returned no result).
+
+        The daemon has a 30-second timeout for ARexx replies.  The
+        default socket timeout of 35 seconds gives the daemon time to
+        return ERR 400 on timeout before the client gives up.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "AREXX {} {}".format(port, command)
+
+        old_timeout = self._sock.gettimeout()
+        self._sock.settimeout(timeout)
+        try:
+            send_command(self._sock, cmd)
+            try:
+                rc, data = read_exec_response(self._sock)
+            except ServerError as e:
+                _raise_for_error(e.err_info)
+                raise  # unreachable
+            except BinaryTransferError as e:
+                _raise_for_error(e.err_info)
+                raise  # unreachable
+        finally:
+            self._sock.settimeout(old_timeout)
+
+        result = data.decode(ENCODING)
+        return (rc, result)
+
+    def tail(self, path: str,
+             callback: Callable[[bytes], None]) -> None:
+        """Stream file appends to callback.
+
+        Sends TAIL <path>, then blocks reading DATA chunks as the file
+        grows on the Amiga.  Each chunk is passed to callback as bytes.
+        Returns when the server sends END (after a STOP) or raises on
+        ERR.
+
+        Does NOT catch KeyboardInterrupt -- the caller should catch it
+        and call stop_tail() to terminate the stream cleanly.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        send_command(self._sock, "TAIL {}".format(path))
+
+        # Read OK <current_size> or ERR
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            # Read sentinel and raise
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        # OK line is "OK <current_size>" -- we don't need the size
+        # but it's available in status_line[3:].strip() if needed.
+
+        old_timeout = self._sock.gettimeout()
+        try:
+            # Block indefinitely waiting for DATA chunks
+            self._sock.settimeout(None)
+
+            while True:
+                line = read_line(self._sock)
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    chunk = recv_exact(self._sock, chunk_len)
+                    callback(chunk)
+                elif line == "END":
+                    # Stream complete -- read sentinel
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    # Error during stream (e.g. file deleted)
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel after ERR, got: {!r}"
+                            .format(sentinel))
+                    _raise_for_error(line[4:])
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TAIL: {!r}".format(line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def stop_tail(self) -> None:
+        """Send STOP during an active TAIL stream and drain the response.
+
+        Sends STOP to the server, then reads and discards any remaining
+        DATA chunks until END + sentinel.  After this call, the
+        connection is back in normal command mode.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        send_command(self._sock, "STOP")
+
+        # Drain remaining DATA chunks until END + sentinel
+        old_timeout = self._sock.gettimeout()
+        self._sock.settimeout(10)  # 10s timeout for drain
+        try:
+            while True:
+                line = read_line(self._sock)
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    recv_exact(self._sock, chunk_len)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel after ERR, got: {!r}"
+                            .format(sentinel))
+                    # Stream ended with error -- still drained, return
+                    return
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during STOP drain: {!r}".format(
+                            line))
+        finally:
+            self._sock.settimeout(old_timeout)

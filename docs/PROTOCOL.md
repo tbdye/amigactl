@@ -50,7 +50,7 @@ On successful connection, the daemon sends a banner line:
 AMIGACTL <version>\n
 ```
 
-`<version>` is a dotted version string (e.g., `0.3.0`).  The client
+`<version>` is a dotted version string (e.g., `0.4.0`).  The client
 SHOULD read and validate the banner before sending any commands.  The
 banner is not followed by a sentinel -- it is a single line, not a
 response envelope.
@@ -181,6 +181,13 @@ At that point, the response is complete.
 The sentinel is always the last line of a response.  Nothing follows it
 until the client sends the next command.
 
+**Exception: Streaming responses.**  The TAIL command produces an ongoing
+streaming response where DATA chunks may arrive at any time after the OK
+status line, for an indefinite duration.  The sentinel is sent only when
+the stream terminates (via client STOP or server error).  During a TAIL
+stream, the client MAY send `STOP` to request termination.  See the
+Phase 4 Wire Format Patterns section for details.
+
 ## Dot-Stuffing
 
 Payload lines may contain arbitrary text, including lines that begin with
@@ -205,8 +212,8 @@ status line (`OK ...` or `ERR ...`) and the banner are never dot-stuffed.
 
 ## Binary Data Framing
 
-Some commands (READ, WRITE, EXEC) transfer binary or large data that
-cannot be reliably represented as dot-stuffed text lines.  These commands
+Some commands (READ, WRITE, EXEC, AREXX, TAIL) transfer binary or
+large data that cannot be reliably represented as dot-stuffed text lines.  These commands
 use **DATA/END chunked framing** within the response envelope.
 
 ### READ Response (Server to Client)
@@ -302,6 +309,10 @@ the response begins.
 with `OK <id>\n.\n` where `<id>` is the daemon-assigned process ID.
 No output is captured for asynchronous commands.
 
+AREXX uses the same response framing as EXEC.  TAIL uses ongoing
+DATA/END streaming.  See Phase 4 Wire Format Patterns below for
+details.
+
 ## Pipelining
 
 **Pipelining is not supported.**  The client MUST wait for the complete
@@ -314,6 +325,12 @@ undefined behavior.  The daemon may interpret the second command as part
 of the first command's input (for commands that accept multi-line input
 like RENAME), or it may be buffered and processed after the first
 response -- no guarantee is made.
+
+**Exception: TAIL streaming.**  During an active TAIL stream, the client
+sends `STOP\n` to terminate the stream, even though the response sentinel
+has not yet been received.  This is the only case where the client sends
+data before a response is complete.  See the TAIL command specification
+in COMMANDS.md for details.
 
 ## Phase 3 Wire Format Patterns
 
@@ -348,6 +365,26 @@ described in the EXEC Response section above.  **EXEC ASYNC** does not
 use binary framing -- it returns `OK <id>\n.\n` with no payload.
 
 See COMMANDS.md for the specific fields and semantics of each command.
+
+## Phase 4 Wire Format Patterns
+
+Phase 4 adds AREXX (ARexx dispatch) and TAIL (file streaming).
+
+**AREXX** uses DATA/END binary framing for the result string, identical
+to EXEC.  The OK status line includes `rc=<N>` where N is the ARexx
+return code.  See COMMANDS.md for details.
+
+**TAIL** uses an ongoing DATA/END streaming response.  Unlike READ
+(where the total size is known upfront) or EXEC (where the command
+completes before the response begins), TAIL's response has no
+predetermined end.  The stream is terminated by the client sending
+`STOP\n`, after which the server sends END and the sentinel.  During
+the stream, the server may send DATA chunks at any time (when the
+monitored file grows).  The receiver must be prepared for an indefinite
+stream of DATA chunks interspersed with arbitrary delays.
+
+If the server encounters an error during the stream (e.g., file
+deleted), it sends `ERR <code> <message>\n.\n`, terminating the stream.
 
 ## Error Codes
 
@@ -415,7 +452,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.3.0\n
+S: AMIGACTL 0.4.0\n
 
 C: PING\n
 S: OK\n
@@ -423,7 +460,7 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.3.0\n
+S: amigactld 0.4.0\n
 S: .\n
 
 C: SYSINFO\n
@@ -442,6 +479,23 @@ C: EXEC echo hello\n
 S: OK rc=0\n
 S: DATA 6\n
 S: hello\n
+S: END\n
+S: .\n
+
+C: AREXX REXX return 6*7\n
+S: OK rc=0\n
+S: DATA 2\n
+S: 42
+S: END\n
+S: .\n
+
+C: TAIL RAM:server.log\n
+S: OK 1024\n
+S: DATA 53\n
+S: [2026-02-20 14:30:01] Client connected from 10.0.0.5\n
+S: DATA 37\n
+S: [2026-02-20 14:30:05] User logged in\n
+C: STOP\n
 S: END\n
 S: .\n
 

@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.3.0 (Phase 3 -- execution, process management, system info)
+**Version**: 0.4.0 (Phase 4 -- ARexx, file streaming)
 
 **Conventions used in this document:**
 
@@ -59,6 +59,9 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [TASKS](#tasks)
 - [REBOOT](#reboot)
 - [UPTIME](#uptime)
+- [AREXX](#arexx)
+- [TAIL](#tail)
+- [STOP](#stop)
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
   - [Oversized Command Lines](#oversized-command-lines)
@@ -77,7 +80,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.3.0`).
+The version string matches the daemon version (currently `0.4.0`).
 
 ### Behavior
 
@@ -92,7 +95,7 @@ The version string matches the daemon version (currently `0.3.0`).
 ### Example
 
 ```
-S> AMIGACTL 0.3.0
+S> AMIGACTL 0.4.0
 ```
 
 ---
@@ -129,7 +132,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.3.0
+S> amigactld 0.4.0
 S> .
 ```
 
@@ -2099,6 +2102,422 @@ S> .
 
 ---
 
+## AREXX
+
+Sends an ARexx command to a named ARexx port and returns the result.
+The command is dispatched asynchronously -- it does NOT block the
+daemon's event loop.
+
+### Syntax
+
+```
+AREXX <port> <command>
+```
+
+`<port>` is the target ARexx port name (e.g., `REXX`, `CNET`).
+Case-sensitive (AmigaOS port names are case-sensitive). `<command>` is
+the ARexx command string. Everything after the first whitespace-
+delimited port name is the command, including any internal whitespace.
+The command must be non-empty after trimming whitespace. `AREXX REXX`
+(port name with no command text) returns ERR 100.
+
+### Response
+
+```
+OK rc=<N>
+DATA <chunk_len>
+<raw bytes: exactly chunk_len bytes>
+...
+END
+.
+```
+
+The OK status line includes `rc=<N>` where N is the return code from
+the target port's reply. Standard ARexx conventions use 0 (RC_OK),
+5 (RC_WARN), 10 (RC_ERROR), 20 (RC_FATAL), but target ports may
+return any integer value.
+
+When rc=0, the DATA body is the ARexx RESULT string returned by the
+target port. If the command set a result string, it appears in DATA
+chunks. If no result string was set, no DATA chunks are sent (just
+END immediately after the OK line). Result strings may contain any
+content including embedded newlines.
+
+When rc is non-zero, no DATA chunks are sent (just END immediately
+after the OK line). Per the ARexx API, `rm_Result2` is a secondary
+error code (a numeric value) when the return code is non-zero, not a
+result string pointer.
+
+### Non-Blocking Behavior
+
+AREXX does NOT block the daemon's event loop. The daemon dispatches
+the ARexx message to the target port and immediately returns to
+servicing other clients. The requesting client is suspended (excluded
+from command processing) until the ARexx reply arrives or a timeout
+occurs. Other clients can send commands (PING, DIR, etc.) normally
+while an AREXX request is pending.
+
+### Timeout
+
+If the target port does not reply within 30 seconds, the daemon
+returns ERR 400 to the requesting client and resumes normal service
+for that client. The outstanding ARexx message is cleaned up when the
+reply eventually arrives.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing port name or command | `ERR 100 Usage: AREXX <port> <command>` |
+| ARexx not available (rexxsyslib.library not found) | `ERR 500 ARexx not available` |
+| No free ARexx slot (all slots pending) | `ERR 500 ARexx busy` |
+| Target port not found | `ERR 200 ARexx port not found` |
+| Timeout (30 seconds, no reply) | `ERR 400 ARexx command timed out` |
+
+Error codes 500 and 200 are returned synchronously before the daemon
+enters the asynchronous wait. Error 400 is returned asynchronously
+when the timeout fires.
+
+### Edge Cases / Notes
+
+- Only one AREXX request per client at a time. A client cannot send a
+  second AREXX command while waiting for the first reply.
+- If the client disconnects while its AREXX is pending, the daemon
+  marks the pending slot as orphaned. When the reply eventually
+  arrives, it is consumed and freed silently -- never delivered to a
+  different client that may have connected to the same slot.
+- The maximum concurrent AREXX requests across all clients equals the
+  maximum client count (one per client slot).
+- Port names are case-sensitive. `REXX` and `rexx` are different
+  ports.
+- The built-in ARexx interpreter port is typically named `REXX`. It
+  can evaluate expressions and run scripts directly (e.g.,
+  `return 1+2`).
+- A non-zero rc from the target is NOT a daemon-level error. The
+  daemon returns `OK rc=<N>` -- the error is in the ARexx execution,
+  not in the daemon's handling of the command.
+
+### Examples
+
+**Simple expression:**
+
+```
+C> AREXX REXX return 42
+S> OK rc=0
+S> DATA 2
+S> 42
+S> END
+S> .
+```
+
+(The DATA body is 2 raw bytes: `42`.)
+
+**Arithmetic:**
+
+```
+C> AREXX REXX return 1+2
+S> OK rc=0
+S> DATA 1
+S> 3
+S> END
+S> .
+```
+
+**No result string (command that doesn't return a value):**
+
+```
+C> AREXX REXX call delay(50)
+S> OK rc=0
+S> END
+S> .
+```
+
+**ARexx error (non-zero rc, no result string):**
+
+```
+C> AREXX REXX x = (
+S> OK rc=10
+S> END
+S> .
+```
+
+**Port not found:**
+
+```
+C> AREXX NOSUCHPORT hello
+S> ERR 200 ARexx port not found
+S> .
+```
+
+**Missing arguments:**
+
+```
+C> AREXX
+S> ERR 100 Usage: AREXX <port> <command>
+S> .
+```
+
+```
+C> AREXX REXX
+S> ERR 100 Usage: AREXX <port> <command>
+S> .
+```
+
+---
+
+## TAIL
+
+Streams new content appended to a file. The response is an ongoing
+DATA/END stream that continues until the client sends STOP or the file
+is deleted.
+
+### Syntax
+
+```
+TAIL <path>
+```
+
+`<path>` is mandatory. Must be a file, not a directory.
+
+### Response
+
+```
+OK <current_size>
+DATA <chunk_len>
+<raw bytes: exactly chunk_len bytes>
+DATA <chunk_len>
+<raw bytes: exactly chunk_len bytes>
+...
+(client sends STOP)
+DATA <chunk_len>
+<raw bytes: exactly chunk_len bytes>
+END
+.
+```
+
+The OK status line includes the file's current size in bytes at the
+time TAIL starts. TAIL begins monitoring from the current end of the
+file. No existing file content is sent. The current_size value is
+informational only -- it does NOT define how many bytes will be
+streamed.
+
+After the OK line, the daemon monitors the file for growth. When new
+content is appended, it sends one or more DATA chunks containing the
+new bytes. The maximum chunk size is 4096 bytes.
+
+The daemon polls the file each event loop iteration (1-second
+resolution). If more than 4096 bytes of new content appear between
+polls, the server sends multiple DATA chunks.
+
+The stream continues until the client sends `STOP` or the file is
+deleted.
+
+### STOP Handling
+
+When the client sends `STOP\n` (case-insensitive), the daemon:
+
+1. Performs one final file poll to capture any remaining new data.
+2. Sends any remaining DATA chunks.
+3. Sends `END\n`.
+4. Sends the sentinel `.\n`.
+
+After the sentinel, the connection returns to normal command
+processing.
+
+### Truncation Detection
+
+If the file size decreases (e.g., the file is overwritten with smaller
+content), the daemon resets its read position to the new file end. No
+error is generated. Subsequent growth is streamed from the new end.
+
+### File Deletion During Stream
+
+If the file is deleted or becomes inaccessible during streaming, the
+daemon sends:
+
+```
+ERR 300 File no longer accessible
+.
+```
+
+No END marker is sent before the ERR line. The ERR line and sentinel
+replace the END + sentinel that would normally terminate the stream.
+The stream is terminated. The connection returns to normal command
+processing.
+
+### Input During TAIL
+
+Any input from the client other than `STOP` (case-insensitive) is
+silently discarded. Normal commands cannot be sent while a TAIL stream
+is active.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing path argument | `ERR 100 Missing path argument` |
+| Path not found | `ERR 200 <dos error message>` |
+| Path is a directory | `ERR 300 TAIL requires a file, not a directory` |
+
+These errors are returned synchronously (before the streaming phase
+begins). The connection remains in normal command processing mode.
+
+### Edge Cases / Notes
+
+- Only one TAIL per client at a time. A client in TAIL mode cannot
+  send other commands until STOP is sent.
+- If the client disconnects during an active TAIL stream, the daemon
+  cleans up the tracking state silently. No error is logged.
+- TAIL does not lock the file exclusively. Other processes can write
+  to, truncate, or delete the file freely.
+- The receiver MUST read exactly `chunk_len` bytes by looping on
+  `recv()` before expecting the next DATA, END, or ERR line. TCP does
+  not guarantee delivery boundaries. (Same rule as READ.)
+- TAIL starts streaming from the current end of the file. Existing
+  content is NOT sent. To read existing content, use READ first, then
+  TAIL.
+- Polling resolution is 1 second (the daemon's event loop timeout).
+  Sub-second appends are batched into the next poll.
+- If a read or send failure occurs during a DATA chunk transfer, the
+  daemon disconnects the client. No ERR response is sent because the
+  protocol framing may already be corrupted (partial DATA chunk sent).
+  The client should handle unexpected connection closure during TAIL
+  streaming.
+
+### Examples
+
+**Start TAIL, receive data, then stop:**
+
+```
+C> TAIL RAM:logfile.txt
+S> OK 1024
+(file grows by 50 bytes)
+S> DATA 50
+S> <50 bytes of new content>
+(file grows by another 100 bytes)
+S> DATA 100
+S> <100 bytes of new content>
+C> STOP
+S> END
+S> .
+```
+
+**TAIL on empty file, then data arrives:**
+
+```
+C> TAIL RAM:newlog.txt
+S> OK 0
+(50 bytes written to file)
+S> DATA 50
+S> <50 bytes>
+C> STOP
+S> END
+S> .
+```
+
+**File deleted during TAIL:**
+
+```
+C> TAIL RAM:volatile.txt
+S> OK 512
+(file is deleted)
+S> ERR 300 File no longer accessible
+S> .
+```
+
+**Nonexistent file:**
+
+```
+C> TAIL RAM:NoSuchFile
+S> ERR 200 Object not found
+S> .
+```
+
+**Directory:**
+
+```
+C> TAIL SYS:S
+S> ERR 300 TAIL requires a file, not a directory
+S> .
+```
+
+**Missing path:**
+
+```
+C> TAIL
+S> ERR 100 Missing path argument
+S> .
+```
+
+**STOP with no new data:**
+
+```
+C> TAIL RAM:logfile.txt
+S> OK 1024
+C> STOP
+S> END
+S> .
+```
+
+---
+
+## STOP
+
+Terminates an active TAIL stream. STOP is a contextual command: it is
+only valid during an active TAIL stream.
+
+### Syntax
+
+```
+STOP
+```
+
+No arguments. Case-insensitive.
+
+### Behavior During TAIL
+
+Terminates the active stream. The server sends any remaining DATA
+chunks, then END, then the sentinel. After the sentinel, the
+connection returns to normal command processing. See the
+[TAIL](#tail) command for full details.
+
+### Behavior Outside TAIL
+
+STOP is not recognized as a command outside of an active TAIL stream.
+Since STOP is not in the normal command dispatch table, it produces:
+
+```
+ERR 100 Unknown command
+.
+```
+
+This is not a special case -- it is the standard behavior for any
+unrecognized command verb.
+
+### Examples
+
+**During TAIL:**
+
+```
+(TAIL is active)
+C> STOP
+S> END
+S> .
+C> PING
+S> OK
+S> .
+```
+
+**Outside TAIL:**
+
+```
+C> STOP
+S> ERR 100 Unknown command
+S> .
+```
+
+---
+
 ## Error Handling
 
 ### Unknown Command
@@ -2172,20 +2591,5 @@ as they arrive, up to and including the next newline.
 
 ## Not Yet Implemented
 
-The following commands are planned for future phases. Sending any of them
-in the current version produces `ERR 100 Unknown command`.
-
-### Phase 4: ARexx
-
-| Command | Description |
-|---------|-------------|
-| `AREXX <port> <command>` | Send ARexx command to named port |
-| `TAIL <path>` | Stream new content appended to a file (ongoing response) |
-| `STOP` | Terminate an active TAIL stream (contextual, only valid during TAIL) |
-
 Phase 5 (Polish) adds no new server commands. It focuses on client-side
-improvements including an interactive shell mode and distribution packaging.
-
-These commands will be fully specified in this document as each phase is
-implemented. Until then, the server has no knowledge of them and they are
-treated identically to any other unknown command.
+improvements including an interactive REPL and distribution packaging.

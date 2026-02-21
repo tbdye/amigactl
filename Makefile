@@ -15,7 +15,9 @@ SRCS = \
 	daemon/net.c \
 	daemon/file.c \
 	daemon/exec.c \
-	daemon/sysinfo.c
+	daemon/sysinfo.c \
+	daemon/arexx.c \
+	daemon/tail.c
 
 OBJS = $(SRCS:daemon/%.c=$(OBJDIR)/%.o)
 

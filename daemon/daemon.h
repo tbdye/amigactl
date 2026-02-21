@@ -12,7 +12,7 @@
 #include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.3.0"
+#define AMIGACTLD_VERSION "0.4.0"
 
 /* Limits */
 #define MAX_CLIENTS      8
@@ -27,6 +27,10 @@
 #define PROC_RUNNING 0
 #define PROC_EXITED  1
 
+/* ARexx */
+#define MAX_AREXX_PENDING MAX_CLIENTS  /* one per client */
+#define AREXX_TIMEOUT_SECS 30
+
 /* Error codes (wire protocol) */
 #define ERR_SYNTAX       100
 #define ERR_NOT_FOUND    200
@@ -36,6 +40,23 @@
 #define ERR_TIMEOUT      400
 #define ERR_INTERNAL     500
 
+/* ARexx pending slot (one outstanding message) */
+struct arexx_pending {
+    int active;              /* 1 = msg outstanding */
+    int client_idx;          /* client who initiated, -1 = orphaned */
+    ULONG epoch;             /* slot reuse safety counter */
+    void *msg;               /* struct RexxMsg * (void to avoid header dep) */
+    struct DateStamp send_time;  /* for timeout detection */
+};
+
+/* TAIL streaming state (per-client) */
+struct tail_state {
+    int active;              /* 1 = TAIL in progress */
+    char path[512];          /* file being tailed */
+    LONG last_size;          /* last known file size */
+    LONG last_pos;           /* current read position */
+};
+
 /* Per-client state */
 struct client {
     LONG fd;                       /* socket fd, -1 = unused */
@@ -43,6 +64,8 @@ struct client {
     char recv_buf[RECV_BUF_SIZE];  /* incoming data buffer */
     int recv_len;                  /* bytes currently in recv_buf */
     int discarding;                /* overflow discard mode flag */
+    int arexx_pending;             /* 1 = waiting for ARexx reply */
+    struct tail_state tail;        /* TAIL tracking */
 };
 
 /* IP access control list entry */
@@ -79,6 +102,8 @@ struct daemon_state {
     struct tracked_proc procs[MAX_TRACKED_PROCS];
     int next_proc_id;               /* monotonically incrementing, starts at 1 */
     struct DateStamp startup_stamp; /* recorded at startup for UPTIME */
+    struct arexx_pending arexx_slots[MAX_AREXX_PENDING];
+    ULONG arexx_epoch;              /* monotonic counter */
 };
 
 #endif /* AMIGACTLD_DAEMON_H */

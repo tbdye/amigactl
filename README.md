@@ -5,8 +5,8 @@ Remote access daemon for AmigaOS.
 Traditional remote access tools give you a shell session or a file transfer
 channel -- not structured, programmatic access to AmigaOS internals. amigactl
 is a lightweight TCP daemon that exposes file operations, CLI command execution,
-ARexx dispatch, and system introspection (assigns, volumes, ports, tasks) over
-a simple text protocol with machine-parseable responses. A Python client library
+ARexx dispatch, file streaming, and system introspection (assigns, volumes,
+ports, tasks) over a simple text protocol with machine-parseable responses. A Python client library
 provides first-class scripting support for automation on trusted LANs and
 emulator setups.
 
@@ -21,8 +21,9 @@ Host                              Amiga
                                   | - File I/O (DOS) |
 +-----------------+               | - EXEC / Proc    |
 | Python library  |--TCP:6800---->| - ARexx dispatch |
-| (host)          |               | - System queries |
-+-----------------+               +------------------+
+| (host)          |               | - File streaming |
++-----------------+               | - System queries |
+                                  +------------------+
 ```
 
 - **amigactld**: Amiga daemon, C, cross-compiled with m68k-amigaos-gcc.
@@ -34,14 +35,14 @@ Host                              Amiga
 
 ## Current Status
 
-**Phase 3 -- EXEC, Process Management, and System Info.** The daemon accepts
-TCP connections, checks IP ACLs, sends a banner, and handles lifecycle commands
-(VERSION, PING, QUIT, SHUTDOWN, REBOOT, UPTIME), eight file commands (DIR, STAT, READ, WRITE,
-DELETE, RENAME, MAKEDIR, PROTECT), synchronous and asynchronous command execution
-(EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL, KILL),
-system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS), and datestamp
-setting (SETDATE). The Python client library and CLI support all commands. ARexx
-dispatch is planned for a later phase.
+**Phase 4 -- ARexx and File Streaming.** The daemon accepts TCP connections,
+checks IP ACLs, sends a banner, and handles lifecycle commands (VERSION, PING,
+QUIT, SHUTDOWN, REBOOT, UPTIME), file commands (DIR, STAT, READ, WRITE, DELETE,
+RENAME, MAKEDIR, PROTECT, SETDATE), synchronous and asynchronous command
+execution (EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL,
+KILL), system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS),
+non-blocking ARexx dispatch (AREXX), and live file streaming (TAIL, STOP). The
+Python client library and CLI support all commands.
 
 ## Requirements
 
@@ -145,7 +146,7 @@ are required (stdlib only).
 from amigactl import AmigaConnection
 
 with AmigaConnection("192.168.6.200") as amiga:
-    print(amiga.version())          # "amigactld 0.3.0"
+    print(amiga.version())          # "amigactld 0.4.0"
     amiga.ping()
 
     # File operations
@@ -164,6 +165,12 @@ with AmigaConnection("192.168.6.200") as amiga:
     procs = amiga.proclist()
     info = amiga.procstat(proc_id)
     amiga.signal(proc_id)
+
+    # ARexx
+    rc, result = amiga.arexx("REXX", "return 1+2")
+
+    # File streaming (Ctrl-C or stop_tail() to end)
+    amiga.tail("RAM:logfile.txt", lambda chunk: print(chunk))
 
     # Lifecycle
     uptime_secs = amiga.uptime()
@@ -204,11 +211,14 @@ amigactl --host 192.168.6.200 run wait 30
 amigactl --host 192.168.6.200 ps
 amigactl --host 192.168.6.200 status 1
 amigactl --host 192.168.6.200 signal 1
+amigactl --host 192.168.6.200 kill 1                                # force-terminate async process
 amigactl --host 192.168.6.200 sysinfo
 amigactl --host 192.168.6.200 assigns
 amigactl --host 192.168.6.200 volumes
 amigactl --host 192.168.6.200 ports
 amigactl --host 192.168.6.200 tasks
+amigactl --host 192.168.6.200 arexx REXX -- return 1+2
+amigactl --host 192.168.6.200 tail RAM:logfile.txt               # Ctrl-C to stop
 ```
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
@@ -260,6 +270,8 @@ amigactl/
 |   +-- file.c / file.h              # File operation command handlers
 |   +-- exec.c / exec.h              # EXEC and process management
 |   +-- sysinfo.c / sysinfo.h        # System info command handlers
+|   +-- arexx.c / arexx.h            # ARexx dispatch
+|   +-- tail.c / tail.h              # File streaming (TAIL)
 +-- client/
 |   +-- amigactl/
 |   |   +-- __init__.py              # AmigaConnection class
@@ -272,6 +284,8 @@ amigactl/
 |   +-- test_file.py                 # File operation tests
 |   +-- test_exec.py                 # Exec and process management tests
 |   +-- test_sysinfo.py              # System info tests
+|   +-- test_arexx.py                # ARexx dispatch tests
+|   +-- test_tail.py                 # File streaming tests
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
 +-- docs/
@@ -299,16 +313,17 @@ launching with signal and kill support (EXEC ASYNC, PROCLIST, PROCSTAT, SIGNAL,
 KILL). System introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS).
 Datestamp setting (SETDATE).
 
-### Phase 4: ARexx (next)
+### Phase 4: ARexx and File Streaming (complete)
 
 Non-blocking ARexx command dispatch to named ports, with timeout handling and
-reply matching via WaitSelect signal integration.
+reply matching via WaitSelect signal integration (AREXX). Live file streaming
+with truncation and deletion detection (TAIL, STOP).
 
-### Phase 5: Polish and Interactive Shell
+### Phase 5: Polish and Interactive Shell (next)
 
 Interactive shell mode with persistent connection, readline support, and
-human-friendly command names. LHA packaging for Amiga distribution, Workbench
-icon, final documentation pass.
+human-friendly command names. Remote tab completion for Amiga paths,
+UTF-8/ISO-8859-1 conversion, LHA packaging for Amiga distribution.
 
 ## License
 
