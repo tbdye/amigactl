@@ -10,6 +10,7 @@
  */
 
 #include "exec.h"
+#include "daemon.h"
 #include "net.h"
 
 #include <proto/exec.h>
@@ -52,8 +53,7 @@ int exec_init(void)
     g_daemon_task = FindTask(NULL);
     g_proc_sigbit = AllocSignal(-1L);
     if (g_proc_sigbit == -1) {
-        printf("Warning: no free signal bits for async exec\n");
-        fflush(stdout);
+        daemon_msg("Warning: no free signal bits for async exec\n");
         return -1;
     }
     return 0;

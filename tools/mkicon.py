@@ -5,6 +5,10 @@ Generate amigactld.info -- AmigaOS Workbench icon file.
 Creates a standard old-style (OS 2.x/3.x compatible) WBTOOL icon with
 4-color planar imagery, complement highlighting, and Tool Types.
 
+Icon: 54x22, 2-bit depth, CRT monitor/terminal with ">" prompt.
+Represents a remote access / CLI tool. Matches standard WB 3.x tool
+icon dimensions (HDToolBox, Format).
+
 Usage: python3 tools/mkicon.py [output_path] [--preview]
        Default output: dist/amigactld.info
 """
@@ -29,8 +33,8 @@ BOOLGADGET = 0x0001
 
 # --- Icon parameters ---
 
-WIDTH = 30
-HEIGHT = 20
+WIDTH = 54
+HEIGHT = 22
 DEPTH = 2       # 4 colors
 STACK_SIZE = 65536
 
@@ -38,119 +42,73 @@ TOOLTYPES = [
     "PORT=6800",
 ]
 
-# --- 4-color Workbench palette ---
-# 0 = background (grey/blue)
-# 1 = black (outlines, shadow)
-# 2 = white (highlights)
-# 3 = orange (accent)
+# --- 4-color Workbench 3.x palette ---
+# 0 = background (grey ~#AAAAAA)
+# 1 = black (outlines, shadow -- highest contrast)
+# 2 = white (fill, highlights)
+# 3 = blue accent (~#6688BB -- low contrast, use sparingly)
 
 
 def build_icon_pixels():
     """Build the icon as a 2D list of color indices (0-3).
 
-    Design: A beveled rectangle with a gear/daemon symbol in orange.
-    The gear has a central hub with radiating teeth, representing
-    a background service/daemon.
+    Design: A CRT monitor/terminal displaying a ">" command prompt.
+    The monitor case is a beveled 3D rectangle (white top/left edges,
+    black bottom/right edges for 3D depth). White case body is visible
+    as strips around the dark screen. The screen interior is black
+    with a white ">" prompt and a blue block cursor. A small beveled
+    stand/pedestal sits below the monitor. LORES square pixels.
     """
-    W = WIDTH
-    img = [[0] * W for _ in range(HEIGHT)]
+    # Hand-drawn pixel map for precise control at this resolution.
+    # Characters: '.' = 0 (bg grey), '#' = 1 (black), 'W' = 2 (white),
+    #             'B' = 3 (blue accent)
+    #
+    # Layout:
+    #   Row 0:       grey margin
+    #   Rows 1-2:    case top edge (white bevel, with cut corner)
+    #   Row 3:       case body + top screen bezel
+    #   Rows 4-12:   screen area (black) with ">" prompt and cursor
+    #   Row 13:      case body + bottom screen bezel
+    #   Rows 14-15:  case bottom edge (black shadow, with cut corner)
+    #   Rows 16-17:  stand neck (narrow, beveled)
+    #   Rows 18-19:  stand base (wider, beveled)
+    #   Rows 20-21:  grey margin
+    pixel_map = [
+        #0         1         2         3         4         5
+        #0123456789012345678901234567890123456789012345678901234
+        "......................................................",  # 0
+        "....WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW#...",  # 1
+        "...WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW#..",  # 2
+        "...WWWW########################################WW##...",  # 3
+        "...WWWW########################################WW##...",  # 4
+        "...WWWW###WW########BBB########################WW##...",  # 5
+        "...WWWW#####WW######BBB########################WW##...",  # 6
+        "...WWWW#######WW####BBB########################WW##...",  # 7
+        "...WWWW#########WW##BBB########################WW##...",  # 8
+        "...WWWW#######WW####BBB########################WW##...",  # 9
+        "...WWWW#####WW######BBB########################WW##...",  # 10
+        "...WWWW###WW########BBB########################WW##...",  # 11
+        "...WWWW########################################WW##...",  # 12
+        "...WWWW########################################WW##...",  # 13
+        "...W###############################################...",  # 14
+        "....###############################################...",  # 15
+        ".....................WWWWWWWWWWW#.....................",  # 16
+        ".....................W###########.....................",  # 17
+        "..................WWWWWWWWWWWWWWWWW#..................",  # 18
+        "..................##################..................",  # 19
+        "......................................................",  # 20
+        "......................................................",  # 21
+    ]
 
-    # --- Beveled rectangle outline ---
-    # Top edge: white highlight (row 1, cols 2-27)
-    for x in range(2, 28):
-        img[1][x] = 2
-
-    # Bottom edge: black shadow (row 18, cols 2-27)
-    for x in range(2, 28):
-        img[18][x] = 1
-
-    # Left edge: white highlight (rows 2-17, col 2)
-    for y in range(2, 18):
-        img[y][2] = 2
-
-    # Right edge: black shadow (rows 2-17, col 27)
-    for y in range(2, 18):
-        img[y][27] = 1
-
-    # Corner connectors
-    img[1][1] = 2     # top-left outer
-    img[18][28] = 1   # bottom-right outer
-    img[1][28] = 1    # top-right shadow
-    img[18][1] = 1    # bottom-left shadow
-
-    # --- Gear symbol (orange, centered) ---
-    # Center hub: solid 4x4 block at rows 8-11, cols 13-16
-    for y in range(8, 12):
-        for x in range(13, 17):
-            img[y][x] = 3
-
-    # Gear teeth: protrusions from the hub
-    # Top tooth (row 6-7, cols 14-15)
-    img[6][14] = 3
-    img[6][15] = 3
-    img[7][14] = 3
-    img[7][15] = 3
-
-    # Bottom tooth (row 12-13, cols 14-15)
-    img[12][14] = 3
-    img[12][15] = 3
-    img[13][14] = 3
-    img[13][15] = 3
-
-    # Left tooth (rows 9-10, cols 11-12)
-    img[9][11] = 3
-    img[9][12] = 3
-    img[10][11] = 3
-    img[10][12] = 3
-
-    # Right tooth (rows 9-10, cols 17-18)
-    img[9][17] = 3
-    img[9][18] = 3
-    img[10][17] = 3
-    img[10][18] = 3
-
-    # Diagonal teeth (single pixel protrusions)
-    # Top-left diagonal (row 7, col 12)
-    img[7][12] = 3
-    # Top-right diagonal (row 7, col 17)
-    img[7][17] = 3
-    # Bottom-left diagonal (row 12, col 12)
-    img[12][12] = 3
-    # Bottom-right diagonal (row 12, col 17)
-    img[12][17] = 3
-
-    # Hub center hole (black, 2x2 at rows 9-10, cols 14-15)
-    img[9][14] = 1
-    img[9][15] = 1
-    img[10][14] = 1
-    img[10][15] = 1
-
-    # --- Network indicator: small arrow/signal at right side ---
-    # Three horizontal bars suggesting network connectivity (rows 4, 6, 8)
-    # Short bar (row 4, cols 21-23)
-    img[4][21] = 3
-    img[4][22] = 3
-    img[4][23] = 3
-
-    # Medium bar (row 6, cols 20-24)
-    img[6][20] = 3
-    img[6][21] = 3
-    img[6][22] = 3
-    img[6][23] = 3
-    img[6][24] = 3
-
-    # --- "d" for daemon indicator at bottom-right ---
-    # Vertical stroke (rows 13-16, col 23)
-    for y in range(13, 17):
-        img[y][23] = 1
-
-    # Arc of 'd' (rows 14-15, cols 21-22)
-    img[14][21] = 1
-    img[15][21] = 1
-    img[14][22] = 1
-    img[15][22] = 1
-    img[13][22] = 1
-    img[16][22] = 1
+    # Parse the pixel map into a 2D array of color indices
+    char_to_idx = {'.': 0, '#': 1, 'W': 2, 'B': 3}
+    img = []
+    for y, row_str in enumerate(pixel_map):
+        assert len(row_str) == WIDTH, \
+            "Row {} is {} chars, expected {}".format(y, len(row_str), WIDTH)
+        img.append([char_to_idx[ch] for ch in row_str])
+    assert len(img) == HEIGHT, \
+        "Pixel map has {} rows, expected {}".format(len(img), HEIGHT)
 
     return img
 
@@ -264,7 +222,7 @@ def generate_info():
 def preview_icon():
     """Print ASCII art preview of the icon."""
     img = build_icon_pixels()
-    chars = ['.', '#', 'W', 'O']  # bg, black, white, orange
+    chars = ['.', '#', 'W', 'B']  # bg, black, white, blue
     print("Icon preview ({0}x{1}, {2}-bit depth):".format(WIDTH, HEIGHT, DEPTH))
     for y, row in enumerate(img):
         line = ''.join(chars[c] for c in row)

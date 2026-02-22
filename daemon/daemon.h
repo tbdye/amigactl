@@ -12,7 +12,7 @@
 #include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.6.0"
+#define AMIGACTLD_VERSION "0.6.1"
 
 /* Limits */
 #define MAX_CLIENTS      8
@@ -105,5 +105,14 @@ struct daemon_state {
     struct arexx_pending arexx_slots[MAX_AREXX_PENDING];
     ULONG arexx_epoch;              /* monotonic counter */
 };
+
+
+/* ---- Startup output routing ---- */
+
+/* In Workbench mode, startup messages go to a manually-managed CON: window.
+ * In CLI mode, they go to stdout.  daemon_msg() routes to the right place.
+ * Runtime messages (event loop, shutdown) always use printf/stdout. */
+extern BPTR g_wb_console;
+void daemon_msg(const char *fmt, ...);
 
 #endif /* AMIGACTLD_DAEMON_H */

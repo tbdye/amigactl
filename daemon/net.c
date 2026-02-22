@@ -7,6 +7,7 @@
  */
 
 #include "net.h"
+#include "daemon.h"
 
 #include <proto/exec.h>
 #include <proto/bsdsocket.h>
@@ -14,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/filio.h>
 #include <netinet/in.h>
+#include <sys/errno.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -34,9 +36,9 @@ int net_init(void)
 
     SocketBase = OpenLibrary((STRPTR)"bsdsocket.library", 4);
     if (!SocketBase) {
-        printf("Could not open bsdsocket.library v4\n");
-        printf("A TCP/IP stack (e.g. Roadshow, Miami, AmiTCP) must be "
-               "running.\n");
+        daemon_msg("Could not open bsdsocket.library v4\n");
+        daemon_msg("A TCP/IP stack (e.g. Roadshow, Miami, AmiTCP) must be "
+                   "running.\n");
         return -1;
     }
 
@@ -46,7 +48,7 @@ int net_init(void)
         TAG_DONE);
 
     if (result != 0) {
-        printf("Warning: SocketBaseTags errno registration failed\n");
+        daemon_msg("Warning: SocketBaseTags errno registration failed\n");
     }
 
     return 0;
@@ -70,14 +72,14 @@ LONG net_listen(int port)
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        printf("socket() failed, errno=%ld\n", (long)bsd_errno);
+        daemon_msg("socket() failed, errno=%ld\n", (long)bsd_errno);
         return -1;
     }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0)
-        printf("Warning: setsockopt(SO_REUSEADDR) failed\n");
+        daemon_msg("Warning: setsockopt(SO_REUSEADDR) failed\n");
 #pragma GCC diagnostic pop
 
     memset(&addr, 0, sizeof(addr));
@@ -86,14 +88,18 @@ LONG net_listen(int port)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        printf("bind() failed on port %d, errno=%ld\n",
-               port, (long)bsd_errno);
+        if (bsd_errno == EADDRINUSE)
+            daemon_msg("Port %d is already in use "
+                       "(amigactld may already be running).\n", port);
+        else
+            daemon_msg("bind() failed on port %d, errno=%ld\n",
+                       port, (long)bsd_errno);
         CloseSocket(fd);
         return -1;
     }
 
     if (listen(fd, 5) < 0) {
-        printf("listen() failed, errno=%ld\n", (long)bsd_errno);
+        daemon_msg("listen() failed, errno=%ld\n", (long)bsd_errno);
         CloseSocket(fd);
         return -1;
     }

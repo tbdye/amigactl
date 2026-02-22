@@ -23,6 +23,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 /* Ensure sufficient stack for buffers and nested calls.
  * libnix startup code checks this and expands the stack if needed. */
@@ -30,7 +31,38 @@ unsigned long __stack = 65536;
 
 /* Override libnix default CON: window for Workbench launches.
  * libnix opens this window before main() when argc==0. */
-const char *__stdiowin = "CON:0/20/640/200/amigactld/AUTO/CLOSE/WAIT";
+const char *__stdiowin = "NIL:";
+
+/* WB startup console handle -- 0 when in CLI mode or after close */
+BPTR g_wb_console = 0;
+
+/* Route startup messages to the WB console window or stdout.
+ * Runtime messages (event loop, shutdown) use printf directly.
+ *
+ * Not reentrant -- uses static buffer.  Must only be called
+ * from the main daemon task (never from async wrappers). */
+void daemon_msg(const char *fmt, ...)
+{
+    static char buf[512];
+    va_list ap;
+    int len;
+
+    va_start(ap, fmt);
+    len = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    if (len < 0)
+        len = 0;
+    if (len >= (int)sizeof(buf))
+        len = (int)sizeof(buf) - 1;
+
+    if (g_wb_console) {
+        Write(g_wb_console, buf, len);
+    } else {
+        printf("%s", buf);
+        fflush(stdout);
+    }
+}
 
 /* icon.library base -- needed by proto/icon.h inline stubs */
 struct Library *IconBase = NULL;
@@ -102,14 +134,21 @@ int main(int argc, char **argv)
 
     if (argc == 0) {
         /* Workbench launch: build CLI-style arg string from Tool Types.
-         * libnix has already: waited for WBStartup, opened our CON:
-         * window via __stdiowin, and called CurrentDir() to the
+         * libnix has already: waited for WBStartup, opened NIL: for
+         * stdout via __stdiowin, and called CurrentDir() to the
          * program's directory. */
         struct WBStartup *wbmsg = (struct WBStartup *)argv;
         struct DiskObject *dobj = NULL;
         CONST_STRPTR *tt;
         char *p = argbuf;
         UBYTE *val;
+
+        /* Open a temporary console window for startup messages.
+         * CLOSE adds a close gadget; no WAIT so Close() auto-dismisses.
+         * If Open() fails, g_wb_console stays 0 and daemon_msg()
+         * falls through to printf/NIL: -- silent startup. */
+        g_wb_console = Open((STRPTR)"CON:0/20/640/100/amigactld/CLOSE",
+                            MODE_OLDFILE);
 
         IconBase = OpenLibrary((STRPTR)"icon.library", 36);
         if (IconBase) {
@@ -142,8 +181,9 @@ int main(int argc, char **argv)
     }
 
     if (!rdargs) {
-        printf("Usage: amigactld [PORT <port>] [CONFIG <path>]\n");
-        return RETURN_FAIL;
+        daemon_msg("Usage: amigactld [PORT <port>] [CONFIG <path>]\n");
+        exit_code = RETURN_FAIL;
+        goto cleanup;
     }
 
     /* ---- Configuration ---- */
@@ -179,22 +219,20 @@ int main(int argc, char **argv)
     /* Listener must be non-blocking so accept() doesn't block
      * the event loop on spurious readability notifications */
     if (net_set_nonblocking(daemon.listener_fd) < 0) {
-        printf("Failed to set listener to non-blocking mode\n");
+        daemon_msg("Failed to set listener to non-blocking mode\n");
         exit_code = RETURN_FAIL;
         goto cleanup;
     }
 
-    printf("amigactld %s listening on port %d\n",
-           AMIGACTLD_VERSION, daemon.config.port);
-    fflush(stdout);
+    daemon_msg("amigactld %s listening on port %d\n",
+               AMIGACTLD_VERSION, daemon.config.port);
 
     /* ---- Phase 3 initialization ---- */
 
     g_daemon_state = &daemon;
 
     if (exec_init() < 0) {
-        printf("Warning: EXEC ASYNC unavailable (no signal bit)\n");
-        fflush(stdout);
+        daemon_msg("Warning: EXEC ASYNC unavailable (no signal bit)\n");
     }
 
     exec_cleanup_temp_files();
@@ -203,15 +241,22 @@ int main(int argc, char **argv)
 
     arexx_init();
     if (g_arexx_sigbit < 0) {
-        printf("Warning: AREXX unavailable (rexxsyslib.library not found)\n");
-        fflush(stdout);
+        daemon_msg("Warning: AREXX unavailable (rexxsyslib.library not found)\n");
     }
 
     if (tail_init() < 0) {
-        printf("Failed to allocate TAIL resources\n");
-        fflush(stdout);
+        daemon_msg("Failed to allocate TAIL resources\n");
         exit_code = RETURN_FAIL;
         goto cleanup;
+    }
+
+    /* All initialization complete.  In WB mode, close the startup
+     * console after a short delay so the user can read the banner.
+     * The daemon continues running headless. */
+    if (g_wb_console) {
+        Delay(150);  /* 3 seconds */
+        Close(g_wb_console);
+        g_wb_console = 0;
     }
 
     /* ---- Event loop ---- */
@@ -304,6 +349,17 @@ int main(int argc, char **argv)
     /* ---- Cleanup ---- */
 
 cleanup:
+    /* Close WB startup console if still open (error paths).
+     * Block on Read() so the user can read the error and dismiss
+     * the window at their own pace (Return key or close gadget). */
+    if (g_wb_console) {
+        char ch;
+        daemon_msg("\nPress Return or close window to dismiss.\n");
+        Read(g_wb_console, &ch, 1);
+        Close(g_wb_console);
+        g_wb_console = 0;
+    }
+
     /* Drain outstanding ARexx replies before closing connections */
     arexx_shutdown_wait(&daemon);
 

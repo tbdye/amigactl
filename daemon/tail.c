@@ -10,6 +10,7 @@
  */
 
 #include "tail.h"
+#include "daemon.h"
 #include "net.h"
 
 #include <proto/dos.h>
@@ -40,8 +41,7 @@ int tail_init(void)
 {
     tail_fib = AllocDosObject(DOS_FIB, NULL);
     if (!tail_fib) {
-        printf("TAIL: failed to allocate FileInfoBlock\n");
-        fflush(stdout);
+        daemon_msg("TAIL: failed to allocate FileInfoBlock\n");
         return -1;
     }
     return 0;

@@ -14,6 +14,7 @@
  */
 
 #include "config.h"
+#include "daemon.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -108,7 +109,7 @@ int config_load(struct daemon_config *cfg, const char *path)
             int port;
 
             if (sscanf(value, "%d", &port) != 1 || port < 1 || port > 65535) {
-                printf("config: line %d: invalid port \"%s\"\n",
+                daemon_msg("config: line %d: invalid port \"%s\"\n",
                        lineno, value);
                 fclose(fp);
                 return -1;
@@ -118,13 +119,13 @@ int config_load(struct daemon_config *cfg, const char *path)
             ULONG addr;
 
             if (cfg->acl_count >= MAX_ACL_ENTRIES) {
-                printf("config: line %d: too many ALLOW entries (max %d)\n",
+                daemon_msg("config: line %d: too many ALLOW entries (max %d)\n",
                        lineno, MAX_ACL_ENTRIES);
                 fclose(fp);
                 return -1;
             }
             if (!parse_ip(value, &addr)) {
-                printf("config: line %d: invalid IP address \"%s\"\n",
+                daemon_msg("config: line %d: invalid IP address \"%s\"\n",
                        lineno, value);
                 fclose(fp);
                 return -1;
@@ -137,7 +138,7 @@ int config_load(struct daemon_config *cfg, const char *path)
             } else if (stricmp(value, "NO") == 0) {
                 cfg->allow_remote_shutdown = 0;
             } else {
-                printf("config: line %d: ALLOW_REMOTE_SHUTDOWN must be "
+                daemon_msg("config: line %d: ALLOW_REMOTE_SHUTDOWN must be "
                        "YES or NO, got \"%s\"\n", lineno, value);
                 fclose(fp);
                 return -1;
@@ -148,13 +149,13 @@ int config_load(struct daemon_config *cfg, const char *path)
             } else if (stricmp(value, "NO") == 0) {
                 cfg->allow_remote_reboot = 0;
             } else {
-                printf("config: line %d: ALLOW_REMOTE_REBOOT must be "
+                daemon_msg("config: line %d: ALLOW_REMOTE_REBOOT must be "
                        "YES or NO, got \"%s\"\n", lineno, value);
                 fclose(fp);
                 return -1;
             }
         } else {
-            printf("config: line %d: unknown keyword \"%s\"\n",
+            daemon_msg("config: line %d: unknown keyword \"%s\"\n",
                    lineno, keyword);
             fclose(fp);
             return -1;
