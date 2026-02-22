@@ -1,8 +1,9 @@
 /*
  * amigactld -- System information command handlers (Phase 3)
  *
- * Implements SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS.
- * All handlers are read-only queries that always return 0.
+ * Implements SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS.
+ * All handlers are read-only queries that always return 0 (ASSIGN
+ * is the exception -- it modifies the assign list).
  *
  * Critical safety rules:
  * - No I/O between Forbid/Permit (copy data to local buffers only)
@@ -66,6 +67,55 @@ struct task_entry {
     char state[8];          /* "run", "ready", or "wait" */
     unsigned long stacksize;
 };
+
+/* ---- Static helpers ---- */
+
+/* Map AmigaOS IoErr() codes to wire protocol error codes.
+ * Duplicated from file.c because both are static translation-unit helpers. */
+static int map_dos_error(LONG ioerr)
+{
+    switch (ioerr) {
+    case ERROR_OBJECT_NOT_FOUND:         /* 205 */
+    case ERROR_DIR_NOT_FOUND:            /* 204 */
+    case ERROR_DEVICE_NOT_MOUNTED:       /* 218 */
+        return ERR_NOT_FOUND;
+
+    case ERROR_OBJECT_IN_USE:            /* 202 */
+    case ERROR_DISK_WRITE_PROTECTED:     /* 214 */
+    case ERROR_READ_PROTECTED:           /* 224 */
+    case ERROR_DELETE_PROTECTED:         /* 222 */
+    case ERROR_DIRECTORY_NOT_EMPTY:      /* 216 */
+        return ERR_PERMISSION;
+
+    case ERROR_OBJECT_EXISTS:            /* 203 */
+        return ERR_EXISTS;
+
+    case ERROR_DISK_FULL:                /* 221 */
+        return ERR_IO;
+
+    default:
+        return ERR_IO;
+    }
+}
+
+/* Send an ERR response derived from the current IoErr().
+ * msg_prefix is prepended to the Fault() text (which starts with ": "). */
+static int send_dos_error(LONG fd, const char *msg_prefix)
+{
+    LONG ioerr;
+    int code;
+    static char fault_buf[128];
+    static char msg_buf[256];
+
+    ioerr = IoErr();
+    code = map_dos_error(ioerr);
+    Fault(ioerr, (STRPTR)"", (STRPTR)fault_buf, sizeof(fault_buf));
+    sprintf(msg_buf, "%s%s", msg_prefix, fault_buf);
+
+    send_error(fd, code, msg_buf);
+    send_sentinel(fd);
+    return 0;
+}
 
 /* ---- Command handlers ---- */
 
@@ -229,6 +279,128 @@ int cmd_assigns(struct client *c, const char *args)
         send_payload_line(c->fd, line);
     }
 
+    send_sentinel(c->fd);
+    return 0;
+}
+
+int cmd_assign(struct client *c, const char *args)
+{
+    static char name[MAX_ASSIGN_NAME];
+    static char apath[MAX_CMD_LEN + 1];
+    const char *rest;
+    const char *colon;
+    int name_len;
+    int mode; /* 0=lock, 1=late, 2=add */
+    BPTR lock;
+
+    if (args[0] == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Usage: ASSIGN [LATE|ADD] NAME: [PATH]");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    rest = args;
+    mode = 0;
+
+    /* Check for LATE or ADD modifier */
+    if (strnicmp(rest, "LATE ", 5) == 0) {
+        mode = 1;
+        rest += 5;
+        while (*rest == ' ' || *rest == '\t') rest++;
+    } else if (strnicmp(rest, "ADD ", 4) == 0) {
+        mode = 2;
+        rest += 4;
+        while (*rest == ' ' || *rest == '\t') rest++;
+    }
+
+    if (*rest == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing assign name");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Find the colon in the assign name */
+    colon = strchr(rest, ':');
+    if (!colon) {
+        send_error(c->fd, ERR_SYNTAX, "Assign name must include colon");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    name_len = (int)(colon - rest);
+    if (name_len <= 0 || name_len >= (int)sizeof(name)) {
+        send_error(c->fd, ERR_SYNTAX, "Invalid assign name");
+        send_sentinel(c->fd);
+        return 0;
+    }
+    memcpy(name, rest, name_len);
+    name[name_len] = '\0';
+
+    /* Extract path (after colon, trimmed) */
+    {
+        const char *p = colon + 1;
+        while (*p == ' ' || *p == '\t') p++;
+
+        if (*p == '\0') {
+            /* Remove assign — AssignLock with NULL lock removes it */
+            if (!AssignLock((STRPTR)name, 0)) {
+                send_error(c->fd, ERR_NOT_FOUND, "Assign not found");
+                send_sentinel(c->fd);
+                return 0;
+            }
+            send_ok(c->fd, NULL);
+            send_sentinel(c->fd);
+            return 0;
+        }
+
+        strncpy(apath, p, sizeof(apath) - 1);
+        apath[sizeof(apath) - 1] = '\0';
+        /* Trim trailing whitespace */
+        {
+            int plen = strlen(apath);
+            while (plen > 0 && (apath[plen - 1] == ' ' || apath[plen - 1] == '\t'))
+                plen--;
+            apath[plen] = '\0';
+        }
+    }
+
+    /* Execute based on mode */
+    if (mode == 1) {
+        /* LATE: no lock needed */
+        if (!AssignLate((STRPTR)name, (STRPTR)apath)) {
+            send_error(c->fd, ERR_IO, "AssignLate failed");
+            send_sentinel(c->fd);
+            return 0;
+        }
+    } else {
+        /* LOCK or ADD: need a lock on the path */
+        lock = Lock((STRPTR)apath, ACCESS_READ);
+        if (!lock) {
+            send_dos_error(c->fd, "Lock failed");
+            return 0;
+        }
+
+        if (mode == 0) {
+            /* AssignLock: replaces existing. Consumes lock on success. */
+            if (!AssignLock((STRPTR)name, lock)) {
+                UnLock(lock);
+                send_dos_error(c->fd, "AssignLock failed");
+                return 0;
+            }
+        } else {
+            /* AssignAdd: adds to multi-dir. Consumes lock on success. */
+            if (!AssignAdd((STRPTR)name, lock)) {
+                UnLock(lock);
+                send_error(c->fd, ERR_IO,
+                           "AssignAdd failed (assign may not exist; "
+                           "create with ASSIGN NAME: PATH first)");
+                send_sentinel(c->fd);
+                return 0;
+            }
+        }
+    }
+
+    send_ok(c->fd, NULL);
     send_sentinel(c->fd);
     return 0;
 }

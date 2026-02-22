@@ -131,25 +131,104 @@ Double-click the amigactld icon. The daemon opens a console window
 closed or a SHUTDOWN command is received. Configuration can be set via Tool
 Types (`PORT`, `CONFIG`) in the icon's Info window.
 
-## Python Client
+## Running the Client
 
-### Installation
+### Linux / macOS
+
+    ./amigactl.sh --host 192.168.6.200
+
+This launches the interactive shell. You can also run one-off commands:
+
+    ./amigactl.sh --host 192.168.6.200 ls SYS:S
+    ./amigactl.sh --host 192.168.6.200 exec list SYS:S
+    ./amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence
+
+### Windows (PowerShell)
+
+    .\amigactl.ps1 --host 192.168.6.200
+
+If script execution is blocked, set the execution policy:
+
+    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+If `python` launches the Microsoft Store instead of running the script,
+disable the App execution aliases for `python.exe` and `python3.exe` in
+Settings > Apps > Advanced app settings > App execution aliases.
+
+### Alternative: pip install
+
+For users who prefer a system-wide install:
+
+    python3 -m venv .venv && . .venv/bin/activate
+    pip install -e client/
+    amigactl --host 192.168.6.200
+
+No external dependencies are required (stdlib only).
+
+### Directory layout
+
+The wrapper scripts expect the `client/` directory alongside them:
 
 ```
-pip install -e client/
+amigactl/
++-- amigactl.sh        (Linux/macOS wrapper)
++-- amigactl.ps1       (Windows wrapper)
++-- client/
+    +-- amigactl/
+        +-- __init__.py
+        +-- __main__.py
+        +-- protocol.py
+        +-- shell.py
+        +-- colors.py
 ```
 
-This installs the `amigactl` library and CLI tool in editable (development)
-mode. For a non-editable install, use `pip install client/` instead. No
-external dependencies are required (stdlib only).
+### Environment variables
 
-### Library usage
+The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
+`192.168.6.200` if unset. `--port` defaults to `AMIGACTL_PORT` or `6800`.
+
+### CLI usage
+
+```
+./amigactl.sh --host 192.168.6.200 version
+./amigactl.sh --host 192.168.6.200 ping
+./amigactl.sh --host 192.168.6.200 uptime
+./amigactl.sh --host 192.168.6.200 ls SYS:S
+./amigactl.sh --host 192.168.6.200 stat SYS:S/Startup-Sequence
+./amigactl.sh --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
+./amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
+./amigactl.sh --host 192.168.6.200 put localfile.txt RAM:test.txt
+./amigactl.sh --host 192.168.6.200 rm RAM:test.txt
+./amigactl.sh --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
+./amigactl.sh --host 192.168.6.200 mkdir RAM:newdir
+./amigactl.sh --host 192.168.6.200 chmod RAM:file.txt
+./amigactl.sh --host 192.168.6.200 chmod RAM:file.txt 0f
+./amigactl.sh --host 192.168.6.200 touch RAM:file.txt
+./amigactl.sh --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
+./amigactl.sh --host 192.168.6.200 exec echo hello
+./amigactl.sh --host 192.168.6.200 run wait 30
+./amigactl.sh --host 192.168.6.200 ps
+./amigactl.sh --host 192.168.6.200 status 1
+./amigactl.sh --host 192.168.6.200 signal 1
+./amigactl.sh --host 192.168.6.200 kill 1
+./amigactl.sh --host 192.168.6.200 sysinfo
+./amigactl.sh --host 192.168.6.200 assigns
+./amigactl.sh --host 192.168.6.200 volumes
+./amigactl.sh --host 192.168.6.200 ports
+./amigactl.sh --host 192.168.6.200 tasks
+./amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
+./amigactl.sh --host 192.168.6.200 tail RAM:logfile.txt
+./amigactl.sh --host 192.168.6.200 shutdown
+./amigactl.sh --host 192.168.6.200 reboot
+```
+
+### Python library
 
 ```python
 from amigactl import AmigaConnection
 
 with AmigaConnection("192.168.6.200") as amiga:
-    print(amiga.version())          # "amigactld 0.4.0"
+    print(amiga.version())
     amiga.ping()
 
     # File operations
@@ -187,80 +266,48 @@ with AmigaConnection("192.168.6.200") as amiga:
     amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
 ```
 
-The host and port can also be set via the `AMIGACTL_HOST` and `AMIGACTL_PORT`
-environment variables.
-
-### CLI usage
-
-```
-amigactl --host 192.168.6.200 version
-amigactl --host 192.168.6.200 ping
-amigactl --host 192.168.6.200 shutdown    # sends SHUTDOWN CONFIRM
-amigactl --host 192.168.6.200 reboot     # sends REBOOT CONFIRM
-amigactl --host 192.168.6.200 uptime
-amigactl --host 192.168.6.200 ls SYS:S
-amigactl --host 192.168.6.200 stat SYS:S/Startup-Sequence
-amigactl --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
-amigactl --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
-amigactl --host 192.168.6.200 put localfile.txt RAM:test.txt
-amigactl --host 192.168.6.200 rm RAM:test.txt
-amigactl --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
-amigactl --host 192.168.6.200 mkdir RAM:newdir
-amigactl --host 192.168.6.200 chmod RAM:file.txt
-amigactl --host 192.168.6.200 chmod RAM:file.txt 0f
-amigactl --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
-amigactl --host 192.168.6.200 exec echo hello
-amigactl --host 192.168.6.200 run wait 30
-amigactl --host 192.168.6.200 ps
-amigactl --host 192.168.6.200 status 1
-amigactl --host 192.168.6.200 signal 1
-amigactl --host 192.168.6.200 kill 1                                # force-terminate async process
-amigactl --host 192.168.6.200 sysinfo
-amigactl --host 192.168.6.200 assigns
-amigactl --host 192.168.6.200 volumes
-amigactl --host 192.168.6.200 ports
-amigactl --host 192.168.6.200 tasks
-amigactl --host 192.168.6.200 arexx REXX -- return 1+2
-amigactl --host 192.168.6.200 tail RAM:logfile.txt               # Ctrl-C to stop
-amigactl --host 192.168.6.200 shell                              # interactive shell
-```
-
-The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
-`192.168.6.200` if unset. `--port` defaults to `AMIGACTL_PORT` or `6800`.
-
 ## Interactive Shell
 
-The `shell` subcommand starts an interactive session with a persistent
-connection, readline support (history, line editing), and tab completion
-for Amiga paths:
+The interactive shell starts automatically when no subcommand is given, or
+explicitly with the `shell` subcommand:
 
-    $ amigactl --host 192.168.6.200 shell
-    Connected to 192.168.6.200 (amigactld 0.4.0)
+    $ ./amigactl.sh --host 192.168.6.200
+    Connected to 192.168.6.200 (amigactld 0.6.0)
     Type "help" for a list of commands, "exit" to disconnect.
-    amiga@192.168.6.200> cd SYS:S
-    amiga@192.168.6.200:SYS:S> ls
-      DIR  Config                      2026-01-15 08:00:00
-           Startup-Sequence      1.5K  2026-01-15 08:00:00
-           User-Startup           342  2026-02-19 10:30:00
-    amiga@192.168.6.200:SYS:S> cat Startup-Sequence
+    amiga@192.168.6.200:SYS:> ls S
+    Config/  Startup-Sequence  User-Startup
+    amiga@192.168.6.200:SYS:> ls -l S
+      DIR  Config            ----rwed        2026-01-15 08:00:00
+           Startup-Sequence  ----rwed  1.5K  2026-01-15 08:00:00
+           User-Startup      ----rwed   342  2026-02-19 10:30:00
+    amiga@192.168.6.200:SYS:> cat S/Startup-Sequence
     ; Startup-Sequence
     ...
-    amiga@192.168.6.200:SYS:S> edit User-Startup
+    amiga@192.168.6.200:SYS:> edit S/User-Startup
     (opens $EDITOR, uploads changes on save)
-    amiga@192.168.6.200:SYS:S> cd /
-    amiga@192.168.6.200:SYS:> exec list S
+    amiga@192.168.6.200:SYS:> cd S
+    amiga@192.168.6.200:SYS:S> cd ..
+    amiga@192.168.6.200:SYS:> exec avail
     ...
     amiga@192.168.6.200:SYS:> exit
     Disconnected.
 
-The shell supports `cd` and `pwd` for navigation -- relative paths are
-resolved client-side before sending to the daemon. Tab completion works
-with both absolute and relative Amiga paths.
+The shell supports `cd` and `pwd` for navigation (including `..` and `/`
+for parent directory). Relative paths are resolved client-side before
+sending to the daemon. Tab completion works with both absolute and
+relative Amiga paths. Type `help` for a command list, or `help COMMAND`
+for detailed usage of any command.
 
-All CLI commands are available in the shell, plus shell-specific commands:
-ls, cat, stat, get, put, rm, mv, mkdir, chmod, touch, exec, run, ps,
-status, signal, kill, sysinfo, assigns, ports, volumes, tasks, uptime,
-arexx, tail, edit, version, ping, shutdown, reboot, cd, pwd, reconnect.
+Tab completion requires Python's readline module (included on Linux/macOS).
+On Windows, tab completion is not available by default. Installing the
+optional `pyreadline3` package (`pip install pyreadline3`) adds tab
+completion support.
+
+The `edit` command uses `$VISUAL` or `$EDITOR` to open files. If neither
+is set, it defaults to `vi` (Linux/macOS) or `notepad` (Windows).
+
+    export EDITOR=nano                 # Linux/macOS
+    $env:EDITOR = "code --wait"        # Windows (VS Code)
 
 Colors are auto-detected (disable with `NO_COLOR=1` or
 `AMIGACTL_COLOR=never`).
@@ -316,6 +363,8 @@ amigactl/
 +-- README.md
 +-- LICENSE                          # GPL v3
 +-- Makefile                         # m68k cross-compilation
++-- amigactl.sh                      # Linux/macOS wrapper script
++-- amigactl.ps1                     # Windows wrapper script
 +-- daemon/
 |   +-- main.c                       # Entry, startup, event loop
 |   +-- daemon.h                     # Shared structures, constants, error codes

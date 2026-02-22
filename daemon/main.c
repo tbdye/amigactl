@@ -611,6 +611,9 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "ASSIGNS") == 0) {
         rc = cmd_assigns(c, rest);
 
+    } else if (stricmp(verb, "ASSIGN") == 0) {
+        rc = cmd_assign(c, rest);
+
     } else if (stricmp(verb, "PORTS") == 0) {
         rc = cmd_ports(c, rest);
 

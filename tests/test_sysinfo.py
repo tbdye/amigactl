@@ -1,8 +1,8 @@
 """Phase 3 system information tests for amigactld.
 
 These tests exercise the system query commands (SYSINFO, ASSIGNS, PORTS,
-VOLUMES, TASKS) against a live amigactld daemon. These commands are all
-read-only and always succeed.
+VOLUMES, TASKS) and the ASSIGN mutation command against a live amigactld
+daemon.
 
 The daemon must be running on the target machine before these tests are
 executed.
@@ -11,6 +11,7 @@ executed.
 import pytest
 
 from conftest import read_response, send_command
+from amigactl import AmigaConnection, RemoteIOError, NotFoundError
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +310,115 @@ class TestTasks:
             assert int(stacksize) > 0, (
                 "Stacksize should be positive, got: {!r}".format(stacksize)
             )
+
+
+# ---------------------------------------------------------------------------
+# ASSIGN (mutation command)
+# ---------------------------------------------------------------------------
+
+class TestAssign:
+    """Tests for the ASSIGN command (create/modify/remove assigns)."""
+
+    def _cleanup_assign(self, conn, name):
+        """Best-effort removal of a test assign."""
+        try:
+            conn.assign(name)
+        except Exception:
+            pass
+
+    def test_assign_create(self, conn):
+        """ASSIGN NAME: PATH creates a new assign visible in ASSIGNS."""
+        try:
+            conn.assign("TEST:", "RAM:")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns, (
+                "TEST: not found after ASSIGN. Keys: {}".format(
+                    sorted(assigns.keys()))
+            )
+        finally:
+            self._cleanup_assign(conn, "TEST:")
+
+    def test_assign_remove(self, conn):
+        """ASSIGN NAME: (no path) removes an existing assign."""
+        try:
+            conn.assign("TEST:", "RAM:")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns
+
+            conn.assign("TEST:")
+            assigns = conn.assigns()
+            assert "TEST:" not in assigns, (
+                "TEST: still present after removal. Keys: {}".format(
+                    sorted(assigns.keys()))
+            )
+        finally:
+            self._cleanup_assign(conn, "TEST:")
+
+    def test_assign_late(self, conn):
+        """ASSIGN LATE NAME: PATH creates a late-binding assign."""
+        try:
+            conn.assign("TEST:", "RAM:", mode="late")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns, (
+                "TEST: not found after ASSIGN LATE. Keys: {}".format(
+                    sorted(assigns.keys()))
+            )
+        finally:
+            self._cleanup_assign(conn, "TEST:")
+
+    def test_assign_add(self, conn):
+        """ASSIGN ADD NAME: PATH adds to a multi-directory assign."""
+        try:
+            # First create the base assign
+            conn.assign("TEST:", "RAM:")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns
+
+            # Add a second directory
+            conn.assign("TEST:", "SYS:", mode="add")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns
+            # Multi-dir assigns are semicolon-separated
+            test_path = assigns["TEST:"]
+            assert ";" in test_path, (
+                "Expected multi-dir assign with semicolons, got: {!r}".format(
+                    test_path)
+            )
+        finally:
+            self._cleanup_assign(conn, "TEST:")
+
+    def test_assign_bad_path(self, conn):
+        """ASSIGN NAME: BADPATH returns an error for nonexistent path."""
+        with pytest.raises(Exception) as exc_info:
+            conn.assign("TEST:", "RAM:NoSuchDirForAssignTest12345")
+        # Should be an IO error (Lock failed) or NotFound
+        assert exc_info.value.code in (200, 300), (
+            "Expected error code 200 or 300, got: {}".format(
+                exc_info.value.code)
+        )
+
+    def test_assign_syntax(self, conn):
+        """ASSIGN with missing args or no colon returns ERR 100."""
+        # Missing arguments entirely
+        with pytest.raises(Exception) as exc_info:
+            conn.assign("")
+        assert exc_info.value.code == 100
+
+        # Name without colon
+        with pytest.raises(Exception) as exc_info:
+            conn.assign("NOCOLON")
+        assert exc_info.value.code == 100
+
+    def test_assign_late_no_lock(self, conn):
+        """ASSIGN LATE with nonexistent path succeeds (no lock at creation)."""
+        try:
+            # Late-bind does not verify the path exists
+            conn.assign("TEST:", "RAM:NoSuchDirForAssignTest12345",
+                        mode="late")
+            assigns = conn.assigns()
+            assert "TEST:" in assigns, (
+                "TEST: not found after ASSIGN LATE with bad path. "
+                "Keys: {}".format(sorted(assigns.keys()))
+            )
+        finally:
+            self._cleanup_assign(conn, "TEST:")

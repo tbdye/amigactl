@@ -1,8 +1,11 @@
 """Interactive shell for amigactl."""
 
 import cmd
+import fnmatch
 import os
+import re
 import shlex
+import shutil
 import sys
 
 from . import (
@@ -135,6 +138,45 @@ def _amiga_basename(path):
     return path
 
 
+def _normalize_dotdot(path):
+    """Resolve .. segments in a relative path for Amiga compatibility.
+
+    Leading .. segments become Amiga / parent navigation.
+    Mid-path .. segments are resolved by popping the preceding segment.
+    Single . segments are removed.
+    """
+    parts = path.split("/")
+    resolved = []
+    leading_parents = 0
+    in_leading = True
+
+    for part in parts:
+        if part == "..":
+            if in_leading:
+                leading_parents += 1
+            elif resolved:
+                resolved.pop()
+            else:
+                leading_parents += 1
+        elif part == ".":
+            continue
+        else:
+            in_leading = False
+            if part:
+                resolved.append(part)
+
+    prefix = "/" * leading_parents
+    return prefix + "/".join(resolved)
+
+
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
+
+def _visible_len(s):
+    """Return display width of string, ignoring ANSI escape codes."""
+    return len(_ANSI_RE.sub('', s))
+
+
 # ---------------------------------------------------------------------------
 # Directory cache (used by tab completion in Step 4)
 # ---------------------------------------------------------------------------
@@ -223,9 +265,17 @@ class AmigaShell(cmd.Cmd):
             pass
 
         ver = self.conn.version()
-        self._update_prompt()
         print("Connected to {} ({})".format(self.host, ver))
         print('Type "help" for a list of commands, "exit" to disconnect.')
+
+        # Set initial CWD to SYS: (standard boot volume)
+        try:
+            info = self.conn.stat("SYS:")
+            if info.get("type", "").lower() == "dir":
+                self.cwd = "SYS:"
+        except Exception:
+            pass  # Leave cwd as None if SYS: unreachable
+        self._update_prompt()
 
     def postloop(self):
         """Disconnect when the REPL exits."""
@@ -284,6 +334,12 @@ class AmigaShell(cmd.Cmd):
             return False
         return True
 
+    def _prepend_cd(self, command):
+        """Prepend CD=<cwd> to a command for daemon exec with correct CWD."""
+        if self.cwd:
+            return "CD={} {}".format(self.cwd, command)
+        return command
+
     def _validate_path(self, path):
         """Validate that a path can be encoded to ISO-8859-1."""
         try:
@@ -322,6 +378,11 @@ class AmigaShell(cmd.Cmd):
         # Relative path -- needs CWD
         if self.cwd is None:
             return user_path  # Let daemon reject it
+
+        # Translate Unix .. and . to Amiga path conventions
+        segments = user_path.split("/")
+        if any(s == ".." or s == "." for s in segments):
+            user_path = _normalize_dotdot(user_path)
 
         return _join_amiga_path(self.cwd, user_path)
 
@@ -426,15 +487,38 @@ class AmigaShell(cmd.Cmd):
     # -- Navigation --------------------------------------------------------
 
     def do_cd(self, arg):
-        """Change the current working directory. Usage: cd [PATH]
+        """Change the current working directory on the Amiga.
 
-        Use an absolute Amiga path (e.g., cd SYS:S) or a relative path
-        if a CWD is already set (e.g., cd S from SYS:). Use 'cd /' to go
-        up one level. Use 'cd' with no arguments to clear the CWD."""
+    Usage: cd [PATH]
+
+    PATH    Absolute (e.g., SYS:S) or relative path. Omit to return
+            to SYS: (the home directory).
+
+    Amiga path conventions:
+        /       Go up one directory level (like Unix ..).
+        //      Go up two levels, etc.
+        ..      Also supported as a convenience (translated to /).
+
+    Examples:
+        cd SYS:S
+        cd Devs
+        cd /
+        cd ..
+        cd"""
         path = arg.strip()
 
-        # cd with no arguments -- clear CWD
+        # cd with no arguments -- return to SYS: (home directory)
         if not path:
+            if not self._check_connected():
+                return
+            try:
+                info = self.conn.stat("SYS:")
+                if info.get("type", "").lower() == "dir":
+                    self.cwd = "SYS:"
+                    self._update_prompt()
+                    return
+            except Exception:
+                pass
             self.cwd = None
             self._update_prompt()
             return
@@ -475,7 +559,9 @@ class AmigaShell(cmd.Cmd):
         self._update_prompt()
 
     def do_pwd(self, arg):
-        """Print the current working directory."""
+        """Print the current working directory on the Amiga.
+
+    Usage: pwd"""
         if self.cwd is None:
             print("No current directory set. Use 'cd' to set one.")
         else:
@@ -484,7 +570,25 @@ class AmigaShell(cmd.Cmd):
     # -- File listing and info ---------------------------------------------
 
     def do_ls(self, arg):
-        """List directory contents. Usage: ls [PATH] [-r] [-l]"""
+        """List directory contents.
+
+    Usage: ls [PATH] [-l] [-r]
+
+    PATH    Directory to list (default: current working directory).
+            Glob patterns (* and ?) are supported.
+    -l      Long format: type, name, protection bits, size, date.
+    -r      Recursive (implies -l).
+
+    Without -l, names are shown in multi-column format. Directories
+    are marked with a trailing /.
+
+    Examples:
+        ls
+        ls SYS:S
+        ls -l
+        ls -rl Work:
+        ls *.info
+        ls S*"""
         if not self._check_connected():
             return
         parts = shlex.split(arg) if arg.strip() else []
@@ -504,6 +608,10 @@ class AmigaShell(cmd.Cmd):
             else:
                 path_parts.append(part)
 
+        # Recursive always implies long format
+        if recursive:
+            long_format = True
+
         if not path_parts:
             if self.cwd is not None:
                 path = self.cwd
@@ -516,47 +624,97 @@ class AmigaShell(cmd.Cmd):
             if path is None:
                 return
 
-        entries = self._run(self.conn.dir, path, recursive=recursive)
-        if entries is None:
-            return
+        # Check for glob characters in the user-supplied argument
+        raw_arg = path_parts[0] if path_parts else ""
+        has_glob = any(c in raw_arg for c in ("*", "?"))
+
+        if has_glob:
+            # Glob mode: split resolved path into parent directory + pattern
+            # and filter the parent's contents.
+            if "/" in path:
+                parent, pattern = path.rsplit("/", 1)
+            elif ":" in path:
+                parent, pattern = path.split(":", 1)
+                parent += ":"
+            else:
+                # Relative pattern with no separator -- list CWD
+                parent = self.cwd if self.cwd is not None else ""
+                pattern = path
+
+            all_entries = self._run(self.conn.dir, parent)
+            if all_entries is None:
+                return
+            pattern_lower = pattern.lower()
+            entries = [
+                e for e in all_entries
+                if fnmatch.fnmatch(e["name"].lower(), pattern_lower)
+            ]
+            if not entries:
+                print("No match.")
+                return
+        else:
+            # Try dir() first (normal directory listing)
+            try:
+                entries = self.conn.dir(path, recursive=recursive)
+            except Exception:
+                # dir() failed -- try stat() for single-file fallback
+                try:
+                    info = self.conn.stat(path)
+                    if info.get("type", "").lower() == "file":
+                        # Construct a single-entry list matching dir format.
+                        # Ensure basename for display (_amiga_basename is
+                        # defensive; stat already returns fib_FileName).
+                        info["name"] = _amiga_basename(info["name"])
+                        entries = [info]
+                    else:
+                        # Not a file (e.g., broken path) -- show original
+                        # dir error via _run for proper error display
+                        entries = self._run(
+                            self.conn.dir, path, recursive=recursive)
+                        if entries is None:
+                            return
+                except Exception:
+                    # stat() also failed -- show original dir error
+                    entries = self._run(
+                        self.conn.dir, path, recursive=recursive)
+                    if entries is None:
+                        return
 
         if not entries:
             return
 
-        # Calculate column widths
-        max_name = 0
-        max_size = 0
-        max_prot = 0
-        for entry in entries:
-            name_len = len(entry["name"])
-            if name_len > max_name:
-                max_name = name_len
-            size_str = format_size(entry["size"])
-            size_len = len(size_str)
-            if size_len > max_size:
-                max_size = size_len
-            if long_format:
+        if long_format:
+            # Detailed format (existing behavior)
+            max_name = 0
+            max_size = 0
+            max_prot = 0
+            for entry in entries:
+                name_len = len(entry["name"])
+                if name_len > max_name:
+                    max_name = name_len
+                size_str = format_size(entry["size"])
+                size_len = len(size_str)
+                if size_len > max_size:
+                    max_size = size_len
                 prot_str = _format_protection(entry["protection"])
                 prot_len = len(prot_str)
                 if prot_len > max_prot:
                     max_prot = prot_len
 
-        for entry in entries:
-            is_dir = entry["type"].lower() == "dir"
-            name = entry["name"]
-            date = entry["datestamp"]
+            for entry in entries:
+                is_dir = entry["type"].lower() == "dir"
+                name = entry["name"]
+                date = entry["datestamp"]
 
-            if is_dir:
-                tag = self.cw.directory("  DIR")
-            else:
-                tag = "     "
+                if is_dir:
+                    tag = self.cw.directory("  DIR")
+                else:
+                    tag = "     "
 
-            if long_format:
                 prot_str = _format_protection(entry["protection"])
                 if is_dir:
-                    # Directories: no size column
-                    print("{tag}  {name:<{nw}}  {prot:>{pw}}  {blank:>{sw}}  "
-                          "{date}".format(
+                    print("{tag}  {name:<{nw}}  {prot:>{pw}}  "
+                          "{blank:>{sw}}  {date}".format(
                               tag=tag,
                               name=name, nw=max_name,
                               prot=prot_str, pw=max_prot,
@@ -564,32 +722,66 @@ class AmigaShell(cmd.Cmd):
                               date=date))
                 else:
                     size_str = format_size(entry["size"])
-                    print("{tag}  {name:<{nw}}  {prot:>{pw}}  {size:>{sw}}  "
-                          "{date}".format(
+                    print("{tag}  {name:<{nw}}  {prot:>{pw}}  "
+                          "{size:>{sw}}  {date}".format(
                               tag=tag,
                               name=name, nw=max_name,
                               prot=prot_str, pw=max_prot,
                               size=size_str, sw=max_size,
                               date=date))
-            else:
+        else:
+            # Multi-column names-only format
+            display_names = []
+            for entry in entries:
+                is_dir = entry["type"].lower() == "dir"
+                name = entry["name"]
                 if is_dir:
-                    print("{tag}  {name:<{nw}}  {blank:>{sw}}  "
-                          "{date}".format(
-                              tag=tag,
-                              name=name, nw=max_name,
-                              blank="", sw=max_size,
-                              date=date))
+                    display_names.append(
+                        self.cw.directory(name + "/"))
                 else:
-                    size_str = format_size(entry["size"])
-                    print("{tag}  {name:<{nw}}  {size:>{sw}}  "
-                          "{date}".format(
-                              tag=tag,
-                              name=name, nw=max_name,
-                              size=size_str, sw=max_size,
-                              date=date))
+                    display_names.append(name)
+
+            # Calculate column layout
+            term_width = shutil.get_terminal_size((80, 24)).columns
+            max_vis = max(
+                (_visible_len(n) for n in display_names), default=0)
+            col_width = max_vis + 2  # 2-char gutter
+            if col_width <= 0:
+                col_width = 1
+            num_cols = max(1, term_width // col_width)
+            num_rows = (len(display_names) + num_cols - 1) // num_cols
+
+            for row in range(num_rows):
+                parts = []
+                for col in range(num_cols):
+                    idx = row + col * num_rows
+                    if idx < len(display_names):
+                        name = display_names[idx]
+                        vis = _visible_len(name)
+                        if col < num_cols - 1:
+                            padding = col_width - vis
+                            parts.append(name + " " * padding)
+                        else:
+                            parts.append(name)
+                print("".join(parts))
+
+    def do_dir(self, arg):
+        """List directory contents (alias for ls). See: help ls"""
+        self.do_ls(arg)
+
+    complete_dir = _complete_path
 
     def do_stat(self, arg):
-        """Show file/directory metadata. Usage: stat PATH"""
+        """Show file or directory metadata.
+
+    Usage: stat PATH
+
+    Displays type, name, size, protection bits, datestamp, and
+    comment for the given path.
+
+    Examples:
+        stat SYS:S/Startup-Sequence
+        stat RAM:"""
         path = arg.strip()
         if not path:
             print("Usage: stat PATH")
@@ -613,7 +805,16 @@ class AmigaShell(cmd.Cmd):
                 print("{}={}".format(self.cw.key(key), value))
 
     def do_cat(self, arg):
-        """Print file contents to stdout. Usage: cat PATH"""
+        """Print a remote file's contents to the terminal.
+
+    Usage: cat PATH
+
+    Outputs the raw bytes of the file to stdout. Use 'get' to save
+    to a local file instead.
+
+    Examples:
+        cat SYS:S/Startup-Sequence
+        cat User-Startup"""
         path = arg.strip()
         if not path:
             print("Usage: cat PATH")
@@ -634,7 +835,17 @@ class AmigaShell(cmd.Cmd):
     # -- File transfer -----------------------------------------------------
 
     def do_get(self, arg):
-        """Download a file. Usage: get REMOTE LOCAL"""
+        """Download a file from the Amiga.
+
+    Usage: get REMOTE [LOCAL]
+
+    REMOTE  Amiga file path (absolute, or relative to current directory).
+    LOCAL   Destination on this computer (default: current directory,
+            same filename as the remote file).
+
+    Examples:
+        get SYS:C/WhichAmiga
+        get Startup-Sequence /tmp/startup.txt"""
         if not self._check_connected():
             return
         try:
@@ -642,14 +853,19 @@ class AmigaShell(cmd.Cmd):
         except ValueError as e:
             print("Parse error: {}".format(e))
             return
-        if len(parts) != 2:
-            print("Usage: get REMOTE LOCAL")
+        if len(parts) == 1:
+            remote = self._resolve_path(parts[0])
+            if remote is None:
+                return
+            local = _amiga_basename(parts[0])
+        elif len(parts) == 2:
+            remote = self._resolve_path(parts[0])
+            if remote is None:
+                return
+            local = parts[1]
+        else:
+            print("Usage: get REMOTE [LOCAL]")
             return
-
-        remote = self._resolve_path(parts[0])
-        if remote is None:
-            return
-        local = parts[1]
 
         data = self._run(self.conn.read, remote)
         if data is None:
@@ -666,7 +882,17 @@ class AmigaShell(cmd.Cmd):
             "Downloaded {} bytes to {}".format(len(data), local)))
 
     def do_put(self, arg):
-        """Upload a file. Usage: put LOCAL REMOTE"""
+        """Upload a file to the Amiga.
+
+    Usage: put LOCAL [REMOTE]
+
+    LOCAL   File on this computer to upload.
+    REMOTE  Destination Amiga path (default: current Amiga directory,
+            same filename as the local file).
+
+    Examples:
+        put startup.txt SYS:S/Startup-Sequence
+        put localfile.txt"""
         if not self._check_connected():
             return
         try:
@@ -674,13 +900,18 @@ class AmigaShell(cmd.Cmd):
         except ValueError as e:
             print("Parse error: {}".format(e))
             return
-        if len(parts) != 2:
-            print("Usage: put LOCAL REMOTE")
-            return
-
-        local = parts[0]
-        remote = self._resolve_path(parts[1])
-        if remote is None:
+        if len(parts) == 1:
+            local = parts[0]
+            remote = self._resolve_path(os.path.basename(local))
+            if remote is None:
+                return
+        elif len(parts) == 2:
+            local = parts[0]
+            remote = self._resolve_path(parts[1])
+            if remote is None:
+                return
+        else:
+            print("Usage: put LOCAL [REMOTE]")
             return
 
         try:
@@ -699,7 +930,18 @@ class AmigaShell(cmd.Cmd):
             "Uploaded {} bytes to {}".format(written, remote)))
 
     def do_edit(self, arg):
-        """Edit a remote file locally. Usage: edit PATH"""
+        """Edit a remote file in a local editor.
+
+    Usage: edit PATH
+
+    Downloads the file, opens it in $VISUAL or $EDITOR (default: vi
+    on Linux/macOS, notepad on Windows), and uploads changes on save.
+    Detects remote modifications made while editing and prompts
+    before overwriting.
+
+    Examples:
+        edit SYS:S/User-Startup
+        edit Startup-Sequence"""
         import subprocess
         import tempfile
 
@@ -753,10 +995,15 @@ class AmigaShell(cmd.Cmd):
             saved_mtime = os.path.getmtime(tmpfile)
 
             # 5. Launch editor
+            if sys.platform == "win32":
+                default_editor = "notepad"
+            else:
+                default_editor = "vi"
             editor = (os.environ.get("VISUAL")
                       or os.environ.get("EDITOR")
-                      or "vi")
-            subprocess.call([editor, tmpfile])
+                      or default_editor)
+            editor_cmd = shlex.split(editor) + [tmpfile]
+            subprocess.call(editor_cmd)
 
             # 6. Check for local modifications
             if os.path.getmtime(tmpfile) == saved_mtime:
@@ -864,7 +1111,16 @@ class AmigaShell(cmd.Cmd):
     # -- File manipulation -------------------------------------------------
 
     def do_rm(self, arg):
-        """Delete a file or empty directory. Usage: rm PATH"""
+        """Delete a file or empty directory on the Amiga.
+
+    Usage: rm PATH
+
+    The directory must be empty to be deleted. There is no recursive
+    delete or confirmation prompt.
+
+    Examples:
+        rm RAM:test.txt
+        rm Work:emptydir"""
         path = arg.strip()
         if not path:
             print("Usage: rm PATH")
@@ -881,7 +1137,15 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.success("Deleted: {}".format(path)))
 
     def do_mv(self, arg):
-        """Rename/move a file or directory. Usage: mv OLD NEW"""
+        """Rename or move a file or directory on the Amiga.
+
+    Usage: mv OLD NEW
+
+    Both paths must be on the same volume (AmigaOS limitation).
+
+    Examples:
+        mv RAM:test.txt RAM:renamed.txt
+        mv oldname newname"""
         if not self._check_connected():
             return
         try:
@@ -906,7 +1170,15 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.success("Renamed: {} -> {}".format(old, new)))
 
     def do_mkdir(self, arg):
-        """Create a directory. Usage: mkdir PATH"""
+        """Create a directory on the Amiga.
+
+    Usage: mkdir PATH
+
+    Parent directories must already exist.
+
+    Examples:
+        mkdir RAM:newdir
+        mkdir subdir"""
         path = arg.strip()
         if not path:
             print("Usage: mkdir PATH")
@@ -923,7 +1195,21 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.success("Created: {}".format(path)))
 
     def do_chmod(self, arg):
-        """Get or set protection bits. Usage: chmod PATH [HEX]"""
+        """Get or set AmigaOS protection bits.
+
+    Usage: chmod PATH [BITS]
+
+    PATH    File or directory path.
+    BITS    Raw protection value in hexadecimal. Omit to display
+            the current protection bits.
+
+    Protection bits are displayed as hsparwed (hold, script, pure,
+    archive, read, write, execute, delete). Owner RWED bits are
+    inverted: a set bit means access is denied.
+
+    Examples:
+        chmod SYS:C/Dir
+        chmod RAM:test.txt 0f"""
         if not self._check_connected():
             return
         try:
@@ -948,9 +1234,20 @@ class AmigaShell(cmd.Cmd):
                 self.cw.key("protection"), display))
 
     def do_touch(self, arg):
-        """Set file datestamp. Usage: touch PATH DATE TIME
+        """Set the datestamp on a file or directory, creating the file
+    if it does not exist.
 
-        DATE is YYYY-MM-DD, TIME is HH:MM:SS."""
+    Usage: touch PATH [DATE TIME]
+
+    PATH    Amiga file or directory path.
+    DATE    Date in YYYY-MM-DD format.
+    TIME    Time in HH:MM:SS format.
+
+    If DATE and TIME are omitted, the current time is used.
+
+    Examples:
+        touch RAM:test.txt
+        touch RAM:test.txt 2026-02-19 12:00:00"""
         if not self._check_connected():
             return
         try:
@@ -958,25 +1255,90 @@ class AmigaShell(cmd.Cmd):
         except ValueError as e:
             print("Parse error: {}".format(e))
             return
-        if len(parts) != 3:
-            print("Usage: touch PATH DATE TIME")
+        if len(parts) == 1:
+            path = self._resolve_path(parts[0])
+            if path is None:
+                return
+            datestamp = None
+        elif len(parts) == 3:
+            path = self._resolve_path(parts[0])
+            if path is None:
+                return
+            datestamp = "{} {}".format(parts[1], parts[2])
+        else:
+            print("Usage: touch PATH [DATE TIME]")
             return
 
-        path = self._resolve_path(parts[0])
-        if path is None:
+        try:
+            result = self.conn.setdate(path, datestamp)
+        except NotFoundError:
+            # File doesn't exist -- create it (Unix touch semantics)
+            try:
+                self.conn.write(path, b"")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+                return
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+                return
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+                return
+            if datestamp is not None:
+                # User specified a datestamp -- apply it to the new file
+                try:
+                    result = self.conn.setdate(path, datestamp)
+                except AmigactlError as e:
+                    print(self.cw.error("Error: {}".format(e.message)))
+                    return
+                except ProtocolError as e:
+                    print(self.cw.error("Protocol error: {}".format(e)))
+                    return
+                except OSError as e:
+                    print(self.cw.error("Connection error: {}".format(e)))
+                    self.conn = None
+                    self._update_prompt()
+                    return
+            else:
+                result = None
+        except AmigactlError as e:
+            print(self.cw.error("Error: {}".format(e.message)))
             return
-        datestamp = "{} {}".format(parts[1], parts[2])
+        except ProtocolError as e:
+            print(self.cw.error("Protocol error: {}".format(e)))
+            return
+        except OSError as e:
+            print(self.cw.error("Connection error: {}".format(e)))
+            self.conn = None
+            self._update_prompt()
+            return
 
-        result = self._run(self.conn.setdate, path, datestamp)
+        self._dir_cache.invalidate()
         if result is not None:
-            self._dir_cache.invalidate()
             print("{}={}".format(
                 self.cw.key("datestamp"), result))
+        else:
+            print("Created {}".format(path))
 
     # -- Execution and process management ----------------------------------
 
     def do_exec(self, arg):
-        """Execute a CLI command synchronously. Usage: exec CMD..."""
+        """Execute an AmigaOS CLI command and wait for it to finish.
+
+    Usage: exec COMMAND...
+
+    Runs the command synchronously. Output is displayed as it is
+    captured, followed by the return code. The shell blocks until
+    the command completes.
+
+    Use 'run' for asynchronous execution.
+
+    Examples:
+        exec list SYS:S
+        exec echo hello world
+        exec avail FLUSH"""
         command = arg.strip()
         if not command:
             print("Usage: exec CMD...")
@@ -984,7 +1346,7 @@ class AmigaShell(cmd.Cmd):
         if not self._check_connected():
             return
 
-        result = self._run(self.conn.execute, command)
+        result = self._run(self.conn.execute, self._prepend_cd(command))
         if result is None:
             return
 
@@ -993,8 +1355,21 @@ class AmigaShell(cmd.Cmd):
             sys.stdout.write(output)
         print("Return code: {}".format(rc))
 
+    complete_exec = _complete_path
+    complete_run = _complete_path
+
     def do_run(self, arg):
-        """Launch a command asynchronously. Usage: run CMD..."""
+        """Launch an AmigaOS CLI command in the background.
+
+    Usage: run COMMAND...
+
+    Starts the command asynchronously and returns its process ID
+    immediately. Use 'ps' to list running processes, 'status ID'
+    to check on one, and 'signal ID' or 'kill ID' to stop it.
+
+    Examples:
+        run wait 30
+        run execute SYS:S/MyScript"""
         command = arg.strip()
         if not command:
             print("Usage: run CMD...")
@@ -1002,14 +1377,20 @@ class AmigaShell(cmd.Cmd):
         if not self._check_connected():
             return
 
-        proc_id = self._run(self.conn.execute_async, command)
+        proc_id = self._run(self.conn.execute_async, self._prepend_cd(command))
         if proc_id is None:
             return
 
         print("Process ID: {}".format(proc_id))
 
     def do_ps(self, arg):
-        """List daemon-launched processes. Usage: ps"""
+        """List processes launched by the daemon.
+
+    Usage: ps
+
+    Shows the ID, command, status (running/finished), and return
+    code of each tracked process. Only processes started via 'run'
+    are tracked."""
         if not self._check_connected():
             return
 
@@ -1052,7 +1433,17 @@ class AmigaShell(cmd.Cmd):
                 p["status"], max_status, rc_str, max_rc))
 
     def do_status(self, arg):
-        """Show status of a tracked process. Usage: status ID"""
+        """Show the status of a tracked background process.
+
+    Usage: status ID
+
+    ID      Process ID returned by 'run'.
+
+    Displays the process ID, command, status (running/finished),
+    and return code.
+
+    Examples:
+        status 1"""
         arg = arg.strip()
         if not arg:
             print("Usage: status ID")
@@ -1078,9 +1469,17 @@ class AmigaShell(cmd.Cmd):
                 print("{}={}".format(self.cw.key(key), val))
 
     def do_signal(self, arg):
-        """Send a break signal to a process. Usage: signal ID [SIG]
+        """Send a break signal to a background process.
 
-        Default signal is CTRL_C."""
+    Usage: signal ID [SIG]
+
+    ID      Process ID returned by 'run'.
+    SIG     Signal name (default: CTRL_C). Also: CTRL_D, CTRL_E,
+            CTRL_F.
+
+    Examples:
+        signal 1
+        signal 1 CTRL_D"""
         if not self._check_connected():
             return
         try:
@@ -1104,7 +1503,17 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.success("Signal sent."))
 
     def do_kill(self, arg):
-        """Force-terminate a tracked process. Usage: kill ID"""
+        """Force-terminate a background process.
+
+    Usage: kill ID
+
+    ID      Process ID returned by 'run'.
+
+    Forcibly removes the process from the daemon's tracking. Use
+    'signal' first for a graceful shutdown.
+
+    Examples:
+        kill 1"""
         arg = arg.strip()
         if not arg:
             print("Usage: kill ID")
@@ -1125,7 +1534,9 @@ class AmigaShell(cmd.Cmd):
     # -- System information ------------------------------------------------
 
     def do_version(self, arg):
-        """Print daemon version. Usage: version"""
+        """Print the amigactld daemon version string.
+
+    Usage: version"""
         if not self._check_connected():
             return
 
@@ -1134,7 +1545,11 @@ class AmigaShell(cmd.Cmd):
             print(ver)
 
     def do_ping(self, arg):
-        """Ping the daemon. Usage: ping"""
+        """Check that the daemon is responding.
+
+    Usage: ping
+
+    Prints OK if the daemon responds."""
         if not self._check_connected():
             return
 
@@ -1143,7 +1558,11 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.success("OK"))
 
     def do_uptime(self, arg):
-        """Show daemon uptime. Usage: uptime"""
+        """Show how long the daemon has been running.
+
+    Usage: uptime
+
+    Output format: Xd Xh Xm Xs."""
         if not self._check_connected():
             return
 
@@ -1170,7 +1589,12 @@ class AmigaShell(cmd.Cmd):
         print(" ".join(parts))
 
     def do_sysinfo(self, arg):
-        """Show system information. Usage: sysinfo"""
+        """Show Amiga system information.
+
+    Usage: sysinfo
+
+    Displays CPU type, chip/fast RAM, Kickstart version, and other
+    system details."""
         if not self._check_connected():
             return
 
@@ -1182,7 +1606,12 @@ class AmigaShell(cmd.Cmd):
             print("{}={}".format(self.cw.key(key), value))
 
     def do_assigns(self, arg):
-        """List logical assigns. Usage: assigns"""
+        """List all logical assigns on the Amiga.
+
+    Usage: assigns
+
+    Shows each assign name and its target path. Use 'assign' to
+    create, modify, or remove individual assigns."""
         if not self._check_connected():
             return
 
@@ -1203,8 +1632,67 @@ class AmigaShell(cmd.Cmd):
         for name, path in assigns.items():
             print("{:<{}}  {}".format(name, max_name, path))
 
+    def do_assign(self, arg):
+        """Create, modify, or remove a logical assign.
+
+    Usage: assign NAME: [PATH]
+           assign late NAME: PATH
+           assign add NAME: PATH
+
+    Create:     assign TEST: RAM:         (lock-based, immediate)
+    Late-bind:  assign late TEST: RAM:    (resolved on first access)
+    Add path:   assign add TEST: RAM:T    (multi-directory assign)
+    Remove:     assign TEST:
+    List all:   use 'assigns' command"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg)
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if not parts:
+            print("Usage: assign NAME: [PATH]\n"
+                  "       assign late NAME: PATH\n"
+                  "       assign add NAME: PATH")
+            return
+
+        mode = None
+        idx = 0
+
+        # Check for mode keyword (case-insensitive)
+        if parts[0].lower() in ("late", "add"):
+            mode = parts[0].lower()
+            idx = 1
+
+        if idx >= len(parts):
+            print("Usage: assign [late|add] NAME: [PATH]")
+            return
+
+        name = parts[idx]
+        idx += 1
+
+        path = None
+        if idx < len(parts):
+            path = parts[idx]
+
+        result = self._run(self.conn.assign, name, path, mode)
+        if result is not None:
+            if path is not None:
+                print(self.cw.success("Assigned: {} -> {}".format(
+                    name, path)))
+            else:
+                print(self.cw.success("Removed: {}".format(name)))
+
+    complete_assign = _complete_path
+
     def do_ports(self, arg):
-        """List active Exec message ports. Usage: ports"""
+        """List active Exec message ports on the Amiga.
+
+    Usage: ports
+
+    Shows the names of all public message ports (e.g., REXX,
+    amigactld). Useful for finding ARexx port names."""
         if not self._check_connected():
             return
 
@@ -1220,7 +1708,12 @@ class AmigaShell(cmd.Cmd):
             print(port)
 
     def do_volumes(self, arg):
-        """List mounted volumes. Usage: volumes"""
+        """List mounted volumes on the Amiga.
+
+    Usage: volumes
+
+    Shows each volume's name, used space, free space, and total
+    capacity."""
         if not self._check_connected():
             return
 
@@ -1269,7 +1762,12 @@ class AmigaShell(cmd.Cmd):
                 cap, max_cap))
 
     def do_tasks(self, arg):
-        """List running tasks/processes. Usage: tasks"""
+        """List all running tasks and processes on the Amiga.
+
+    Usage: tasks
+
+    Shows name, type (task/process), priority, state, and stack
+    size for every task in the system."""
         if not self._check_connected():
             return
 
@@ -1319,7 +1817,19 @@ class AmigaShell(cmd.Cmd):
     # -- ARexx -------------------------------------------------------------
 
     def do_arexx(self, arg):
-        """Send ARexx command to a named port. Usage: arexx PORT CMD..."""
+        """Send an ARexx command to a named message port.
+
+    Usage: arexx PORT COMMAND...
+
+    PORT        Name of the ARexx port (use 'ports' to list them).
+    COMMAND     ARexx command string to send.
+
+    The return code and any result string are displayed.
+
+    Examples:
+        arexx REXX return 1+2
+        arexx REXX "say 'hello'"
+        arexx CNet_AREXX WHO"""
         if not self._check_connected():
             return
         arg = arg.strip()
@@ -1347,7 +1857,17 @@ class AmigaShell(cmd.Cmd):
     # -- File streaming ----------------------------------------------------
 
     def do_tail(self, arg):
-        """Stream file appends. Usage: tail PATH (Ctrl-C to stop)"""
+        """Stream new data appended to a file in real time.
+
+    Usage: tail PATH
+
+    Continuously displays new data as it is written to the file,
+    similar to Unix 'tail -f'. Press Ctrl-C to stop.
+
+    Detects file truncation and deletion.
+
+    Examples:
+        tail RAM:logfile.txt"""
         path = arg.strip()
         if not path:
             print("Usage: tail PATH")
@@ -1381,7 +1901,12 @@ class AmigaShell(cmd.Cmd):
     # -- Connection management ---------------------------------------------
 
     def do_reconnect(self, arg):
-        """Re-establish the connection after a disconnect. Usage: reconnect"""
+        """Re-establish the connection after a disconnect.
+
+    Usage: reconnect
+
+    Use this after the connection drops (e.g., network error,
+    daemon restart). The current working directory is preserved."""
         if self.conn is not None:
             print("Already connected.")
             return
@@ -1405,7 +1930,13 @@ class AmigaShell(cmd.Cmd):
     # -- Destructive operations --------------------------------------------
 
     def do_shutdown(self, arg):
-        """Shut down the Amiga. Usage: shutdown"""
+        """Shut down the Amiga (requires confirmation).
+
+    Usage: shutdown
+
+    Sends a shutdown command to the Amiga. The daemon must have
+    ALLOW_REMOTE_SHUTDOWN enabled in its configuration. You will
+    be prompted to confirm."""
         if not self._check_connected():
             return
         try:
@@ -1424,7 +1955,13 @@ class AmigaShell(cmd.Cmd):
             self._update_prompt()
 
     def do_reboot(self, arg):
-        """Reboot the Amiga. Usage: reboot"""
+        """Reboot the Amiga (requires confirmation).
+
+    Usage: reboot
+
+    Sends a reboot command to the Amiga. The daemon must have
+    ALLOW_REMOTE_REBOOT enabled in its configuration. You will
+    be prompted to confirm."""
         if not self._check_connected():
             return
         try:
@@ -1445,11 +1982,15 @@ class AmigaShell(cmd.Cmd):
     # -- Session control ---------------------------------------------------
 
     def do_exit(self, arg):
-        """Exit the shell. Usage: exit"""
+        """Disconnect and exit the shell.
+
+    Usage: exit
+
+    You can also press Ctrl-D to exit."""
         return True
 
     def do_quit(self, arg):
-        """Exit the shell. Usage: quit"""
+        """Disconnect and exit the shell (alias for exit)."""
         return True
 
     def do_EOF(self, arg):
@@ -1459,12 +2000,22 @@ class AmigaShell(cmd.Cmd):
 
     # -- Suppress cmd.Cmd noise -------------------------------------------
 
+    def get_names(self):
+        """Hide internal commands from help listing."""
+        hidden = {'do_EOF', 'do_quit', 'do_dir'}
+        return [n for n in super().get_names() if n not in hidden]
+
     def emptyline(self):
         """Do nothing on empty input (override cmd.Cmd's default repeat)."""
         pass
 
     def default(self, line):
         """Handle unknown commands."""
-        cmd_word = line.split()[0] if line.strip() else line
+        stripped = line.strip()
+        # Single token that looks like a path: treat as cd
+        if " " not in stripped and (":" in stripped or stripped.endswith("/")):
+            self.do_cd(stripped)
+            return
+        cmd_word = stripped.split()[0] if stripped else line
         print("Unknown command: {}. Type 'help' for a list of commands."
               .format(cmd_word))

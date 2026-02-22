@@ -14,7 +14,28 @@ def _supports_color():
         return True
     if not hasattr(sys.stdout, "isatty"):
         return False
-    return sys.stdout.isatty()
+    if not sys.stdout.isatty():
+        return False
+    # Windows-specific VT processing check
+    if sys.platform == "win32":
+        # Windows Terminal natively supports ANSI
+        if os.environ.get("WT_SESSION"):
+            return True
+        # Try to enable VT processing via ctypes
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            if mode.value & 0x0004:
+                return True
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+            return True
+        except Exception:
+            return False
+    return True
 
 
 # ANSI escape sequences

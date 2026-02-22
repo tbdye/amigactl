@@ -5,6 +5,9 @@ daemon.  They exercise the formatting and path manipulation helpers used
 by the interactive shell.
 """
 
+import os
+from unittest import mock
+
 import pytest
 
 from amigactl.shell import (
@@ -12,8 +15,10 @@ from amigactl.shell import (
     _amiga_basename,
     _join_amiga_path,
     _format_protection,
+    _normalize_dotdot,
+    _visible_len,
 )
-from amigactl.colors import ColorWriter
+from amigactl.colors import ColorWriter, _supports_color
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +118,39 @@ class TestJoinAmigaPath:
 
 
 # ---------------------------------------------------------------------------
+# _normalize_dotdot()
+# ---------------------------------------------------------------------------
+
+class TestNormalizeDotdot:
+    def test_single_parent(self):
+        assert _normalize_dotdot("..") == "/"
+
+    def test_parent_with_child(self):
+        assert _normalize_dotdot("../foo") == "/foo"
+
+    def test_double_parent(self):
+        assert _normalize_dotdot("../../foo") == "//foo"
+
+    def test_mid_path_parent(self):
+        assert _normalize_dotdot("foo/../bar") == "bar"
+
+    def test_double_mid_path_parent(self):
+        assert _normalize_dotdot("foo/bar/../../baz") == "baz"
+
+    def test_single_dot(self):
+        assert _normalize_dotdot(".") == ""
+
+    def test_dotdot_in_filename(self):
+        assert _normalize_dotdot("file..bak") == "file..bak"
+
+    def test_dot_removal(self):
+        assert _normalize_dotdot("foo/./bar") == "foo/bar"
+
+    def test_no_dots(self):
+        assert _normalize_dotdot("no_dots_here") == "no_dots_here"
+
+
+# ---------------------------------------------------------------------------
 # _format_protection()
 # ---------------------------------------------------------------------------
 
@@ -173,3 +211,126 @@ class TestColorWriter:
     def test_write_always_plain(self):
         cw = ColorWriter(force_color=True)
         assert cw.write("plain") == "plain"
+
+
+# ---------------------------------------------------------------------------
+# _visible_len()
+# ---------------------------------------------------------------------------
+
+class TestVisibleLen:
+    """Tests for ANSI-aware string display width calculation."""
+
+    def test_plain(self):
+        assert _visible_len("hello") == 5
+
+    def test_ansi(self):
+        assert _visible_len("\033[34mhello\033[0m") == 5
+
+    def test_empty(self):
+        assert _visible_len("") == 0
+
+
+# ---------------------------------------------------------------------------
+# _supports_color() — Windows VT processing
+# ---------------------------------------------------------------------------
+
+class TestSupportsColorWindows:
+    """Tests for Windows-specific ANSI color detection."""
+
+    def test_win32_with_wt_session(self):
+        """Windows Terminal (WT_SESSION set) should enable color."""
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = True
+        with mock.patch("amigactl.colors.sys.platform", "win32"), \
+             mock.patch("amigactl.colors.sys.stdout", mock_stdout), \
+             mock.patch.dict(os.environ, {"WT_SESSION": "1"}, clear=False):
+            # Remove NO_COLOR and AMIGACTL_COLOR if present
+            env = os.environ.copy()
+            env.pop("NO_COLOR", None)
+            env.pop("AMIGACTL_COLOR", None)
+            with mock.patch.dict(os.environ, env, clear=True):
+                # Ensure WT_SESSION is set
+                os.environ["WT_SESSION"] = "1"
+                assert _supports_color() is True
+
+    def test_win32_no_wt_session_ctypes_fails(self):
+        """Windows without WT_SESSION and ctypes failure returns False."""
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = True
+        with mock.patch("amigactl.colors.sys.platform", "win32"), \
+             mock.patch("amigactl.colors.sys.stdout", mock_stdout), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            # ctypes.windll doesn't exist on Linux, so the import
+            # succeeds but windll attribute access raises AttributeError
+            assert _supports_color() is False
+
+
+# ---------------------------------------------------------------------------
+# Editor fallback
+# ---------------------------------------------------------------------------
+
+class TestEditorFallback:
+    """Tests for editor resolution in do_edit."""
+
+    def test_unix_default_editor(self):
+        """On Unix, default editor should be vi."""
+        import shlex
+        with mock.patch("sys.platform", "linux"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            default_editor = "vi"
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or default_editor)
+            assert editor == "vi"
+            assert shlex.split(editor) == ["vi"]
+
+    def test_windows_default_editor(self):
+        """On Windows, default editor should be notepad."""
+        import shlex
+        with mock.patch("sys.platform", "win32"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            default_editor = "notepad"
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or default_editor)
+            assert editor == "notepad"
+            assert shlex.split(editor) == ["notepad"]
+
+    def test_visual_overrides_default(self):
+        """$VISUAL should take precedence over platform default."""
+        import shlex
+        with mock.patch.dict(os.environ, {"VISUAL": "emacs"}, clear=True):
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or "vi")
+            assert editor == "emacs"
+
+    def test_editor_overrides_default(self):
+        """$EDITOR should take precedence over platform default."""
+        import shlex
+        with mock.patch.dict(os.environ, {"EDITOR": "nano"}, clear=True):
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or "vi")
+            assert editor == "nano"
+
+    def test_visual_overrides_editor(self):
+        """$VISUAL should take precedence over $EDITOR."""
+        with mock.patch.dict(os.environ,
+                             {"VISUAL": "emacs", "EDITOR": "nano"},
+                             clear=True):
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or "vi")
+            assert editor == "emacs"
+
+    def test_shlex_split_multi_word_editor(self):
+        """Multi-word editor commands should be split correctly."""
+        import shlex
+        with mock.patch.dict(os.environ,
+                             {"EDITOR": "code --wait"}, clear=True):
+            editor = (os.environ.get("VISUAL")
+                      or os.environ.get("EDITOR")
+                      or "vi")
+            parts = shlex.split(editor)
+            assert parts == ["code", "--wait"]

@@ -1017,45 +1017,38 @@ int cmd_setdate(struct client *c, const char *args)
 
     args_len = strlen(args);
 
-    /* Datestamp is always the last 19 chars: "YYYY-MM-DD HH:MM:SS" */
-    if (args_len < 21) {
-        send_error(c->fd, ERR_SYNTAX, "Missing arguments");
-        send_sentinel(c->fd);
-        return 0;
+    /* Try to parse an explicit datestamp (last 19 chars: YYYY-MM-DD HH:MM:SS) */
+    if (args_len >= 21 &&
+        (args[args_len - 20] == ' ' || args[args_len - 20] == '\t')) {
+        ds_str = args + args_len - 19;
+        if (parse_datestamp(ds_str, &ds) == 0) {
+            /* Valid datestamp -- extract path */
+            pathlen = (int)(ds_str - 1 - args);
+            while (pathlen > 0 && (args[pathlen - 1] == ' ' ||
+                                    args[pathlen - 1] == '\t'))
+                pathlen--;
+
+            if (pathlen > 0 && pathlen < (int)sizeof(path)) {
+                memcpy(path, args, pathlen);
+                path[pathlen] = '\0';
+                goto apply;
+            }
+        }
     }
 
-    ds_str = args + args_len - 19;
-
-    /* There must be whitespace separating the path from the datestamp */
-    if (*(ds_str - 1) != ' ' && *(ds_str - 1) != '\t') {
-        send_error(c->fd, ERR_SYNTAX, "Invalid datestamp format");
-        send_sentinel(c->fd);
-        return 0;
+    /* No valid datestamp suffix -- use current time */
+    strncpy(path, args, sizeof(path) - 1);
+    path[sizeof(path) - 1] = '\0';
+    /* Trim trailing whitespace */
+    {
+        int plen = strlen(path);
+        while (plen > 0 && (path[plen - 1] == ' ' || path[plen - 1] == '\t'))
+            plen--;
+        path[plen] = '\0';
     }
+    DateStamp(&ds);
 
-    /* Extract path, trimming trailing whitespace */
-    pathlen = (int)(ds_str - 1 - args);
-    while (pathlen > 0 && (args[pathlen - 1] == ' ' ||
-                           args[pathlen - 1] == '\t'))
-        pathlen--;
-
-    if (pathlen <= 0 || pathlen >= (int)sizeof(path)) {
-        send_error(c->fd, ERR_SYNTAX, "Missing arguments");
-        send_sentinel(c->fd);
-        return 0;
-    }
-
-    memcpy(path, args, pathlen);
-    path[pathlen] = '\0';
-
-    /* Parse the datestamp */
-    if (parse_datestamp(ds_str, &ds) < 0) {
-        send_error(c->fd, ERR_SYNTAX, "Invalid datestamp format");
-        send_sentinel(c->fd);
-        return 0;
-    }
-
-    /* Apply it */
+apply:
     if (!SetFileDate((STRPTR)path, &ds)) {
         send_dos_error(c->fd, "SetFileDate failed");
         return 0;

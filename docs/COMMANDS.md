@@ -54,6 +54,7 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [KILL](#kill)
 - [SYSINFO](#sysinfo)
 - [ASSIGNS](#assigns)
+- [ASSIGN](#assign)
 - [PORTS](#ports)
 - [VOLUMES](#volumes)
 - [TASKS](#tasks)
@@ -959,17 +960,21 @@ Sets the AmigaOS datestamp (modification time) on a file or directory.
 ### Syntax
 
 ```
+SETDATE <path>
 SETDATE <path> <datestamp>
 ```
 
-Both `<path>` and `<datestamp>` are mandatory. The datestamp format is
-`YYYY-MM-DD HH:MM:SS` (always exactly 19 characters).
+`<path>` is mandatory. `<datestamp>` is optional. When datestamp is
+omitted, the daemon uses the current Amiga system time (via
+`DateStamp()`). The datestamp format is `YYYY-MM-DD HH:MM:SS` (always
+exactly 19 characters).
 
-**Parsing rule**: The daemon extracts the datestamp as the last 19
-characters of the argument string. Everything before those 19 characters
-(trimmed of trailing whitespace) is the path. This means the path and
-datestamp are separated by at least one space, and the datestamp always
-occupies a fixed-width suffix.
+**Parsing rule**: The daemon attempts to extract a datestamp as the last
+19 characters of the argument string. If the last 19 characters form a
+valid datestamp with whitespace separating them from the path, the
+explicit datestamp is used. Otherwise, the entire argument string
+(trimmed of trailing whitespace) is treated as the path and the current
+system time is applied.
 
 ### Response
 
@@ -987,18 +992,17 @@ representation for consistency (confirming what was actually applied).
 
 | Condition | Response |
 |-----------|----------|
-| Missing arguments (no path or datestamp) | `ERR 100 Missing arguments` |
-| Invalid datestamp format (not `YYYY-MM-DD HH:MM:SS`, out-of-range values) | `ERR 100 Invalid datestamp format` |
+| Missing arguments (no path) | `ERR 100 Missing arguments` |
+| Invalid datestamp format (not `YYYY-MM-DD HH:MM:SS`, out-of-range values) | Falls back to current time (not an error) |
 | Path not found | `ERR 200 <dos error message>` |
 | SetFileDate failure (e.g., write-protected disk) | `ERR <code> <dos error message>` |
 
-Error checking order: argument presence is validated first, then the
-datestamp string is parsed and validated, then the DOS call is attempted.
-
-**Datestamp validation**: Year must be >= 1978 (AmigaOS epoch). Month
-must be 1-12. Day must be 1 through the number of days in the given
-month (accounting for leap years). Hours must be 0-23, minutes 0-59,
-seconds 0-59.
+**Datestamp validation** (when explicit datestamp is provided): Year
+must be >= 1978 (AmigaOS epoch). Month must be 1-12. Day must be 1
+through the number of days in the given month (accounting for leap
+years). Hours must be 0-23, minutes 0-59, seconds 0-59. If any
+validation fails, the daemon falls back to using the current system
+time with the entire argument string as the path.
 
 ### Edge Cases / Notes
 
@@ -1009,6 +1013,8 @@ seconds 0-59.
 - SETDATE works on both files and directories.
 - The path may contain spaces only in the portion before the final 19
   characters (which are always the datestamp).
+- When no datestamp is provided, the applied time reflects the Amiga's
+  system clock at the moment `DateStamp()` is called.
 
 ### Examples
 
@@ -1018,6 +1024,15 @@ seconds 0-59.
 C> SETDATE RAM:test.txt 2024-06-15 14:30:00
 S> OK
 S> datestamp=2024-06-15 14:30:00
+S> .
+```
+
+**Set to current time (no datestamp):**
+
+```
+C> SETDATE RAM:test.txt
+S> OK
+S> datestamp=2026-02-21 15:42:30
 S> .
 ```
 
@@ -1043,11 +1058,11 @@ S> ERR 200 Object not found
 S> .
 ```
 
-**Invalid datestamp format:**
+**Nonexistent path (no datestamp):**
 
 ```
-C> SETDATE RAM:test.txt 2024-13-01 00:00:00
-S> ERR 100 Invalid datestamp format
+C> SETDATE RAM:NoSuchFile
+S> ERR 200 Object not found
 S> .
 ```
 
@@ -1805,6 +1820,146 @@ C> ASSIGNS
 S> OK
 S> LIBS:	DH0:Libs;WORK:Libs
 S> ...
+S> .
+```
+
+---
+
+## ASSIGN
+
+Creates, replaces, adds to, or removes a logical assign. This is the
+write counterpart to the read-only ASSIGNS command.
+
+### Syntax
+
+```
+ASSIGN [LATE|ADD] <name>: [<path>]
+```
+
+The assign name MUST include the trailing colon. The modifier keyword
+(LATE or ADD) is optional and case-insensitive.
+
+**Modes:**
+
+| Form | Description |
+|------|-------------|
+| `ASSIGN NAME: PATH` | Create or replace an assign using `AssignLock()`. Obtains a lock on the path and binds the name to it. Replaces any existing assign of the same name. |
+| `ASSIGN LATE NAME: PATH` | Create a late-binding assign using `AssignLate()`. The path is not resolved until first access. No lock is obtained at creation time. |
+| `ASSIGN ADD NAME: PATH` | Add a directory to an existing multi-directory assign using `AssignAdd()`. The assign must already exist (create it first with `ASSIGN NAME: PATH`). |
+| `ASSIGN NAME:` | Remove an assign using `AssignLock()` with a NULL lock. The name must refer to an existing assign. |
+
+### Response
+
+```
+OK
+.
+```
+
+No payload lines. The assign operation has been completed.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing arguments (no name) | `ERR 100 Usage: ASSIGN [LATE\|ADD] NAME: [PATH]` |
+| Missing assign name after modifier | `ERR 100 Missing assign name` |
+| Name does not include colon | `ERR 100 Assign name must include colon` |
+| Invalid or empty name (zero-length before colon, or too long) | `ERR 100 Invalid assign name` |
+| Path not found (ASSIGN or ADD mode) | `ERR <code> Lock failed: <dos error message>` |
+| AssignLock failure | `ERR <code> AssignLock failed: <dos error message>` |
+| AssignAdd failure (e.g., assign does not exist) | `ERR 300 AssignAdd failed (assign may not exist; create with ASSIGN NAME: PATH first)` |
+| AssignLate failure | `ERR 300 AssignLate failed` |
+| Assign not found (removal mode) | `ERR 200 Assign not found` |
+
+### Edge Cases / Notes
+
+- The trailing colon in the wire protocol name is stripped before passing
+  to the AmigaOS API calls (AssignLock, AssignLate, AssignAdd,
+  AssignLock-for-removal all take the name WITHOUT the colon).
+- `ASSIGN NAME: PATH` (lock mode) replaces any existing assign of the
+  same name, including late-binding and nonbinding assigns.
+- `ASSIGN ADD NAME: PATH` requires the assign to already exist. To
+  create a multi-directory assign, first create it with
+  `ASSIGN NAME: PATH`, then add directories with `ASSIGN ADD NAME: PATH`.
+- `AssignLock` and `AssignAdd` consume (take ownership of) the lock on
+  success. The daemon does not call `UnLock()` after a successful assign.
+- `ASSIGN LATE NAME: PATH` does not verify that the path exists at
+  creation time. The path is resolved on first access.
+- The maximum assign name length is 63 characters (excluding the colon).
+- Commands are case-insensitive (`assign`, `Assign`, `ASSIGN` are
+  equivalent), as are the LATE and ADD modifiers.
+
+### Examples
+
+**Create an assign:**
+
+```
+C> ASSIGN MYDIR: DH0:Projects
+S> OK
+S> .
+```
+
+**Replace an existing assign:**
+
+```
+C> ASSIGN MYDIR: DH0:OtherProjects
+S> OK
+S> .
+```
+
+**Create a late-binding assign:**
+
+```
+C> ASSIGN LATE MYDIR: DH0:Projects
+S> OK
+S> .
+```
+
+**Add a directory to an existing assign:**
+
+```
+C> ASSIGN ADD LIBS: WORK:Libs
+S> OK
+S> .
+```
+
+**Remove an assign:**
+
+```
+C> ASSIGN MYDIR:
+S> OK
+S> .
+```
+
+**Path not found:**
+
+```
+C> ASSIGN MYDIR: DH0:NoSuchDir
+S> ERR 200 Lock failed: Object not found
+S> .
+```
+
+**Assign not found (removal):**
+
+```
+C> ASSIGN NOSUCH:
+S> ERR 200 Assign not found
+S> .
+```
+
+**Missing colon:**
+
+```
+C> ASSIGN MYDIR DH0:Projects
+S> ERR 100 Assign name must include colon
+S> .
+```
+
+**Missing arguments:**
+
+```
+C> ASSIGN
+S> ERR 100 Usage: ASSIGN [LATE|ADD] NAME: [PATH]
 S> .
 ```
 

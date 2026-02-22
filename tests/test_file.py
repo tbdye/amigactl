@@ -977,8 +977,10 @@ class TestSetdate:
         assert payload == []
 
     def test_setdate_invalid_format(self, raw_connection, cleanup_paths):
-        """SETDATE with an invalid datestamp format returns ERR 100.
-        COMMANDS.md: 'Invalid datestamp format -> ERR 100'."""
+        """SETDATE with an invalid datestamp format returns ERR.
+        The daemon falls back to treating the full args as the path
+        (since the datestamp doesn't parse), so the concatenated path
+        doesn't exist and SetFileDate fails."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_setdate_fmt.txt"
 
@@ -992,15 +994,16 @@ class TestSetdate:
         # Send an invalid datestamp (month 13 is out of range)
         send_command(sock, "SETDATE {} 2024-13-01 00:00:00".format(path))
         status, payload = read_response(sock)
-        assert status.startswith("ERR 100"), (
-            "Expected ERR 100, got: {!r}".format(status)
+        assert status.startswith("ERR"), (
+            "Expected ERR, got: {!r}".format(status)
         )
         assert payload == []
 
     def test_setdate_malformed_format(self, raw_connection, cleanup_paths):
-        """SETDATE with a structurally invalid datestamp returns ERR 100.
-        COMMANDS.md: 'Invalid datestamp format -> ERR 100'.  Tests the
-        format parser itself (not just range validation)."""
+        """SETDATE with a structurally invalid datestamp returns ERR.
+        The daemon falls back to treating the full args as the path
+        (since the datestamp doesn't parse), so the concatenated path
+        doesn't exist and SetFileDate fails."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_setdate_mal.txt"
 
@@ -1012,8 +1015,8 @@ class TestSetdate:
 
         send_command(sock, "SETDATE {} not-a-datestamp".format(path))
         status, payload = read_response(sock)
-        assert status.startswith("ERR 100"), (
-            "Expected ERR 100, got: {!r}".format(status)
+        assert status.startswith("ERR"), (
+            "Expected ERR, got: {!r}".format(status)
         )
         assert payload == []
 
@@ -1052,6 +1055,43 @@ class TestSetdate:
             "Expected: {!r}\nActual: {!r}".format(
                 target_datestamp, kv["datestamp"])
         )
+
+    def test_setdate_current_time(self, raw_connection, cleanup_paths):
+        """SETDATE with no datestamp uses current time.
+        COMMANDS.md: 'When datestamp is omitted, the daemon uses the
+        current Amiga system time.'"""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate_now.txt"
+
+        # Create a test file
+        status, _payload = send_write_data(sock, path, b"test data")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+        cleanup_paths.add(path)
+
+        # SETDATE with path only (no datestamp)
+        send_command(sock, "SETDATE {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK", (
+            "Expected OK, got: {!r}".format(status)
+        )
+        assert len(payload) == 1, (
+            "Expected 1 payload line, got {}".format(len(payload))
+        )
+        assert payload[0].startswith("datestamp="), (
+            "Payload must start with 'datestamp=', got: {!r}".format(
+                payload[0])
+        )
+        applied = payload[0][len("datestamp="):]
+        # Verify format is YYYY-MM-DD HH:MM:SS
+        assert len(applied) == 19, (
+            "Datestamp must be 19 chars, got {}: {!r}".format(
+                len(applied), applied)
+        )
+        assert applied[4] == "-"
+        assert applied[7] == "-"
+        assert applied[10] == " "
 
     def test_setdate_missing_args(self, raw_connection):
         """SETDATE with no arguments returns ERR 100.

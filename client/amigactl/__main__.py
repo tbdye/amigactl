@@ -11,7 +11,7 @@ import argparse
 import os
 import sys
 
-from . import AmigaConnection, AmigactlError, ProtocolError
+from . import AmigaConnection, AmigactlError, NotFoundError, ProtocolError
 
 
 def cmd_version(conn, args):
@@ -91,17 +91,27 @@ def cmd_cat(conn, args):
 def cmd_get(conn, args):
     """Handle the 'get' subcommand."""
     data = conn.read(args.remote)
-    with open(args.local, "wb") as f:
+    local = args.local
+    if local is None:
+        # Extract basename from Amiga path
+        name = args.remote.rsplit("/", 1)[-1] if "/" in args.remote \
+            else args.remote
+        name = name.rsplit(":", 1)[-1] if ":" in name else name
+        local = name or args.remote.rstrip(":/")  # volume root fallback
+    with open(local, "wb") as f:
         f.write(data)
-    print("Downloaded {} bytes to {}".format(len(data), args.local))
+    print("Downloaded {} bytes to {}".format(len(data), local))
 
 
 def cmd_put(conn, args):
     """Handle the 'put' subcommand."""
     with open(args.local, "rb") as f:
         data = f.read()
-    written = conn.write(args.remote, data)
-    print("Uploaded {} bytes to {}".format(written, args.remote))
+    remote = args.remote
+    if remote is None:
+        remote = os.path.basename(args.local)
+    written = conn.write(remote, data)
+    print("Uploaded {} bytes to {}".format(written, remote))
 
 
 def cmd_rm(conn, args):
@@ -207,6 +217,20 @@ def cmd_assigns(conn, args):
         print("{}\t{}".format(name, path))
 
 
+def cmd_assign(conn, args):
+    """Handle the 'assign' subcommand."""
+    mode = None
+    if args.late:
+        mode = "late"
+    elif args.add:
+        mode = "add"
+    conn.assign(args.name, path=args.path, mode=mode)
+    if args.path is not None:
+        print("OK")
+    else:
+        print("Removed")
+
+
 def cmd_ports(conn, args):
     """Handle the 'ports' subcommand."""
     ports = conn.ports()
@@ -242,9 +266,28 @@ def cmd_tasks(conn, args):
 
 def cmd_touch(conn, args):
     """Handle the 'touch' subcommand."""
-    datestamp = "{} {}".format(args.date, args.time)
-    result = conn.setdate(args.path, datestamp)
-    print("datestamp={}".format(result))
+    if len(args.datetime) == 0:
+        datestamp = None
+    elif len(args.datetime) == 2:
+        datestamp = "{} {}".format(args.datetime[0], args.datetime[1])
+    else:
+        print("Error: provide both DATE and TIME, or neither",
+              file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        result = conn.setdate(args.path, datestamp)
+    except NotFoundError:
+        # File doesn't exist -- create it (Unix touch semantics)
+        conn.write(args.path, b"")
+        if datestamp is not None:
+            result = conn.setdate(args.path, datestamp)
+        else:
+            result = None
+    if result is not None:
+        print("datestamp={}".format(result))
+    else:
+        print("Created {}".format(args.path))
 
 
 def cmd_arexx(conn, args):
@@ -310,7 +353,7 @@ def main() -> None:
     )
 
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.required = True
+    subparsers.required = False
 
     subparsers.add_parser("version", help="Print daemon version")
     subparsers.add_parser("ping", help="Ping the daemon")
@@ -330,11 +373,15 @@ def main() -> None:
 
     p_get = subparsers.add_parser("get", help="Download a file")
     p_get.add_argument("remote", help="Amiga file path")
-    p_get.add_argument("local", help="Local file path")
+    p_get.add_argument("local", nargs="?", default=None,
+                       help="Local file path (default: same name in "
+                            "current directory)")
 
     p_put = subparsers.add_parser("put", help="Upload a file")
     p_put.add_argument("local", help="Local file path")
-    p_put.add_argument("remote", help="Amiga file path")
+    p_put.add_argument("remote", nargs="?", default=None,
+                       help="Amiga file path (default: same name in "
+                            "current Amiga directory)")
 
     p_rm = subparsers.add_parser("rm", help="Delete a file or empty directory")
     p_rm.add_argument("path", help="Amiga path")
@@ -384,15 +431,28 @@ def main() -> None:
 
     subparsers.add_parser("sysinfo", help="Show system information")
     subparsers.add_parser("assigns", help="List logical assigns")
+
+    p_assign = subparsers.add_parser("assign",
+                                      help="Create, modify, or remove an assign")
+    mode_group = p_assign.add_mutually_exclusive_group()
+    mode_group.add_argument("--late", action="store_true",
+                            help="Late-binding assign (path resolved on access)")
+    mode_group.add_argument("--add", action="store_true",
+                            help="Add to existing multi-directory assign")
+    p_assign.add_argument("name", help="Assign name with colon (e.g., TEST:)")
+    p_assign.add_argument("path", nargs="?", default=None,
+                          help="Target path (omit to remove the assign)")
+
     subparsers.add_parser("ports", help="List active Exec message ports")
     subparsers.add_parser("volumes", help="List mounted volumes")
     subparsers.add_parser("tasks", help="List running tasks/processes")
     subparsers.add_parser("uptime", help="Show daemon uptime")
 
-    p_touch = subparsers.add_parser("touch", help="Set file datestamp")
+    p_touch = subparsers.add_parser("touch", help="Set file datestamp (creates file if missing)")
     p_touch.add_argument("path", help="Amiga path")
-    p_touch.add_argument("date", help="Date (YYYY-MM-DD)")
-    p_touch.add_argument("time", help="Time (HH:MM:SS)")
+    p_touch.add_argument("datetime", nargs="*", metavar="DATETIME",
+                         help="Date (YYYY-MM-DD) and time (HH:MM:SS). "
+                              "Default: current time")
 
     p_arexx = subparsers.add_parser("arexx",
                                      help="Send ARexx command to named port")
@@ -407,6 +467,10 @@ def main() -> None:
     subparsers.add_parser("shell", help="Interactive shell mode")
 
     args = parser.parse_args()
+
+    # Default to interactive shell when no subcommand is given
+    if args.command is None:
+        args.command = "shell"
 
     dispatch = {
         "version": cmd_version,
@@ -430,6 +494,7 @@ def main() -> None:
         "kill": cmd_kill,
         "sysinfo": cmd_sysinfo,
         "assigns": cmd_assigns,
+        "assign": cmd_assign,
         "ports": cmd_ports,
         "volumes": cmd_volumes,
         "tasks": cmd_tasks,

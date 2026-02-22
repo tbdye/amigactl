@@ -652,6 +652,27 @@ class AmigaConnection:
             result[parts[0]] = parts[1]
         return result
 
+    def assign(self, name: str, path: Optional[str] = None,
+               mode: Optional[str] = None) -> None:
+        """Create, replace, or remove a logical assign.
+
+        name must include trailing colon (e.g., "TEST:").
+        mode: None (lock-based, default), "late", or "add".
+        path: target path. If None, removes the assign.
+        """
+        if path is not None:
+            if mode == "late":
+                self._send_command(
+                    "ASSIGN LATE {} {}".format(name, path))
+            elif mode == "add":
+                self._send_command(
+                    "ASSIGN ADD {} {}".format(name, path))
+            else:
+                self._send_command(
+                    "ASSIGN {} {}".format(name, path))
+        else:
+            self._send_command("ASSIGN {}".format(name))
+
     def ports(self) -> List[str]:
         """List active Exec message ports.
 
@@ -716,14 +737,18 @@ class AmigaConnection:
 
     # -- File operations (continued) ---------------------------------------
 
-    def setdate(self, path: str, datestamp: str) -> str:
+    def setdate(self, path: str, datestamp: Optional[str] = None) -> str:
         """Set file/directory datestamp.
 
         datestamp is a string in YYYY-MM-DD HH:MM:SS format.
+        If datestamp is None, the daemon uses the current system time.
         Returns the applied datestamp string.
         """
-        info, payload = self._send_command(
-            "SETDATE {} {}".format(path, datestamp))
+        if datestamp is not None:
+            cmd = "SETDATE {} {}".format(path, datestamp)
+        else:
+            cmd = "SETDATE {}".format(path)
+        info, payload = self._send_command(cmd)
         result = {}
         for line in payload:
             key, _, value = line.partition("=")
