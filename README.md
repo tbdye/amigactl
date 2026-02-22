@@ -135,17 +135,17 @@ Types (`PORT`, `CONFIG`) in the icon's Info window.
 
 ### Linux / macOS
 
-    ./amigactl.sh --host 192.168.6.200
+    client/amigactl.sh --host 192.168.6.200
 
 This launches the interactive shell. You can also run one-off commands:
 
-    ./amigactl.sh --host 192.168.6.200 ls SYS:S
-    ./amigactl.sh --host 192.168.6.200 exec list SYS:S
-    ./amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence
+    client/amigactl.sh --host 192.168.6.200 ls SYS:S
+    client/amigactl.sh --host 192.168.6.200 exec list SYS:S
+    client/amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence
 
 ### Windows (PowerShell)
 
-    .\amigactl.ps1 --host 192.168.6.200
+    client\amigactl.ps1 --host 192.168.6.200
 
 If script execution is blocked, set the execution policy:
 
@@ -167,13 +167,13 @@ No external dependencies are required (stdlib only).
 
 ### Directory layout
 
-The wrapper scripts expect the `client/` directory alongside them:
+The wrapper scripts are in the `client/` directory alongside the Python package:
 
 ```
 amigactl/
-+-- amigactl.sh        (Linux/macOS wrapper)
-+-- amigactl.ps1       (Windows wrapper)
 +-- client/
+    +-- amigactl.sh        (Linux/macOS wrapper)
+    +-- amigactl.ps1       (Windows wrapper)
     +-- amigactl/
         +-- __init__.py
         +-- __main__.py
@@ -190,36 +190,36 @@ The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
 ### CLI usage
 
 ```
-./amigactl.sh --host 192.168.6.200 version
-./amigactl.sh --host 192.168.6.200 ping
-./amigactl.sh --host 192.168.6.200 uptime
-./amigactl.sh --host 192.168.6.200 ls SYS:S
-./amigactl.sh --host 192.168.6.200 stat SYS:S/Startup-Sequence
-./amigactl.sh --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
-./amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
-./amigactl.sh --host 192.168.6.200 put localfile.txt RAM:test.txt
-./amigactl.sh --host 192.168.6.200 rm RAM:test.txt
-./amigactl.sh --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
-./amigactl.sh --host 192.168.6.200 mkdir RAM:newdir
-./amigactl.sh --host 192.168.6.200 chmod RAM:file.txt
-./amigactl.sh --host 192.168.6.200 chmod RAM:file.txt 0f
-./amigactl.sh --host 192.168.6.200 touch RAM:file.txt
-./amigactl.sh --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
-./amigactl.sh --host 192.168.6.200 exec echo hello
-./amigactl.sh --host 192.168.6.200 run wait 30
-./amigactl.sh --host 192.168.6.200 ps
-./amigactl.sh --host 192.168.6.200 status 1
-./amigactl.sh --host 192.168.6.200 signal 1
-./amigactl.sh --host 192.168.6.200 kill 1
-./amigactl.sh --host 192.168.6.200 sysinfo
-./amigactl.sh --host 192.168.6.200 assigns
-./amigactl.sh --host 192.168.6.200 volumes
-./amigactl.sh --host 192.168.6.200 ports
-./amigactl.sh --host 192.168.6.200 tasks
-./amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
-./amigactl.sh --host 192.168.6.200 tail RAM:logfile.txt
-./amigactl.sh --host 192.168.6.200 shutdown
-./amigactl.sh --host 192.168.6.200 reboot
+client/amigactl.sh --host 192.168.6.200 version
+client/amigactl.sh --host 192.168.6.200 ping
+client/amigactl.sh --host 192.168.6.200 uptime
+client/amigactl.sh --host 192.168.6.200 ls SYS:S
+client/amigactl.sh --host 192.168.6.200 stat SYS:S/Startup-Sequence
+client/amigactl.sh --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
+client/amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
+client/amigactl.sh --host 192.168.6.200 put localfile.txt RAM:test.txt
+client/amigactl.sh --host 192.168.6.200 rm RAM:test.txt
+client/amigactl.sh --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
+client/amigactl.sh --host 192.168.6.200 mkdir RAM:newdir
+client/amigactl.sh --host 192.168.6.200 chmod RAM:file.txt
+client/amigactl.sh --host 192.168.6.200 chmod RAM:file.txt 0f
+client/amigactl.sh --host 192.168.6.200 touch RAM:file.txt
+client/amigactl.sh --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
+client/amigactl.sh --host 192.168.6.200 exec echo hello
+client/amigactl.sh --host 192.168.6.200 run wait 30
+client/amigactl.sh --host 192.168.6.200 ps
+client/amigactl.sh --host 192.168.6.200 status 1
+client/amigactl.sh --host 192.168.6.200 signal 1
+client/amigactl.sh --host 192.168.6.200 kill 1
+client/amigactl.sh --host 192.168.6.200 sysinfo
+client/amigactl.sh --host 192.168.6.200 assigns
+client/amigactl.sh --host 192.168.6.200 volumes
+client/amigactl.sh --host 192.168.6.200 ports
+client/amigactl.sh --host 192.168.6.200 tasks
+client/amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
+client/amigactl.sh --host 192.168.6.200 tail RAM:logfile.txt
+client/amigactl.sh --host 192.168.6.200 shutdown
+client/amigactl.sh --host 192.168.6.200 reboot
 ```
 
 ### Python library
@@ -271,7 +271,7 @@ with AmigaConnection("192.168.6.200") as amiga:
 The interactive shell starts automatically when no subcommand is given, or
 explicitly with the `shell` subcommand:
 
-    $ ./amigactl.sh --host 192.168.6.200
+    $ client/amigactl.sh --host 192.168.6.200
     Connected to 192.168.6.200 (amigactld 0.6.0)
     Type "help" for a list of commands, "exit" to disconnect.
     amiga@192.168.6.200:SYS:> ls S
@@ -363,8 +363,6 @@ amigactl/
 +-- README.md
 +-- LICENSE                          # GPL v3
 +-- Makefile                         # m68k cross-compilation
-+-- amigactl.sh                      # Linux/macOS wrapper script
-+-- amigactl.ps1                     # Windows wrapper script
 +-- daemon/
 |   +-- main.c                       # Entry, startup, event loop
 |   +-- daemon.h                     # Shared structures, constants, error codes
@@ -376,6 +374,8 @@ amigactl/
 |   +-- arexx.c / arexx.h            # ARexx dispatch
 |   +-- tail.c / tail.h              # File streaming (TAIL)
 +-- client/
+|   +-- amigactl.sh                  # Linux/macOS wrapper script
+|   +-- amigactl.ps1                 # Windows wrapper script
 |   +-- amigactl/
 |   |   +-- __init__.py              # AmigaConnection class
 |   |   +-- __main__.py              # CLI tool
