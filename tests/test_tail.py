@@ -1,4 +1,4 @@
-"""Phase 4 TAIL streaming tests for amigactld.
+"""TAIL streaming tests for amigactld.
 
 These tests exercise the TAIL command, which streams file appends to the
 client until STOP is sent.  TAIL uses DATA/END framing with ongoing

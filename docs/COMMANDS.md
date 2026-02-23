@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.4.0 (Phase 4 -- ARexx, file streaming)
+**Version**: 0.6.1
 
 **Conventions used in this document:**
 
@@ -66,7 +66,6 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
   - [Oversized Command Lines](#oversized-command-lines)
-- [Not Yet Implemented](#not-yet-implemented)
 
 ---
 
@@ -81,7 +80,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.4.0`).
+The version string matches the daemon version (currently `0.6.1`).
 
 ### Behavior
 
@@ -96,7 +95,7 @@ The version string matches the daemon version (currently `0.4.0`).
 ### Example
 
 ```
-S> AMIGACTL 0.4.0
+S> AMIGACTL 0.6.1
 ```
 
 ---
@@ -133,7 +132,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.4.0
+S> amigactld 0.6.1
 S> .
 ```
 
@@ -2678,8 +2677,7 @@ S> .
 ### Unknown Command
 
 Any command verb that the server does not recognize produces a syntax error.
-This includes commands from future phases that have not yet been
-implemented.
+This includes any unrecognized command verb.
 
 #### Response
 
@@ -2742,9 +2740,3 @@ The server sends the error response as soon as its receive buffer fills,
 even if the client has not finished sending. Remaining bytes are discarded
 as they arrive, up to and including the next newline.
 
----
-
-## Not Yet Implemented
-
-Phase 5 (Polish) adds no new server commands. It focuses on client-side
-improvements including an interactive REPL and distribution packaging.

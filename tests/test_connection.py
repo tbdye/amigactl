@@ -1,4 +1,4 @@
-"""Phase 1 connection lifecycle tests for amigactld.
+"""Connection lifecycle tests for amigactld.
 
 These tests exercise the daemon's connection handling, banner, and the four
 lifecycle commands (VERSION, PING, QUIT, SHUTDOWN) using raw TCP sockets.

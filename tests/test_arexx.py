@@ -1,4 +1,4 @@
-"""Phase 4 ARexx tests for amigactld.
+"""ARexx tests for amigactld.
 
 These tests exercise the AREXX command against a live amigactld daemon.
 ARexx commands are dispatched asynchronously (non-blocking) -- the daemon

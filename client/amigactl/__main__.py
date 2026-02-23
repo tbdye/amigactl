@@ -8,6 +8,7 @@ Usage::
 """
 
 import argparse
+import configparser
 import os
 import sys
 
@@ -322,19 +323,123 @@ def cmd_tail(conn, args):
             pass
 
 
+def _default_config_path(host=None, port=None):
+    """Return the path to amigactl.conf in the client directory.
+
+    If the file does not exist but amigactl.conf.example does, copy it
+    to create a starter config with defaults filled in.  When *host* or
+    *port* are provided (from CLI flags), those values are written into
+    the generated config so the user's first-run settings are captured.
+    """
+    client_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    conf = os.path.join(client_dir, "amigactl.conf")
+    if not os.path.exists(conf):
+        example = os.path.join(client_dir, "amigactl.conf.example")
+        if os.path.exists(example):
+            try:
+                with open(example, "r") as src, open(conf, "w") as dst:
+                    content = src.read()
+                    if host is not None:
+                        content = content.replace(
+                            "host = 192.168.6.200",
+                            "host = {}".format(host),
+                        )
+                    if port is not None:
+                        content = content.replace(
+                            "port = 6800",
+                            "port = {}".format(port),
+                        )
+                    if sys.platform == "win32":
+                        content = content.replace(
+                            "# Linux/macOS:\ncommand = vi\n"
+                            "# Windows:\n# command = notepad",
+                            "# Linux/macOS:\n# command = vi\n"
+                            "# Windows:\ncommand = notepad",
+                        )
+                    dst.write(content)
+            except OSError:
+                pass
+    return conf
+
+
+def _load_config(path, explicit):
+    """Load settings from a config file.
+
+    Args:
+        path: File path to read.
+        explicit: True if the user passed --config (errors are fatal).
+
+    Returns a dict with keys 'host', 'port', 'editor' (any may be None).
+    """
+    if not os.path.exists(path):
+        if explicit:
+            print("Error: config file not found: {}".format(path),
+                  file=sys.stderr)
+            sys.exit(1)
+        return {}
+
+    config = configparser.ConfigParser()
+    try:
+        config.read(path)
+    except configparser.Error as e:
+        if explicit:
+            print("Error: failed to parse config file: {}".format(e),
+                  file=sys.stderr)
+            sys.exit(1)
+        print("Warning: failed to parse config file: {}".format(e),
+              file=sys.stderr)
+        return {}
+
+    result = {}
+
+    # Host
+    host = config.get("connection", "host", fallback=None)
+    if host is not None:
+        host = host.strip() or None
+    result["host"] = host
+
+    # Port
+    try:
+        port = config.getint("connection", "port", fallback=None)
+    except ValueError as e:
+        if explicit:
+            print("Error: invalid port in config file: {}".format(e),
+                  file=sys.stderr)
+            sys.exit(1)
+        print("Warning: invalid port in config file: {}".format(e),
+              file=sys.stderr)
+        port = None
+    result["port"] = port
+
+    # Editor
+    editor = config.get("editor", "command", fallback=None)
+    if editor is not None:
+        editor = editor.strip() or None
+    result["editor"] = editor
+
+    return result
+
+
 def main() -> None:
     """Parse arguments and dispatch to the appropriate subcommand."""
-    default_host = os.environ.get("AMIGACTL_HOST", "192.168.6.200")
-    try:
-        default_port = int(os.environ.get("AMIGACTL_PORT", "6800"))
-    except ValueError:
-        print(
-            "Error: AMIGACTL_PORT must be an integer, got: {!r}".format(
-                os.environ["AMIGACTL_PORT"]
-            ),
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    DEFAULT_HOST = "192.168.6.200"
+    DEFAULT_PORT = 6800
+
+    # --- Pre-parse: resolve env vars for help string defaults ---
+    env_host = os.environ.get("AMIGACTL_HOST") or None
+    env_port_str = os.environ.get("AMIGACTL_PORT")
+    env_port = None
+    if env_port_str:
+        try:
+            env_port = int(env_port_str)
+        except ValueError:
+            print(
+                "Error: AMIGACTL_PORT must be an integer, got: {!r}".format(
+                    env_port_str
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     parser = argparse.ArgumentParser(
         prog="amigactl",
@@ -342,14 +447,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--host",
-        default=default_host,
-        help="Daemon hostname or IP (default: %(default)s)",
+        default=None,
+        help="Daemon hostname or IP (default: {})".format(
+            env_host if env_host is not None else DEFAULT_HOST),
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=default_port,
-        help="Daemon port (default: %(default)s)",
+        default=None,
+        help="Daemon port (default: {})".format(
+            env_port if env_port is not None else DEFAULT_PORT),
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Path to config file (default: client/amigactl.conf)",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -468,6 +581,37 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # --- Load config file ---
+    config_path = (args.config if args.config
+                    else _default_config_path(args.host, args.port))
+    explicit_config = bool(args.config)
+    cfg = {}
+    if config_path:
+        cfg = _load_config(config_path, explicit_config)
+
+    # --- Resolve host (CLI > env > config > default) ---
+    if args.host is not None:
+        host = args.host
+    elif env_host is not None:
+        host = env_host
+    elif cfg.get("host") is not None:
+        host = cfg["host"]
+    else:
+        host = DEFAULT_HOST
+
+    # --- Resolve port (CLI > env > config > default) ---
+    if args.port is not None:
+        port = args.port
+    elif env_port is not None:
+        port = env_port
+    elif cfg.get("port") is not None:
+        port = cfg["port"]
+    else:
+        port = DEFAULT_PORT
+
+    # --- Resolve editor (config only; env vars handled in shell) ---
+    editor = cfg.get("editor")
+
     # Default to interactive shell when no subcommand is given
     if args.command is None:
         args.command = "shell"
@@ -507,7 +651,7 @@ def main() -> None:
     # Shell subcommand manages its own connection lifecycle
     if args.command == "shell":
         from .shell import AmigaShell
-        sh = AmigaShell(args.host, args.port)
+        sh = AmigaShell(host, port, editor=editor)
         try:
             sh.cmdloop()
         except KeyboardInterrupt:
@@ -515,11 +659,11 @@ def main() -> None:
         return
 
     try:
-        with AmigaConnection(args.host, args.port) as conn:
+        with AmigaConnection(host, port) as conn:
             dispatch[args.command](conn, args)
     except ConnectionRefusedError:
         print(
-            "Error: could not connect to {}:{}".format(args.host, args.port),
+            "Error: could not connect to {}:{}".format(host, port),
             file=sys.stderr,
         )
         sys.exit(1)

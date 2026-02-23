@@ -1,4 +1,4 @@
-"""Phase 3 execution and process management tests for amigactld.
+"""Execution and process management tests for amigactld.
 
 These tests exercise the EXEC (sync and async), PROCLIST, PROCSTAT,
 SIGNAL, and KILL commands against a live amigactld daemon.

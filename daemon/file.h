@@ -1,5 +1,5 @@
 /*
- * amigactld -- File operation command handlers (Phase 2)
+ * amigactld -- File operation command handlers
  *
  * DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT, SETDATE.
  * Each handler sends its response and returns 0 on success

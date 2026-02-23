@@ -1,0 +1,19 @@
+# amigactl client configuration
+#
+# This file is auto-created from amigactl.conf.example on first run.
+# Edit the values below to match your setup.
+#
+# CLI flags and environment variables override these settings.
+
+[connection]
+host = 192.168.6.200
+port = 6800
+
+[editor]
+# Command to open files for the 'edit' shell command.
+# Supports arguments (e.g., "code --wait" for VS Code).
+# Override: $VISUAL or $EDITOR environment variables.
+# Linux/macOS:
+command = vi
+# Windows:
+# command = notepad

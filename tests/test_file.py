@@ -1,4 +1,4 @@
-"""Phase 2 file operation tests for amigactld.
+"""File operation tests for amigactld.
 
 These tests exercise the file operation commands (DIR, STAT, READ, WRITE,
 DELETE, RENAME, MAKEDIR, PROTECT) against a live amigactld daemon.

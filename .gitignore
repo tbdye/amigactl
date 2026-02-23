@@ -8,6 +8,13 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Local planning docs (not part of the repo)
-architecture_plan.md
-phase1_plan.md
+# Local planning and notes docs (not part of the repo)
+*_plan.md
+*_notes.md
+
+# Build/release artifacts
+amigactld-*.lha
+/amigactld.readme
+
+# Auto-created client config (template is tracked as .conf.example)
+client/amigactl.conf

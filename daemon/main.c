@@ -2,7 +2,7 @@
  * amigactld -- Amiga remote access daemon
  *
  * Entry point, startup (CLI + Workbench dual-mode), WaitSelect event
- * loop, command dispatch for Phase 1-4 commands.
+ * loop, and command dispatch.
  */
 
 #include "daemon.h"
@@ -227,7 +227,7 @@ int main(int argc, char **argv)
     daemon_msg("amigactld %s listening on port %d\n",
                AMIGACTLD_VERSION, daemon.config.port);
 
-    /* ---- Phase 3 initialization ---- */
+    /* ---- Process and system info initialization ---- */
 
     g_daemon_state = &daemon;
 
@@ -237,7 +237,7 @@ int main(int argc, char **argv)
 
     exec_cleanup_temp_files();
 
-    /* ---- Phase 4 initialization ---- */
+    /* ---- ARexx and TAIL initialization ---- */
 
     arexx_init();
     if (g_arexx_sigbit < 0) {
@@ -615,7 +615,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
         send_sentinel(c->fd);
         ColdReboot();
 
-    /* --- Phase 2 file handlers --- */
+    /* --- File operation handlers --- */
 
     } else if (stricmp(verb, "DIR") == 0) {
         rc = cmd_dir(c, rest);
@@ -641,7 +641,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "PROTECT") == 0) {
         rc = cmd_protect(c, rest);
 
-    /* --- Phase 3 handlers --- */
+    /* --- Execution and system info handlers --- */
 
     } else if (stricmp(verb, "EXEC") == 0) {
         rc = cmd_exec(c, rest);
@@ -701,7 +701,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
             send_sentinel(c->fd);
         }
 
-    /* --- Phase 4 handlers --- */
+    /* --- ARexx and TAIL handlers --- */
 
     } else if (stricmp(verb, "AREXX") == 0) {
         rc = cmd_arexx(d, idx, rest);
@@ -714,7 +714,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
         send_sentinel(c->fd);
     }
 
-    /* Disconnect client if a Phase 2 handler signaled failure */
+    /* Disconnect client if a file handler signaled failure */
     if (rc < 0) {
         disconnect_client(d, idx);
     }
@@ -724,7 +724,7 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
 static void disconnect_client(struct daemon_state *d, int idx)
 {
-    /* Clean up Phase 4 state before closing the connection */
+    /* Clean up streaming state before closing the connection */
     d->clients[idx].tail.active = 0;
     arexx_orphan_client(d, idx);
     d->clients[idx].arexx_pending = 0;

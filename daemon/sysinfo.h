@@ -1,5 +1,5 @@
 /*
- * amigactld -- System information command handlers (Phase 3)
+ * amigactld -- System information command handlers
  *
  * SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS.
  * Each handler sends its response and returns 0.

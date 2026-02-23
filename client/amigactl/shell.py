@@ -227,7 +227,7 @@ class AmigaShell(cmd.Cmd):
     intro = ""  # Set dynamically after connect
     prompt = "amiga> "
 
-    def __init__(self, host, port, timeout=30):
+    def __init__(self, host, port, timeout=30, editor=None):
         super().__init__()
         self.host = host
         self.port = port
@@ -236,6 +236,7 @@ class AmigaShell(cmd.Cmd):
         self.cw = ColorWriter()
         self.cwd = None  # Current working directory (Amiga path)
         self._dir_cache = _DirCache()
+        self._editor = editor  # from config file; None = use env/default
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -934,8 +935,9 @@ class AmigaShell(cmd.Cmd):
 
     Usage: edit PATH
 
-    Downloads the file, opens it in $VISUAL or $EDITOR (default: vi
-    on Linux/macOS, notepad on Windows), and uploads changes on save.
+    Downloads the file, opens it in $VISUAL, $EDITOR, or the editor
+    configured in the config file (default: vi on Linux/macOS, notepad
+    on Windows), and uploads changes on save.
     Detects remote modifications made while editing and prompts
     before overwriting.
 
@@ -1001,6 +1003,7 @@ class AmigaShell(cmd.Cmd):
                 default_editor = "vi"
             editor = (os.environ.get("VISUAL")
                       or os.environ.get("EDITOR")
+                      or self._editor
                       or default_editor)
             editor_cmd = shlex.split(editor) + [tmpfile]
             subprocess.call(editor_cmd)

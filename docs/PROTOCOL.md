@@ -50,7 +50,7 @@ On successful connection, the daemon sends a banner line:
 AMIGACTL <version>\n
 ```
 
-`<version>` is a dotted version string (e.g., `0.4.0`).  The client
+`<version>` is a dotted version string (e.g., `0.6.1`).  The client
 SHOULD read and validate the banner before sending any commands.  The
 banner is not followed by a sentinel -- it is a single line, not a
 response envelope.
@@ -186,7 +186,7 @@ streaming response where DATA chunks may arrive at any time after the OK
 status line, for an indefinite duration.  The sentinel is sent only when
 the stream terminates (via client STOP or server error).  During a TAIL
 stream, the client MAY send `STOP` to request termination.  See the
-Phase 4 Wire Format Patterns section for details.
+ARexx and Streaming Wire Formats section for details.
 
 ## Dot-Stuffing
 
@@ -310,7 +310,7 @@ with `OK <id>\n.\n` where `<id>` is the daemon-assigned process ID.
 No output is captured for asynchronous commands.
 
 AREXX uses the same response framing as EXEC.  TAIL uses ongoing
-DATA/END streaming.  See Phase 4 Wire Format Patterns below for
+DATA/END streaming.  See ARexx and Streaming Wire Formats below for
 details.
 
 ## Pipelining
@@ -332,9 +332,9 @@ has not yet been received.  This is the only case where the client sends
 data before a response is complete.  See the TAIL command specification
 in COMMANDS.md for details.
 
-## Phase 3 Wire Format Patterns
+## System Query and Execution Wire Formats
 
-Phase 3 adds commands for system queries, process management, and
+The following commands handle system queries, process management, and
 command execution.  The wire formats for these commands use three
 patterns already defined in this protocol:
 
@@ -366,9 +366,9 @@ use binary framing -- it returns `OK <id>\n.\n` with no payload.
 
 See COMMANDS.md for the specific fields and semantics of each command.
 
-## Phase 4 Wire Format Patterns
+## ARexx and Streaming Wire Formats
 
-Phase 4 adds AREXX (ARexx dispatch) and TAIL (file streaming).
+AREXX and TAIL use the following wire format patterns:
 
 **AREXX** uses DATA/END binary framing for the result string, identical
 to EXEC.  The OK status line includes `rc=<N>` where N is the ARexx
@@ -452,7 +452,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.4.0\n
+S: AMIGACTL 0.6.1\n
 
 C: PING\n
 S: OK\n
@@ -460,7 +460,7 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.4.0\n
+S: amigactld 0.6.1\n
 S: .\n
 
 C: SYSINFO\n

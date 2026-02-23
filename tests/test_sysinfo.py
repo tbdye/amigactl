@@ -1,4 +1,4 @@
-"""Phase 3 system information tests for amigactld.
+"""System information tests for amigactld.
 
 These tests exercise the system query commands (SYSINFO, ASSIGNS, PORTS,
 VOLUMES, TASKS) and the ASSIGN mutation command against a live amigactld

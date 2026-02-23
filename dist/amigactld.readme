@@ -1,0 +1,47 @@
+Short:    Remote access toolkit for AmigaOS
+Uploader: thomas@tfenet.com (Thomas Dye)
+Author:   thomas@tfenet.com (Thomas Dye)
+Type:     comm/tcp
+Version:  0.6.1
+Requires: AmigaOS 2.0+, 68020+, bsdsocket.library
+Architecture: m68k-amigaos
+
+amigactl provides structured, programmatic remote access to AmigaOS
+over TCP. It consists of a lightweight C daemon (amigactld) running
+on the Amiga and a Python client library and CLI tool on the host.
+Together they expose file operations, CLI command execution, ARexx
+dispatch, live file streaming, and system introspection (assigns,
+volumes, ports, tasks) through a simple text protocol with
+machine-parseable responses.
+
+The client provides an interactive shell with tab completion,
+colorized output, and a remote file editing command.
+
+Designed for trusted LANs and emulator setups. Supports IP-based
+access control via a configuration file.
+
+INSTALLATION
+
+1. Extract the archive to any location on the Amiga.
+2. Copy amigactld.conf.example to S:amigactld.conf.
+3. Edit S:amigactld.conf to set ALLOW lines for your client IPs.
+4. Run from CLI: amigactld
+   Or place in S:User-Startup: RUN >NIL: <path>/amigactld
+
+For Workbench use, double-click the amigactld icon. Configuration
+can be set via Tool Types (PORT, CONFIG) in the icon's Info window.
+
+HOST-SIDE CLIENT
+
+The client/ directory contains the Python client. Requires Python
+3.8+.
+
+Linux/macOS: sh client/amigactl.sh --host <amiga-ip>
+Windows:     client\amigactl.ps1 --host <amiga-ip>
+
+Or install via pip: pip install -e client/
+
+SOURCE AND LICENSE
+
+Source code: https://github.com/tbdye/amigactl
+License: GNU General Public License v3.0

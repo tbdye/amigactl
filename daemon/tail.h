@@ -1,5 +1,5 @@
 /*
- * amigactld -- File streaming (Phase 4)
+ * amigactld -- File streaming
  *
  * TAIL: stream file appends to a client until STOP.
  */

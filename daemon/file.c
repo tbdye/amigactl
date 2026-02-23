@@ -1,5 +1,5 @@
 /*
- * amigactld -- File operation command handlers (Phase 2)
+ * amigactld -- File operation command handlers
  *
  * Implements DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT, SETDATE.
  * All handlers follow the protocol framing conventions from net.h:

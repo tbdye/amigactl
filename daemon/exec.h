@@ -1,5 +1,5 @@
 /*
- * amigactld -- Execution and process management (Phase 3)
+ * amigactld -- Execution and process management
  *
  * EXEC (sync + async), PROCLIST, PROCSTAT, SIGNAL, KILL.
  */

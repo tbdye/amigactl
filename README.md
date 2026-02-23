@@ -1,13 +1,13 @@
 # amigactl
 
-Remote access daemon for AmigaOS.
+Remote access toolkit for AmigaOS.
 
-Traditional remote access tools give you a shell session or a file transfer
-channel -- not structured, programmatic access to AmigaOS internals. amigactl
-is a lightweight TCP daemon that exposes file operations, CLI command execution,
-ARexx dispatch, file streaming, and system introspection (assigns, volumes,
-ports, tasks) over a simple text protocol with machine-parseable responses. A Python client library
-provides first-class scripting support for automation on trusted LANs and
+amigactl provides structured, programmatic remote access to AmigaOS over TCP.
+It consists of a lightweight C daemon (amigactld) running on the Amiga and a
+Python client library and CLI tool on the host. Together they expose file
+operations, CLI command execution, ARexx dispatch, live file streaming, and
+system introspection (assigns, volumes, ports, tasks) through a simple text
+protocol with machine-parseable responses. Designed for trusted LANs and
 emulator setups.
 
 ## Architecture
@@ -32,19 +32,6 @@ Host                              Amiga
 - **Protocol**: Text commands, dot-stuffed sentinel termination, length-prefixed
   binary for file data. ISO-8859-1 encoding.
 - **Security**: IP-based ACL from `S:amigactld.conf`
-
-## Current Status
-
-**Phase 5 -- Polish and Interactive Shell.** The daemon accepts TCP connections,
-checks IP ACLs, sends a banner, and handles lifecycle commands (VERSION, PING,
-QUIT, SHUTDOWN, REBOOT, UPTIME), file commands (DIR, STAT, READ, WRITE, DELETE,
-RENAME, MAKEDIR, PROTECT, SETDATE), synchronous and asynchronous command
-execution (EXEC, EXEC ASYNC), process management (PROCLIST, PROCSTAT, SIGNAL,
-KILL), system introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS),
-non-blocking ARexx dispatch (AREXX), and live file streaming (TAIL, STOP). The
-Python client includes an interactive shell with persistent connections, readline
-support, tab completion for Amiga paths, an `edit` command for remote file
-editing, and colorized output.
 
 ## Requirements
 
@@ -126,22 +113,75 @@ to shut down cleanly.
 
 ### From Workbench
 
-Double-click the amigactld icon. The daemon opens a console window
-(`CON:0/20/640/200/amigactld/AUTO/CLOSE/WAIT`) and runs until the window is
-closed or a SHUTDOWN command is received. Configuration can be set via Tool
-Types (`PORT`, `CONFIG`) in the icon's Info window.
+Double-click the amigactld icon. A console window briefly appears showing the
+startup banner, then auto-dismisses once the daemon is running. If startup
+fails (e.g., port already in use), the window stays open with an error message.
+The daemon runs until a SHUTDOWN command is received or the system shuts down.
+Configuration can be set via Tool Types (`PORT`, `CONFIG`) in the icon's Info
+window.
 
 ## Running the Client
 
 ### Linux / macOS
 
-    client/amigactl.sh --host 192.168.6.200
+    sh client/amigactl.sh --host 192.168.6.200
 
-This launches the interactive shell. You can also run one-off commands:
+With no subcommand, this launches the interactive shell. If you extracted
+from the LHA archive, the execute bit is not preserved. Use `sh` as shown
+above, or run `chmod +x client/amigactl.sh` once to invoke it directly. You can also run
+one-off commands:
 
     client/amigactl.sh --host 192.168.6.200 ls SYS:S
     client/amigactl.sh --host 192.168.6.200 exec list SYS:S
     client/amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence
+
+### Interactive Shell
+
+The interactive shell starts automatically when no subcommand is given, or
+explicitly with the `shell` subcommand:
+
+    $ client/amigactl.sh --host 192.168.6.200
+    Connected to 192.168.6.200 (amigactld 0.6.1)
+    Type "help" for a list of commands, "exit" to disconnect.
+    amiga@192.168.6.200:SYS:> ls
+    C/  Devs/  Expansion/  L/  Libs/  Locale/  Prefs/  S/  System/  T/
+    Utilities/  WBStartup/  Disk.info  Startup-Sequence  User-Startup
+    amiga@192.168.6.200:SYS:> cd S
+    amiga@192.168.6.200:SYS:S> cat Startup-Sequence
+    ; Startup-Sequence
+    ...
+    amiga@192.168.6.200:SYS:S> cd ..
+    amiga@192.168.6.200:SYS:> exec avail FLUSH
+    Type   Available    In-Use   Maximum   Largest
+    chip      477752    571528   1048576    460488
+    fast    13298680    895176  14680064  13036136
+    total   13776432   1466704  15728640  13036136
+    amiga@192.168.6.200:SYS:> sysinfo
+    cpu=MC68020
+    ...
+    amiga@192.168.6.200:SYS:> exit
+    Disconnected.
+
+The shell supports `cd` and `pwd` for navigation (including `..` and `/`
+for parent directory). Relative paths are resolved client-side before
+sending to the daemon. Tab completion works with both absolute and
+relative Amiga paths. Type `help` for a command list, or `help COMMAND`
+for detailed usage of any command.
+
+Tab completion requires Python's readline module (included on Linux/macOS).
+On Windows, tab completion is not available by default. Installing the
+optional `pyreadline3` package (`pip install pyreadline3`) adds tab
+completion support.
+
+The `edit` command downloads a file, opens it in your editor, and uploads
+changes on save. It checks `$VISUAL`, `$EDITOR`, the config file `editor`
+setting, then falls back to `vi` (Linux/macOS) or `notepad` (Windows).
+
+    export EDITOR=nano                 # Linux/macOS
+    $env:EDITOR = "code --wait"        # Windows (VS Code)
+
+Colors are auto-detected (disable with `NO_COLOR=1` or
+`AMIGACTL_COLOR=never`).
 
 ### Windows (PowerShell)
 
@@ -186,6 +226,24 @@ amigactl/
 
 The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
 `192.168.6.200` if unset. `--port` defaults to `AMIGACTL_PORT` or `6800`.
+
+### Configuration file
+
+Settings can also be placed in `client/amigactl.conf`. On first run, this
+file is auto-created from `client/amigactl.conf.example` with defaults filled
+in. Edit it to match your setup:
+
+```ini
+[connection]
+host = 192.168.6.200
+port = 6800
+
+[editor]
+command = vi
+```
+
+CLI flags override environment variables, which override config file settings.
+Use `--config PATH` to specify an alternative location.
 
 ### CLI usage
 
@@ -266,52 +324,6 @@ with AmigaConnection("192.168.6.200") as amiga:
     amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
 ```
 
-## Interactive Shell
-
-The interactive shell starts automatically when no subcommand is given, or
-explicitly with the `shell` subcommand:
-
-    $ client/amigactl.sh --host 192.168.6.200
-    Connected to 192.168.6.200 (amigactld 0.6.0)
-    Type "help" for a list of commands, "exit" to disconnect.
-    amiga@192.168.6.200:SYS:> ls S
-    Config/  Startup-Sequence  User-Startup
-    amiga@192.168.6.200:SYS:> ls -l S
-      DIR  Config            ----rwed        2026-01-15 08:00:00
-           Startup-Sequence  ----rwed  1.5K  2026-01-15 08:00:00
-           User-Startup      ----rwed   342  2026-02-19 10:30:00
-    amiga@192.168.6.200:SYS:> cat S/Startup-Sequence
-    ; Startup-Sequence
-    ...
-    amiga@192.168.6.200:SYS:> edit S/User-Startup
-    (opens $EDITOR, uploads changes on save)
-    amiga@192.168.6.200:SYS:> cd S
-    amiga@192.168.6.200:SYS:S> cd ..
-    amiga@192.168.6.200:SYS:> exec avail
-    ...
-    amiga@192.168.6.200:SYS:> exit
-    Disconnected.
-
-The shell supports `cd` and `pwd` for navigation (including `..` and `/`
-for parent directory). Relative paths are resolved client-side before
-sending to the daemon. Tab completion works with both absolute and
-relative Amiga paths. Type `help` for a command list, or `help COMMAND`
-for detailed usage of any command.
-
-Tab completion requires Python's readline module (included on Linux/macOS).
-On Windows, tab completion is not available by default. Installing the
-optional `pyreadline3` package (`pip install pyreadline3`) adds tab
-completion support.
-
-The `edit` command uses `$VISUAL` or `$EDITOR` to open files. If neither
-is set, it defaults to `vi` (Linux/macOS) or `notepad` (Windows).
-
-    export EDITOR=nano                 # Linux/macOS
-    $env:EDITOR = "code --wait"        # Windows (VS Code)
-
-Colors are auto-detected (disable with `NO_COLOR=1` or
-`AMIGACTL_COLOR=never`).
-
 ## Amiga Installation
 
 Download the latest `.lha` archive from the Releases page, or build it:
@@ -338,7 +350,9 @@ length-prefixed DATA/END chunking within the sentinel-terminated envelope.
 
 Full details are in [docs/PROTOCOL.md](docs/PROTOCOL.md) (wire format, framing,
 encoding, binary transfer) and [docs/COMMANDS.md](docs/COMMANDS.md) (per-command
-syntax, responses, error conditions, and example transcripts).
+syntax, responses, error conditions, and example transcripts). For AI agents
+automating tasks via the Python library, see
+[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
 
 ## Testing
 
@@ -399,40 +413,8 @@ amigactl/
 +-- docs/
 |   +-- PROTOCOL.md                  # Wire protocol spec
 |   +-- COMMANDS.md                  # Per-command spec
+|   +-- AGENT_GUIDE.md               # AI agent automation guide
 ```
-
-## Roadmap
-
-### Phase 1: Connection Skeleton (complete)
-
-TCP server with WaitSelect event loop, IP ACL, banner, and lifecycle commands
-(VERSION, PING, QUIT, SHUTDOWN). Python client library and CLI. Documentation
-and test suite.
-
-### Phase 2: File Operations (complete)
-
-DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, and PROTECT commands. Chunked
-binary transfer for READ/WRITE. Atomic writes via temp file and rename.
-
-### Phase 3: EXEC, Process Management, and System Info (complete)
-
-CLI command execution with captured output (EXEC). Asynchronous process
-launching with signal and kill support (EXEC ASYNC, PROCLIST, PROCSTAT, SIGNAL,
-KILL). System introspection (SYSINFO, ASSIGNS, PORTS, VOLUMES, TASKS).
-Datestamp setting (SETDATE).
-
-### Phase 4: ARexx and File Streaming (complete)
-
-Non-blocking ARexx command dispatch to named ports, with timeout handling and
-reply matching via WaitSelect signal integration (AREXX). Live file streaming
-with truncation and deletion detection (TAIL, STOP).
-
-### Phase 5: Polish and Interactive Shell (complete)
-
-Interactive shell mode with persistent connection, readline support, and
-human-friendly command names. Remote tab completion for Amiga paths,
-colorized output, `edit` command for remote file editing, UTF-8/ISO-8859-1
-conversion, LHA packaging for Amiga distribution.
 
 ## License
 

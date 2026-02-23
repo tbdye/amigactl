@@ -1,5 +1,5 @@
 /*
- * amigactld -- ARexx command dispatch (Phase 4)
+ * amigactld -- ARexx command dispatch
  *
  * AREXX: send commands to named ARexx ports, non-blocking.
  * Reply matching via signal-driven message port.

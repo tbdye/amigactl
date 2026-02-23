@@ -30,7 +30,7 @@ from amigactl import AmigaConnection
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 protocol helpers (binary data, WRITE handshake, RENAME)
+# File transfer protocol helpers (binary data, WRITE handshake, RENAME)
 # ---------------------------------------------------------------------------
 
 def _recv_exact(sock, nbytes):
@@ -202,7 +202,7 @@ def raw_connection(amiga_host, amiga_port):
 
 
 # ---------------------------------------------------------------------------
-# Cleanup fixture (Phase 2)
+# Cleanup fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -332,7 +332,7 @@ def _read_line(sock):
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 protocol helpers (EXEC binary response)
+# EXEC protocol helpers (binary response)
 # ---------------------------------------------------------------------------
 
 def read_exec_response(sock):
@@ -383,7 +383,7 @@ def read_exec_response(sock):
 
 
 # ---------------------------------------------------------------------------
-# High-level connection fixture (Phase 4)
+# High-level connection fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -401,7 +401,7 @@ def conn(amiga_host, amiga_port):
 
 
 # ---------------------------------------------------------------------------
-# Port-checking helpers (Phase 4)
+# Port-checking helpers
 # ---------------------------------------------------------------------------
 
 def has_port(conn, port_name):
@@ -421,7 +421,7 @@ def rexx_available(conn):
 
 
 # ---------------------------------------------------------------------------
-# Session-scoped SHUTDOWN fixture (Phase 3)
+# Session-scoped SHUTDOWN fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session", autouse=True)
