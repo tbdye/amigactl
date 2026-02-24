@@ -55,6 +55,7 @@ class TestSysinfo:
         expected_order = [
             "chip_free", "fast_free", "total_free",
             "chip_total", "fast_total",
+            "chip_largest", "fast_largest",
             "exec_version", "kickstart", "bsdsocket",
         ]
         actual_keys = [line.partition("=")[0] for line in payload]

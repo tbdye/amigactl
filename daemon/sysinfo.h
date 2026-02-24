@@ -1,7 +1,8 @@
 /*
  * amigactld -- System information command handlers
  *
- * SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS.
+ * SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS,
+ * LIBVER, ENV, SETENV, DEVICES, CAPABILITIES.
  * Each handler sends its response and returns 0.
  */
 
@@ -16,5 +17,10 @@ int cmd_assign(struct client *c, const char *args);
 int cmd_ports(struct client *c, const char *args);
 int cmd_volumes(struct client *c, const char *args);
 int cmd_tasks(struct client *c, const char *args);
+int cmd_libver(struct client *c, const char *args);
+int cmd_env(struct client *c, const char *args);
+int cmd_setenv(struct client *c, const char *args);
+int cmd_devices(struct client *c, const char *args);
+int cmd_capabilities(struct client *c, const char *args);
 
 #endif /* AMIGACTLD_SYSINFO_H */

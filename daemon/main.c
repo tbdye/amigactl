@@ -691,6 +691,21 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "TASKS") == 0) {
         rc = cmd_tasks(c, rest);
 
+    } else if (stricmp(verb, "LIBVER") == 0) {
+        rc = cmd_libver(c, rest);
+
+    } else if (stricmp(verb, "ENV") == 0) {
+        rc = cmd_env(c, rest);
+
+    } else if (stricmp(verb, "SETENV") == 0) {
+        rc = cmd_setenv(c, rest);
+
+    } else if (stricmp(verb, "DEVICES") == 0) {
+        rc = cmd_devices(c, rest);
+
+    } else if (stricmp(verb, "CAPABILITIES") == 0) {
+        rc = cmd_capabilities(c, rest);
+
     } else if (stricmp(verb, "UPTIME") == 0) {
         {
             struct DateStamp now;

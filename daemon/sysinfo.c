@@ -1,7 +1,8 @@
 /*
  * amigactld -- System information command handlers
  *
- * Implements SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS.
+ * Implements SYSINFO, ASSIGNS, ASSIGN, PORTS, VOLUMES, TASKS,
+ * LIBVER, ENV, SETENV, DEVICES, CAPABILITIES.
  * All handlers are read-only queries that always return 0 (ASSIGN
  * is the exception -- it modifies the assign list).
  *
@@ -27,6 +28,11 @@
  * cross-compiler header sets. */
 #ifndef MEMF_TOTAL
 #define MEMF_TOTAL (1L << 19)
+#endif
+
+/* MEMF_LARGEST may not be in all cross-compiler header sets. */
+#ifndef MEMF_LARGEST
+#define MEMF_LARGEST (1L << 17)
 #endif
 
 /* ---- Assigns collection limits ---- */
@@ -123,6 +129,7 @@ int cmd_sysinfo(struct client *c, const char *args)
 {
     ULONG chip_free, fast_free, total_free;
     ULONG chip_total, fast_total;
+    ULONG chip_largest, fast_largest;
     char line[128];
 
     (void)args;
@@ -137,6 +144,9 @@ int cmd_sysinfo(struct client *c, const char *args)
         chip_total = AvailMem(MEMF_CHIP | MEMF_TOTAL);
         fast_total = AvailMem(MEMF_FAST | MEMF_TOTAL);
     }
+
+    chip_largest = AvailMem(MEMF_CHIP | MEMF_LARGEST);
+    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
 
     send_ok(c->fd, NULL);
 
@@ -153,6 +163,12 @@ int cmd_sysinfo(struct client *c, const char *args)
     send_payload_line(c->fd, line);
 
     sprintf(line, "fast_total=%lu", (unsigned long)fast_total);
+    send_payload_line(c->fd, line);
+
+    sprintf(line, "chip_largest=%lu", (unsigned long)chip_largest);
+    send_payload_line(c->fd, line);
+
+    sprintf(line, "fast_largest=%lu", (unsigned long)fast_largest);
     send_payload_line(c->fd, line);
 
     sprintf(line, "exec_version=%d.%d",
@@ -669,6 +685,304 @@ int cmd_tasks(struct client *c, const char *args)
                  te->state, te->stacksize);
         send_payload_line(c->fd, line);
     }
+
+    send_sentinel(c->fd);
+    return 0;
+}
+
+/* ---- LIBVER ---- */
+
+int cmd_libver(struct client *c, const char *args)
+{
+    struct Library *lib;
+    int version;
+    int revision;
+    static char name_line[MAX_CMD_LEN + 8];
+    char line[128];
+    int len;
+
+    if (args[0] == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing library name");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    if (stricmp(args, "exec.library") == 0) {
+        version = (int)SysBase->LibNode.lib_Version;
+        revision = (int)SysBase->LibNode.lib_Revision;
+    } else {
+        /* Check if name ends with ".device" */
+        len = strlen(args);
+        if (len > 7 && stricmp(args + len - 7, ".device") == 0) {
+            /* Device: find in device list under Forbid */
+            Forbid();
+            lib = (struct Library *)FindName(&SysBase->DeviceList,
+                                             (STRPTR)args);
+            if (lib) {
+                version = (int)lib->lib_Version;
+                revision = (int)lib->lib_Revision;
+            }
+            Permit();
+
+            if (!lib) {
+                send_error(c->fd, ERR_NOT_FOUND, "Device not found");
+                send_sentinel(c->fd);
+                return 0;
+            }
+        } else {
+            /* Library: open, read version, close */
+            lib = OpenLibrary((STRPTR)args, 0);
+            if (!lib) {
+                send_error(c->fd, ERR_NOT_FOUND, "Library not found");
+                send_sentinel(c->fd);
+                return 0;
+            }
+            version = (int)lib->lib_Version;
+            revision = (int)lib->lib_Revision;
+            CloseLibrary(lib);
+        }
+    }
+
+    send_ok(c->fd, NULL);
+
+    snprintf(name_line, sizeof(name_line), "name=%s", args);
+    send_payload_line(c->fd, name_line);
+
+    sprintf(line, "version=%d.%d", version, revision);
+    send_payload_line(c->fd, line);
+
+    send_sentinel(c->fd);
+    return 0;
+}
+
+/* ---- ENV ---- */
+
+static char env_buf[4096];
+
+int cmd_env(struct client *c, const char *args)
+{
+    LONG result;
+    static char line[4128];  /* "value=" + 4096 + NUL */
+
+    if (args[0] == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing variable name");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    result = GetVar((STRPTR)args, (STRPTR)env_buf, sizeof(env_buf),
+                    GVF_GLOBAL_ONLY);
+    if (result == -1) {
+        send_error(c->fd, ERR_NOT_FOUND, "Variable not found");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    send_ok(c->fd, NULL);
+
+    sprintf(line, "value=%s", env_buf);
+    send_payload_line(c->fd, line);
+
+    if (result == (LONG)(sizeof(env_buf) - 1)) {
+        send_payload_line(c->fd, "truncated=true");
+    }
+
+    send_sentinel(c->fd);
+    return 0;
+}
+
+/* ---- SETENV ---- */
+
+static char env_name[256];
+static char env_path[512];
+
+int cmd_setenv(struct client *c, const char *args)
+{
+    const char *p;
+    const char *name_start;
+    const char *name_end;
+    const char *value;
+    int volatile_mode;
+    int name_len;
+
+    p = args;
+    volatile_mode = 0;
+
+    /* Check for VOLATILE keyword */
+    if (strnicmp(p, "VOLATILE", 8) == 0 &&
+        (p[8] == ' ' || p[8] == '\t' || p[8] == '\0')) {
+        volatile_mode = 1;
+        p += 8;
+        while (*p == ' ' || *p == '\t') p++;
+
+        if (*p == '\0') {
+            send_error(c->fd, ERR_SYNTAX,
+                       "VOLATILE is a reserved keyword");
+            send_sentinel(c->fd);
+            return 0;
+        }
+    }
+
+    if (*p == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing variable name");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Extract variable name (first token) */
+    name_start = p;
+    while (*p && *p != ' ' && *p != '\t') p++;
+    name_end = p;
+    name_len = (int)(name_end - name_start);
+
+    if (name_len <= 0 || name_len >= (int)sizeof(env_name)) {
+        send_error(c->fd, ERR_SYNTAX, "Variable name too long");
+        send_sentinel(c->fd);
+        return 0;
+    }
+    memcpy(env_name, name_start, name_len);
+    env_name[name_len] = '\0';
+
+    /* Skip whitespace to find value */
+    while (*p == ' ' || *p == '\t') p++;
+    value = p;
+
+    if (*value == '\0') {
+        /* DELETE mode: no value provided */
+        DeleteVar((STRPTR)env_name, GVF_GLOBAL_ONLY);
+
+        if (!volatile_mode) {
+            /* Remove persistent copy from ENVARC: */
+            sprintf(env_path, "ENVARC:%s", env_name);
+            DeleteFile((STRPTR)env_path);
+        }
+
+        send_ok(c->fd, NULL);
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* WRITE mode */
+    if (volatile_mode) {
+        if (!SetVar((STRPTR)env_name, (STRPTR)value, strlen(value),
+                    GVF_GLOBAL_ONLY)) {
+            send_error(c->fd, ERR_IO, "SetVar failed");
+            send_sentinel(c->fd);
+            return 0;
+        }
+    } else {
+        if (!SetVar((STRPTR)env_name, (STRPTR)value, strlen(value),
+                    GVF_GLOBAL_ONLY | GVF_SAVE_VAR)) {
+            send_error(c->fd, ERR_IO, "SetVar failed");
+            send_sentinel(c->fd);
+            return 0;
+        }
+    }
+
+    send_ok(c->fd, NULL);
+    send_sentinel(c->fd);
+    return 0;
+}
+
+/* ---- DEVICES ---- */
+
+#define MAX_DEVICES 128
+
+struct device_entry {
+    char name[64];
+    int version;
+    int revision;
+};
+
+static struct device_entry devices[MAX_DEVICES];
+
+int cmd_devices(struct client *c, const char *args)
+{
+    int dev_count;
+    struct Node *node;
+    int i;
+
+    (void)args;
+
+    /* Collect under Forbid -- no I/O allowed */
+    dev_count = 0;
+
+    Forbid();
+    for (node = SysBase->DeviceList.lh_Head;
+         node->ln_Succ;
+         node = node->ln_Succ) {
+        struct Library *dev;
+        struct device_entry *de;
+        const char *name;
+        int len;
+
+        if (dev_count >= MAX_DEVICES)
+            break;
+
+        dev = (struct Library *)node;
+        de = &devices[dev_count];
+
+        name = node->ln_Name;
+        if (!name)
+            name = "<unnamed>";
+        len = strlen(name);
+        if (len >= (int)sizeof(de->name))
+            len = (int)sizeof(de->name) - 1;
+        memcpy(de->name, name, len);
+        de->name[len] = '\0';
+
+        de->version = (int)dev->lib_Version;
+        de->revision = (int)dev->lib_Revision;
+
+        dev_count++;
+    }
+    Permit();
+
+    /* Send results (safe for I/O now) */
+    send_ok(c->fd, NULL);
+
+    for (i = 0; i < dev_count; i++) {
+        struct device_entry *de = &devices[i];
+        char line[128];
+
+        sprintf(line, "%s\t%d.%d", de->name, de->version, de->revision);
+        send_payload_line(c->fd, line);
+    }
+
+    send_sentinel(c->fd);
+    return 0;
+}
+
+/* ---- CAPABILITIES ---- */
+
+/* Sorted list of all supported commands.
+ * IMPORTANT: update this string when adding new commands. */
+#define CAPABILITIES_COMMANDS \
+    "APPEND,AREXX,ASSIGN,ASSIGNS,CAPABILITIES,CHECKSUM,COPY,DELETE," \
+    "DEVICES,DIR,ENV,EXEC,KILL,LIBVER,MAKEDIR,PING,PORTS,PROCLIST," \
+    "PROCSTAT,PROTECT,READ,REBOOT,RENAME,SETCOMMENT,SETDATE,SETENV," \
+    "SHUTDOWN,SIGNAL,SYSINFO,TAIL,TASKS,UPTIME,VERSION,VOLUMES,WRITE"
+
+int cmd_capabilities(struct client *c, const char *args)
+{
+    char line[128];
+
+    (void)args;
+
+    send_ok(c->fd, NULL);
+
+    sprintf(line, "version=%s", AMIGACTLD_VERSION);
+    send_payload_line(c->fd, line);
+
+    send_payload_line(c->fd, "protocol=1.0");
+
+    sprintf(line, "max_clients=%d", MAX_CLIENTS);
+    send_payload_line(c->fd, line);
+
+    sprintf(line, "max_cmd_len=%d", MAX_CMD_LEN);
+    send_payload_line(c->fd, line);
+
+    send_payload_line(c->fd, "commands=" CAPABILITIES_COMMANDS);
 
     send_sentinel(c->fd);
     return 0;
