@@ -4,7 +4,7 @@ Remote access toolkit for AmigaOS.
 
 amigactl provides structured, programmatic remote access to AmigaOS over TCP.
 It consists of a lightweight C daemon (amigactld) running on the Amiga and a
-Python client library and CLI tool on the host. Together they expose file
+Python client library and CLI tool on the client side. Together they expose file
 operations, CLI command execution, ARexx dispatch, live file streaming, and
 system introspection (assigns, volumes, ports, tasks) through a simple text
 protocol with machine-parseable responses. Designed for trusted LANs and
@@ -13,7 +13,7 @@ emulator setups.
 ## Architecture
 
 ```
-Host                              Amiga
+Client                            Amiga
 +-----------------+               +------------------+
 | amigactl CLI    |--TCP:6800---->| amigactld        |
 | (Python)        |               | (m68k C daemon)  |
@@ -21,14 +21,14 @@ Host                              Amiga
                                   | - File I/O (DOS) |
 +-----------------+               | - EXEC / Proc    |
 | Python library  |--TCP:6800---->| - ARexx dispatch |
-| (host)          |               | - File streaming |
+| (client)        |               | - File streaming |
 +-----------------+               | - System queries |
                                   +------------------+
 ```
 
 - **amigactld**: Amiga daemon, C, cross-compiled with m68k-amigaos-gcc.
   Multi-client via WaitSelect event loop (up to 8 simultaneous clients).
-- **amigactl**: Python client library and CLI tool (host-side).
+- **amigactl**: Python client library and CLI tool (client-side).
 - **Protocol**: Text commands, dot-stuffed sentinel termination, length-prefixed
   binary for file data. ISO-8859-1 encoding.
 - **Security**: IP-based ACL from `S:amigactld.conf`
@@ -42,7 +42,7 @@ Host                              Amiga
 - A TCP/IP stack providing `bsdsocket.library` (Roadshow, AmiTCP, Miami, or
   emulator bsdsocket emulation)
 
-### Host (client)
+### Client
 
 - Python 3.8 or later
 

@@ -8,7 +8,7 @@ Architecture: m68k-amigaos
 
 amigactl provides structured, programmatic remote access to AmigaOS
 over TCP. It consists of a lightweight C daemon (amigactld) running
-on the Amiga and a Python client library and CLI tool on the host.
+on the Amiga and a Python client library and CLI tool on the client side.
 Together they expose file operations, CLI command execution, ARexx
 dispatch, live file streaming, and system introspection (assigns,
 volumes, ports, tasks) through a simple text protocol with
@@ -31,7 +31,7 @@ INSTALLATION
 For Workbench use, double-click the amigactld icon. Configuration
 can be set via Tool Types (PORT, CONFIG) in the icon's Info window.
 
-HOST-SIDE CLIENT
+CLIENT
 
 The client/ directory contains the Python client. Requires Python
 3.8+.
