@@ -1,7 +1,8 @@
 /*
  * amigactld -- File operation command handlers
  *
- * DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT, SETDATE.
+ * DIR, STAT, READ, WRITE, DELETE, RENAME, MAKEDIR, PROTECT, SETDATE,
+ * COPY, APPEND, CHECKSUM, SETCOMMENT.
  * Each handler sends its response and returns 0 on success
  * or -1 if the client should be disconnected.
  */
@@ -20,5 +21,9 @@ int cmd_rename(struct client *c, const char *args);
 int cmd_makedir(struct client *c, const char *args);
 int cmd_protect(struct client *c, const char *args);
 int cmd_setdate(struct client *c, const char *args);
+int cmd_copy(struct client *c, const char *args);
+int cmd_append(struct client *c, const char *args);
+int cmd_checksum(struct client *c, const char *args);
+int cmd_setcomment(struct client *c, const char *args);
 
 #endif /* AMIGACTLD_FILE_H */

@@ -641,6 +641,18 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "PROTECT") == 0) {
         rc = cmd_protect(c, rest);
 
+    } else if (stricmp(verb, "COPY") == 0) {
+        rc = cmd_copy(c, rest);
+
+    } else if (stricmp(verb, "APPEND") == 0) {
+        rc = cmd_append(c, rest);
+
+    } else if (stricmp(verb, "CHECKSUM") == 0) {
+        rc = cmd_checksum(c, rest);
+
+    } else if (stricmp(verb, "SETCOMMENT") == 0) {
+        rc = cmd_setcomment(c, rest);
+
     /* --- Execution and system info handlers --- */
 
     } else if (stricmp(verb, "EXEC") == 0) {
