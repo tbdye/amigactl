@@ -213,6 +213,24 @@ def send_raw_write_start(sock, path, declared_size):
     return "READY"
 
 
+def pre_clean(sock, path):
+    """Clear protection and delete a file, ignoring errors.
+
+    Removes stale files from previous interrupted test runs that may
+    have protection bits set.
+    """
+    send_command(sock, "PROTECT {} 00000000".format(path))
+    try:
+        read_response(sock)
+    except Exception:
+        pass
+    send_command(sock, "DELETE {}".format(path))
+    try:
+        read_response(sock)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Command-line options
 # ---------------------------------------------------------------------------
