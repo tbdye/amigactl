@@ -139,6 +139,59 @@ def send_rename(sock, old_path, new_path):
     return read_response(sock)
 
 
+def send_copy(sock, src, dst, flags=""):
+    """Send a COPY command in three-line format and read the response.
+
+    flags is an optional string of space-separated keywords (e.g.
+    "NOCLONE", "NOREPLACE", "NOCLONE NOREPLACE").
+
+    Returns (status_line, payload_lines) from read_response().
+    """
+    verb = "COPY"
+    if flags:
+        verb += " " + flags
+    msg = "{}\n{}\n{}\n".format(verb, src, dst)
+    sock.sendall(msg.encode("iso-8859-1"))
+    return read_response(sock)
+
+
+def send_append_data(sock, path, data):
+    """Execute a complete APPEND handshake.
+
+    data must be bytes. Sends APPEND command, reads READY, sends
+    DATA/END chunks, reads final response.
+
+    Returns (status_line, payload_lines) from the final response.
+    Raises AssertionError if READY is not received.
+    """
+    send_command(sock, "APPEND {} {}".format(path, len(data)))
+
+    # Read READY or ERR
+    ready_line = _read_line(sock)
+    if ready_line.startswith("ERR "):
+        sentinel = _read_line(sock)
+        assert sentinel == "."
+        return ready_line, []
+
+    assert ready_line == "READY", \
+        "Expected READY, got: {!r}".format(ready_line)
+
+    # Send data in chunks
+    CHUNK_SIZE = 4096
+    offset = 0
+    while offset < len(data):
+        chunk = data[offset:offset + CHUNK_SIZE]
+        header = "DATA {}\n".format(len(chunk)).encode("iso-8859-1")
+        sock.sendall(header + chunk)
+        offset += len(chunk)
+
+    # For 0-byte appends, no DATA chunks are sent
+    sock.sendall(b"END\n")
+
+    # Read final response
+    return read_response(sock)
+
+
 # ---------------------------------------------------------------------------
 # Command-line options
 # ---------------------------------------------------------------------------
@@ -257,6 +310,54 @@ class _CleanupTracker:
             sock.close()
         except Exception:
             pass
+
+
+class _EnvCleanupTracker:
+    """Track environment variables created during a test for cleanup."""
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.vars = []  # list of (name, volatile_bool) tuples
+
+    def add(self, name, volatile=False):
+        """Register a variable for cleanup on teardown."""
+        self.vars.append((name, volatile))
+
+    def cleanup(self):
+        if not self.vars:
+            return
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((self.host, self.port))
+            _read_line(sock)  # banner
+            for name, volatile in reversed(self.vars):
+                if volatile:
+                    send_command(sock, "SETENV VOLATILE {}".format(name))
+                else:
+                    send_command(sock, "SETENV {}".format(name))
+                try:
+                    read_response(sock)
+                except Exception:
+                    pass
+            sock.close()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def cleanup_env(amiga_host, amiga_port):
+    """Fixture that tracks env variables for cleanup.
+
+    Usage: cleanup_env.add("TestVar")
+            cleanup_env.add("TestVar", volatile=True)
+
+    On teardown, sends SETENV (delete) commands via a fresh connection.
+    """
+    tracker = _EnvCleanupTracker(amiga_host, amiga_port)
+    yield tracker
+    tracker.cleanup()
 
 
 # ---------------------------------------------------------------------------

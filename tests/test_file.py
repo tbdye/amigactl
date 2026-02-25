@@ -13,6 +13,7 @@ executed.
 import re
 import socket
 import time
+import zlib
 
 import pytest
 
@@ -21,6 +22,8 @@ from conftest import (
     read_data_response,
     read_response,
     send_command,
+    send_copy,
+    send_append_data,
     send_rename,
     send_write_data,
 )
@@ -1103,3 +1106,702 @@ class TestSetdate:
             "Expected ERR 100, got: {!r}".format(status)
         )
         assert payload == []
+
+
+# ---------------------------------------------------------------------------
+# Partial READ
+# ---------------------------------------------------------------------------
+
+class TestPartialRead:
+    """Tests for READ with OFFSET and LENGTH parameters."""
+
+    def test_read_offset(self, raw_connection, cleanup_paths):
+        """READ with OFFSET skips initial bytes."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET 50".format(path))
+        info, data = read_data_response(sock)
+        assert data == content[50:]
+
+    def test_read_length(self, raw_connection, cleanup_paths):
+        """READ with LENGTH limits returned bytes."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} LENGTH 30".format(path))
+        info, data = read_data_response(sock)
+        assert data == content[:30]
+
+    def test_read_offset_length(self, raw_connection, cleanup_paths):
+        """READ with OFFSET and LENGTH returns the specified slice."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET 10 LENGTH 30".format(path))
+        info, data = read_data_response(sock)
+        assert data == content[10:40]
+
+    def test_read_offset_past_eof(self, raw_connection, cleanup_paths):
+        """READ with OFFSET past EOF returns 0 bytes."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET 200".format(path))
+        info, data = read_data_response(sock)
+        assert info == "0"
+        assert data == b""
+
+    def test_read_offset_length_past_eof(self, raw_connection, cleanup_paths):
+        """READ with OFFSET+LENGTH extending past EOF returns available bytes."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET 90 LENGTH 20".format(path))
+        info, data = read_data_response(sock)
+        assert data == content[90:]
+
+    def test_read_offset_zero(self, raw_connection, cleanup_paths):
+        """READ with OFFSET 0 returns entire file."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET 0".format(path))
+        info, data = read_data_response(sock)
+        assert data == content
+
+    def test_read_length_zero(self, raw_connection, cleanup_paths):
+        """READ with LENGTH 0 returns 0 bytes."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} LENGTH 0".format(path))
+        info, data = read_data_response(sock)
+        assert info == "0"
+        assert data == b""
+
+    def test_read_partial_via_client(self, conn, cleanup_paths):
+        """READ with offset and length via client library."""
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        conn.write(path, content)
+
+        data = conn.read(path, offset=10, length=30)
+        assert data == content[10:40]
+
+    def test_read_invalid_offset(self, raw_connection, cleanup_paths):
+        """READ with non-numeric OFFSET treats it as part of path (ERR 200)."""
+        sock, _banner = raw_connection
+        content = bytes(range(100))
+        path = "RAM:amigactl_test_partial.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "READ {} OFFSET notanumber".format(path))
+        info, data = read_data_response(sock)
+        assert info.startswith("ERR 200")
+
+
+# ---------------------------------------------------------------------------
+# APPEND
+# ---------------------------------------------------------------------------
+
+class TestAppend:
+    """Tests for the APPEND command."""
+
+    def test_append_to_existing(self, raw_connection, cleanup_paths):
+        """APPEND data to an existing file extends its content."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_append.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"hello")
+        assert status == "OK"
+
+        status, _payload = send_append_data(sock, path, b" world")
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert data == b"hello world"
+
+    def test_append_to_nonexistent(self, raw_connection):
+        """APPEND to a nonexistent file returns ERR 200."""
+        sock, _banner = raw_connection
+        status, _payload = send_append_data(
+            sock, "RAM:nonexistent_amigactl_test_append", b"data"
+        )
+        assert status.startswith("ERR 200")
+
+    def test_append_to_directory(self, raw_connection, cleanup_paths):
+        """APPEND to a directory returns ERR 300."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_append_dir"
+        cleanup_paths.add(path)
+        send_command(sock, "MAKEDIR {}".format(path))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        status, _payload = send_append_data(sock, path, b"data")
+        assert status.startswith("ERR 300")
+
+    def test_append_zero_bytes(self, raw_connection, cleanup_paths):
+        """APPEND zero bytes leaves the file unchanged."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_append_zero.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"hello")
+        assert status == "OK"
+
+        status, _payload = send_append_data(sock, path, b"")
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert data == b"hello"
+
+    def test_append_multiple(self, raw_connection, cleanup_paths):
+        """APPEND multiple times concatenates all data."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_append_multi.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"A")
+        assert status == "OK"
+
+        status, _payload = send_append_data(sock, path, b"B")
+        assert status == "OK"
+        status, _payload = send_append_data(sock, path, b"C")
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert data == b"ABC"
+
+    def test_append_missing_args(self, raw_connection):
+        """APPEND with no arguments returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "APPEND")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_append_large(self, raw_connection, cleanup_paths):
+        """APPEND a chunk larger than 4096 bytes succeeds."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_append_large.bin"
+        cleanup_paths.add(path)
+        initial = b"\x00" * 1000
+        append_data = b"\xff" * 5000
+        status, _payload = send_write_data(sock, path, initial)
+        assert status == "OK"
+
+        status, _payload = send_append_data(sock, path, append_data)
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert data == initial + append_data
+
+    def test_append_via_client(self, conn, cleanup_paths):
+        """APPEND via the client library."""
+        path = "RAM:amigactl_test_append_client.bin"
+        cleanup_paths.add(path)
+        conn.write(path, b"hello")
+        result = conn.append(path, b" world")
+        assert result == len(b" world")
+        data = conn.read(path)
+        assert data == b"hello world"
+
+
+# ---------------------------------------------------------------------------
+# CHECKSUM
+# ---------------------------------------------------------------------------
+
+class TestChecksum:
+    """Tests for the CHECKSUM command."""
+
+    def test_checksum_known_content(self, raw_connection, cleanup_paths):
+        """CHECKSUM returns correct CRC32 for known content."""
+        sock, _banner = raw_connection
+        content = b"The quick brown fox jumps over the lazy dog"
+        path = "RAM:amigactl_test_checksum.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "CHECKSUM {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        expected_crc = "{:08x}".format(zlib.crc32(content) & 0xFFFFFFFF)
+        assert kv["crc32"] == expected_crc, (
+            "CRC32 mismatch: expected {}, got {}".format(
+                expected_crc, kv["crc32"])
+        )
+        assert kv["size"] == str(len(content))
+
+    def test_checksum_empty_file(self, raw_connection, cleanup_paths):
+        """CHECKSUM of an empty file returns crc32=00000000, size=0."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_checksum_empty.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"")
+        assert status == "OK"
+
+        send_command(sock, "CHECKSUM {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert kv["crc32"] == "00000000"
+        assert kv["size"] == "0"
+
+    def test_checksum_nonexistent(self, raw_connection):
+        """CHECKSUM on a nonexistent file returns ERR 200."""
+        sock, _banner = raw_connection
+        send_command(sock, "CHECKSUM RAM:nonexistent_amigactl_test")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 200")
+
+    def test_checksum_directory(self, raw_connection):
+        """CHECKSUM on a directory returns ERR 300."""
+        sock, _banner = raw_connection
+        send_command(sock, "CHECKSUM SYS:S")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 300")
+
+    def test_checksum_missing_path(self, raw_connection):
+        """CHECKSUM with no path returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "CHECKSUM")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_checksum_format(self, raw_connection, cleanup_paths):
+        """CHECKSUM response has correctly formatted crc32 and size fields."""
+        sock, _banner = raw_connection
+        content = b"format test data"
+        path = "RAM:amigactl_test_checksum_fmt.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, content)
+        assert status == "OK"
+
+        send_command(sock, "CHECKSUM {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert re.match(r"^[0-9a-f]{8}$", kv["crc32"]), (
+            "crc32 must be 8 hex digits, got: {!r}".format(kv["crc32"])
+        )
+        assert kv["size"].isdigit(), (
+            "size must be numeric, got: {!r}".format(kv["size"])
+        )
+
+    def test_checksum_via_client(self, conn, cleanup_paths):
+        """CHECKSUM via the client library."""
+        content = b"client checksum test"
+        path = "RAM:amigactl_test_checksum_client.bin"
+        cleanup_paths.add(path)
+        conn.write(path, content)
+
+        result = conn.checksum(path)
+        expected_crc = "{:08x}".format(zlib.crc32(content) & 0xFFFFFFFF)
+        assert result["crc32"] == expected_crc
+        assert result["size"] == len(content)
+
+
+# ---------------------------------------------------------------------------
+# COPY
+# ---------------------------------------------------------------------------
+
+class TestCopy:
+    """Tests for the COPY command."""
+
+    def test_copy_basic(self, raw_connection, cleanup_paths):
+        """COPY duplicates a file with matching content."""
+        sock, _banner = raw_connection
+        content = b"copy me"
+        src = "RAM:amigactl_test_copy_src.bin"
+        dst = "RAM:amigactl_test_copy_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, src, dst)
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == content
+
+    def test_copy_preserves_metadata(self, raw_connection, cleanup_paths):
+        """COPY preserves datestamp, protection, and comment by default."""
+        sock, _banner = raw_connection
+        content = b"metadata test"
+        src = "RAM:amigactl_test_copy_meta_src.bin"
+        dst = "RAM:amigactl_test_copy_meta_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        # Set metadata on source
+        send_command(sock, "SETDATE {} 2024-06-15 14:30:00".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+        send_command(sock, "PROTECT {} 0000000f".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+        send_command(sock, "SETCOMMENT {}\ttest comment".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        # Copy
+        status, _payload = send_copy(sock, src, dst)
+        assert status == "OK"
+
+        # Verify metadata on destination
+        send_command(sock, "STAT {}".format(dst))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["datestamp"] == "2024-06-15 14:30:00"
+        assert kv["protection"] == "0000000f"
+        assert kv["comment"] == "test comment"
+
+    def test_copy_noclone(self, raw_connection, cleanup_paths):
+        """COPY NOCLONE does not preserve metadata."""
+        sock, _banner = raw_connection
+        content = b"noclone test"
+        src = "RAM:amigactl_test_copy_noclone_src.bin"
+        dst = "RAM:amigactl_test_copy_noclone_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        # Set metadata on source
+        send_command(sock, "SETDATE {} 2020-01-01 00:00:00".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+        send_command(sock, "PROTECT {} 0000000f".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+        send_command(sock, "SETCOMMENT {}\tcloned comment".format(src))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        # Copy with NOCLONE
+        status, _payload = send_copy(sock, src, dst, flags="NOCLONE")
+        assert status == "OK"
+
+        # Verify metadata was NOT preserved
+        send_command(sock, "STAT {}".format(dst))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["datestamp"] != "2020-01-01 00:00:00", (
+            "NOCLONE should not preserve datestamp"
+        )
+        assert kv["protection"] == "00000000", (
+            "NOCLONE should reset protection to default"
+        )
+        assert kv["comment"] == "", (
+            "NOCLONE should not preserve comment"
+        )
+
+    def test_copy_noreplace_existing(self, raw_connection, cleanup_paths):
+        """COPY NOREPLACE fails when destination already exists."""
+        sock, _banner = raw_connection
+        src = "RAM:amigactl_test_copy_norepl_src.bin"
+        dst = "RAM:amigactl_test_copy_norepl_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, b"source")
+        assert status == "OK"
+        status, _payload = send_write_data(sock, dst, b"existing")
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, src, dst, flags="NOREPLACE")
+        assert status.startswith("ERR 202")
+
+    def test_copy_noreplace_new(self, raw_connection, cleanup_paths):
+        """COPY NOREPLACE succeeds when destination does not exist."""
+        sock, _banner = raw_connection
+        content = b"noreplace new"
+        src = "RAM:amigactl_test_copy_nrn_src.bin"
+        dst = "RAM:amigactl_test_copy_nrn_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, src, dst, flags="NOREPLACE")
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == content
+
+    def test_copy_noclone_noreplace(self, raw_connection, cleanup_paths):
+        """COPY with both NOCLONE and NOREPLACE flags succeeds."""
+        sock, _banner = raw_connection
+        content = b"both flags"
+        src = "RAM:amigactl_test_copy_both_src.bin"
+        dst = "RAM:amigactl_test_copy_both_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        status, _payload = send_copy(
+            sock, src, dst, flags="NOCLONE NOREPLACE"
+        )
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == content
+
+    def test_copy_source_not_found(self, raw_connection):
+        """COPY with nonexistent source returns ERR 200."""
+        sock, _banner = raw_connection
+        status, _payload = send_copy(
+            sock,
+            "RAM:nonexistent_amigactl_test_src",
+            "RAM:amigactl_test_copy_nosrc_dst.bin",
+        )
+        assert status.startswith("ERR 200")
+
+    def test_copy_same_file(self, raw_connection, cleanup_paths):
+        """COPY a file to itself returns ERR 300."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_copy_self.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"self copy")
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, path, path)
+        assert status.startswith("ERR 300")
+
+    def test_copy_source_is_directory(self, raw_connection):
+        """COPY with a directory as source returns ERR 300."""
+        sock, _banner = raw_connection
+        status, _payload = send_copy(
+            sock, "SYS:S", "RAM:amigactl_test_dircopy"
+        )
+        assert status.startswith("ERR 300")
+
+    def test_copy_unknown_flag(self, raw_connection):
+        """COPY with unknown flag returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "COPY BADFLAG")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_copy_missing_source(self, raw_connection):
+        """COPY with empty source returns ERR 100."""
+        sock, _banner = raw_connection
+        status, _payload = send_copy(sock, "", "RAM:whatever")
+        assert status.startswith("ERR 100")
+
+    def test_copy_overwrite_existing(self, raw_connection, cleanup_paths):
+        """COPY without NOREPLACE overwrites existing destination."""
+        sock, _banner = raw_connection
+        src = "RAM:amigactl_test_copy_ow_src.bin"
+        dst = "RAM:amigactl_test_copy_ow_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, b"new content")
+        assert status == "OK"
+        status, _payload = send_write_data(sock, dst, b"old content")
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, src, dst)
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == b"new content"
+
+    def test_copy_large_file(self, raw_connection, cleanup_paths):
+        """COPY a file larger than 4096 bytes succeeds."""
+        sock, _banner = raw_connection
+        content = bytes(range(256)) * 20  # 5120 bytes
+        src = "RAM:amigactl_test_copy_large_src.bin"
+        dst = "RAM:amigactl_test_copy_large_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        status, _payload = send_write_data(sock, src, content)
+        assert status == "OK"
+
+        status, _payload = send_copy(sock, src, dst)
+        assert status == "OK"
+
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == content
+
+    def test_copy_via_client(self, conn, cleanup_paths):
+        """COPY via the client library."""
+        content = b"client copy test"
+        src = "RAM:amigactl_test_copy_cli_src.bin"
+        dst = "RAM:amigactl_test_copy_cli_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+        conn.write(src, content)
+        conn.copy(src, dst)
+        data = conn.read(dst)
+        assert data == content
+
+
+# ---------------------------------------------------------------------------
+# SETCOMMENT
+# ---------------------------------------------------------------------------
+
+class TestSetComment:
+    """Tests for the SETCOMMENT command."""
+
+    def test_setcomment_set(self, raw_connection, cleanup_paths):
+        """SETCOMMENT sets a file comment visible via STAT."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setcomment.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"comment test")
+        assert status == "OK"
+
+        send_command(sock, "SETCOMMENT {}\ttest comment".format(path))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["comment"] == "test comment"
+
+    def test_setcomment_clear(self, raw_connection, cleanup_paths):
+        """SETCOMMENT with empty comment clears the comment."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setcomment_clr.bin"
+        cleanup_paths.add(path)
+        status, _payload = send_write_data(sock, path, b"clear test")
+        assert status == "OK"
+
+        # Set a comment first
+        send_command(sock, "SETCOMMENT {}\ttest comment".format(path))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        # Verify comment was set
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["comment"] == "test comment"
+
+        # Clear the comment (empty string after tab)
+        send_command(sock, "SETCOMMENT {}\t".format(path))
+        status, _payload = read_response(sock)
+        assert status == "OK"
+
+        # Verify comment is cleared
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+        assert kv["comment"] == ""
+
+    def test_setcomment_nonexistent(self, raw_connection):
+        """SETCOMMENT on a nonexistent file returns ERR 200."""
+        sock, _banner = raw_connection
+        send_command(sock,
+                     "SETCOMMENT RAM:nonexistent_amigactl_test\tcomment")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 200")
+
+    def test_setcomment_missing_args(self, raw_connection):
+        """SETCOMMENT with no arguments returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "SETCOMMENT")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_setcomment_missing_tab(self, raw_connection):
+        """SETCOMMENT without tab separator returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "SETCOMMENT RAM:somefile.txt")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_setcomment_missing_path(self, raw_connection):
+        """SETCOMMENT with tab but no path returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "SETCOMMENT \t")
+        status, _payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_setcomment_via_client(self, conn, cleanup_paths):
+        """SETCOMMENT via the client library."""
+        path = "RAM:amigactl_test_setcomment_cli.bin"
+        cleanup_paths.add(path)
+        conn.write(path, b"client comment test")
+        conn.setcomment(path, "client comment")
+
+        info = conn.stat(path)
+        assert info["comment"] == "client comment"
