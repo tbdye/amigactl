@@ -4,11 +4,13 @@ Remote access toolkit for AmigaOS.
 
 amigactl provides structured, programmatic remote access to AmigaOS over TCP.
 It consists of a lightweight C daemon (amigactld) running on the Amiga and a
-Python client library and CLI tool on the client side. Together they expose file
-operations, CLI command execution, ARexx dispatch, live file streaming, and
-system introspection (assigns, volumes, ports, tasks) through a simple text
-protocol with machine-parseable responses. Designed for trusted LANs and
-emulator setups.
+Python client library and CLI tool on the client side. Together they expose
+39 commands spanning file operations (copy, checksum, streaming), CLI command
+execution, ARexx dispatch, environment variables, library version queries, and
+system introspection (assigns, volumes, ports, tasks, devices) through a simple
+text protocol with machine-parseable responses. The interactive shell adds
+search and navigation commands (find, tree, grep, diff, du). Designed for
+trusted LANs and emulator setups.
 
 ## Architecture
 
@@ -141,7 +143,7 @@ The interactive shell starts automatically when no subcommand is given, or
 explicitly with the `shell` subcommand:
 
     $ client/amigactl.sh --host 192.168.6.200
-    Connected to 192.168.6.200 (amigactld 0.6.1)
+    Connected to 192.168.6.200 (amigactld 0.7.0)
     Type "help" for a list of commands, "exit" to disconnect.
     amiga@192.168.6.200:SYS:> ls
     C/  Devs/  Expansion/  L/  Libs/  Locale/  Prefs/  S/  System/  T/
@@ -159,6 +161,20 @@ explicitly with the `shell` subcommand:
     amiga@192.168.6.200:SYS:> sysinfo
     cpu=MC68020
     ...
+    amiga@192.168.6.200:SYS:> cp C/Dir RAM:Dir.bak
+    amiga@192.168.6.200:SYS:> checksum C/Dir
+    crc32=a1b2c3d4  size=12345  C/Dir
+    amiga@192.168.6.200:SYS:> libver dos.library
+    dos.library 40.3
+    amiga@192.168.6.200:SYS:> env Workbench
+    USE1MAP.16
+    amiga@192.168.6.200:SYS:> find C #?.info
+    C/Ed.info
+    C/IconX.info
+    ...
+    amiga@192.168.6.200:SYS:> grep "Pattern" S
+    S/Startup-Sequence:14: Pattern
+    ...
     amiga@192.168.6.200:SYS:> exit
     Disconnected.
 
@@ -167,6 +183,13 @@ for parent directory). Relative paths are resolved client-side before
 sending to the daemon. Tab completion works with both absolute and
 relative Amiga paths. Type `help` for a command list, or `help COMMAND`
 for detailed usage of any command.
+
+The shell also provides search and navigation commands that combine
+multiple daemon operations client-side: `find` (recursive file search
+with glob patterns), `tree` (directory tree display), `grep` (recursive
+text search), `diff` (file comparison), `du` (disk usage), and `watch`
+(periodic command re-execution). These are shell-only and not available
+as CLI subcommands.
 
 Tab completion requires Python's readline module (included on Linux/macOS).
 On Windows, tab completion is not available by default. Installing the
@@ -275,6 +298,15 @@ client/amigactl.sh --host 192.168.6.200 volumes
 client/amigactl.sh --host 192.168.6.200 ports
 client/amigactl.sh --host 192.168.6.200 tasks
 client/amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
+client/amigactl.sh --host 192.168.6.200 cp SYS:C/Dir RAM:Dir
+client/amigactl.sh --host 192.168.6.200 append RAM:logfile.txt localdata.txt
+client/amigactl.sh --host 192.168.6.200 checksum SYS:C/Dir
+client/amigactl.sh --host 192.168.6.200 setcomment RAM:test.txt "Important file"
+client/amigactl.sh --host 192.168.6.200 libver exec.library
+client/amigactl.sh --host 192.168.6.200 env Workbench
+client/amigactl.sh --host 192.168.6.200 setenv MyVar hello
+client/amigactl.sh --host 192.168.6.200 devices
+client/amigactl.sh --host 192.168.6.200 capabilities
 client/amigactl.sh --host 192.168.6.200 tail RAM:logfile.txt
 client/amigactl.sh --host 192.168.6.200 shutdown
 client/amigactl.sh --host 192.168.6.200 reboot
@@ -299,6 +331,13 @@ with AmigaConnection("192.168.6.200") as amiga:
     amiga.makedir("RAM:mydir")
     prot = amiga.protect("RAM:mydir")
 
+    # File operations (new in 0.7)
+    amiga.copy("SYS:C/Dir", "RAM:Dir")
+    data = amiga.read("SYS:C/Dir", offset=100, length=50)
+    amiga.append("RAM:logfile.txt", b"new log entry\n")
+    csum = amiga.checksum("SYS:C/Dir")
+    amiga.setcomment("RAM:test.txt", "Important file")
+
     # Command execution
     rc, output = amiga.execute("list SYS:S")
     proc_id = amiga.execute_async("wait 30")
@@ -322,6 +361,13 @@ with AmigaConnection("192.168.6.200") as amiga:
     ports = amiga.ports()
     tasks = amiga.tasks()
     amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
+
+    # System queries (new in 0.7)
+    ver = amiga.libver("exec.library")
+    val = amiga.env("Workbench")
+    amiga.setenv("MyVar", "hello")
+    devs = amiga.devices()
+    caps = amiga.capabilities()
 ```
 
 ## Amiga Installation

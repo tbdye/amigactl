@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.6.1
+**Version**: 0.7.0
 
 **Conventions used in this document:**
 
@@ -45,6 +45,10 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [MAKEDIR](#makedir)
 - [PROTECT](#protect)
 - [SETDATE](#setdate)
+- [APPEND](#append)
+- [CHECKSUM](#checksum)
+- [COPY](#copy)
+- [SETCOMMENT](#setcomment)
 - [EXEC](#exec)
   - [EXEC (Synchronous)](#exec-synchronous)
   - [EXEC ASYNC](#exec-async)
@@ -60,6 +64,11 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [TASKS](#tasks)
 - [REBOOT](#reboot)
 - [UPTIME](#uptime)
+- [CAPABILITIES](#capabilities)
+- [DEVICES](#devices)
+- [ENV](#env)
+- [LIBVER](#libver)
+- [SETENV](#setenv)
 - [AREXX](#arexx)
 - [TAIL](#tail)
 - [STOP](#stop)
@@ -80,7 +89,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.6.1`).
+The version string matches the daemon version (currently `0.7.0`).
 
 ### Behavior
 
@@ -95,7 +104,7 @@ The version string matches the daemon version (currently `0.6.1`).
 ### Example
 
 ```
-S> AMIGACTL 0.6.1
+S> AMIGACTL 0.7.0
 ```
 
 ---
@@ -132,7 +141,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.6.1
+S> amigactld 0.7.0
 S> .
 ```
 
@@ -481,10 +490,23 @@ framing as described in [PROTOCOL.md](PROTOCOL.md).
 ### Syntax
 
 ```
-READ <path>
+READ <path> [OFFSET <n>] [LENGTH <n>]
 ```
 
-`<path>` is mandatory.
+`<path>` is mandatory. `OFFSET` and `LENGTH` are optional keywords
+(case-insensitive) that enable partial file reads.
+
+| Keyword | Description |
+|---------|-------------|
+| `OFFSET <n>` | Start reading at byte offset `n` (0-based). Default: 0. |
+| `LENGTH <n>` | Read at most `n` bytes. Default: entire file (or from offset to EOF). |
+
+When `OFFSET` is beyond the end of the file, the response contains
+zero bytes (OK 0, no DATA chunks). When `OFFSET + LENGTH` exceeds the
+file size, the response contains only the available bytes.
+
+Keywords are parsed from the end of the command line. They can appear
+in any order, but both must follow the path.
 
 ### Response
 
@@ -547,6 +569,28 @@ S> .
 ```
 C> READ RAM:empty.txt
 S> OK 0
+S> END
+S> .
+```
+
+**Partial read (offset and length):**
+
+```
+C> READ SYS:S/Startup-Sequence OFFSET 100 LENGTH 50
+S> OK 50
+S> DATA 50
+S> <50 raw bytes>
+S> END
+S> .
+```
+
+**Offset only (read to end of file):**
+
+```
+C> READ SYS:S/Startup-Sequence OFFSET 1000
+S> OK 842
+S> DATA 842
+S> <842 raw bytes>
 S> END
 S> .
 ```
@@ -1070,6 +1114,231 @@ S> .
 ```
 C> SETDATE
 S> ERR 100 Missing arguments
+S> .
+```
+
+---
+
+## APPEND
+
+Appends data to an existing file. Uses the same upload handshake as
+WRITE.
+
+### Syntax
+
+```
+APPEND <path> <size>
+```
+
+`<path>` is the file to append to. `<size>` is the number of bytes to
+append (decimal integer). The file must already exist.
+
+### Response
+
+The handshake follows the same pattern as WRITE:
+
+```
+C> APPEND <path> <size>
+S> READY
+C> DATA <chunk_len>
+C> <raw bytes>
+...
+C> END
+S> OK <bytes_appended>
+S> .
+```
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing path or size | `ERR 100 Usage: APPEND <path> <size>` |
+| File not found | `ERR 200 <dos error>` |
+| Path is a directory | `ERR 300 Is a directory` |
+| I/O error during append | `ERR 300 <dos error>` |
+| Size mismatch | `ERR 300 Size mismatch` |
+
+### Examples
+
+**Append 5 bytes:**
+
+```
+C> APPEND RAM:logfile.txt 5
+S> READY
+C> DATA 5
+C> hello
+C> END
+S> OK 5
+S> .
+```
+
+---
+
+## CHECKSUM
+
+Computes the CRC32 checksum of a file.
+
+### Syntax
+
+```
+CHECKSUM <path>
+```
+
+### Response
+
+```
+OK
+crc32=<hex>
+size=<bytes>
+.
+```
+
+| Field | Description |
+|-------|-------------|
+| `crc32` | CRC32 checksum as 8 lowercase hex digits |
+| `size` | File size in bytes (decimal) |
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing path | `ERR 100 Missing path argument` |
+| Path not found | `ERR 200 <dos error>` |
+| Path is a directory | `ERR 300 Is a directory` |
+| Read error | `ERR 300 <dos error>` |
+
+### Examples
+
+```
+C> CHECKSUM SYS:C/Dir
+S> OK
+S> crc32=a1b2c3d4
+S> size=14832
+S> .
+```
+
+---
+
+## COPY
+
+Copies a file on the Amiga, optionally preserving metadata.
+
+### Syntax
+
+```
+COPY [NOCLONE] [NOREPLACE]
+<source_path>
+<destination_path>
+```
+
+COPY is a multi-line command. The verb line may include optional flags.
+The source and destination paths follow on separate lines (same format
+as RENAME). All flag keywords are case-insensitive.
+
+| Flag | Description |
+|------|-------------|
+| `NOCLONE` | Do not copy protection bits, datestamp, or comment |
+| `NOREPLACE` | Fail if the destination already exists |
+
+### Response
+
+```
+OK
+.
+```
+
+No payload. Metadata is copied by default unless `NOCLONE` is specified.
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Unknown flag | `ERR 100 Unknown flag` |
+| Missing source or destination path | `ERR 100 Missing path` |
+| Source not found | `ERR 200 <dos error>` |
+| Source and destination are the same file | `ERR 300 Source and destination are the same` |
+| Source is a directory | `ERR 300 Source is a directory` |
+| Destination exists (with NOREPLACE) | `ERR 202 Destination already exists` |
+| I/O error during copy | `ERR 300 <dos error>` |
+
+### Examples
+
+**Basic copy (metadata preserved):**
+
+```
+C> COPY
+C> SYS:S/Startup-Sequence
+C> RAM:Startup-Sequence.bak
+S> OK
+S> .
+```
+
+**Copy without metadata:**
+
+```
+C> COPY NOCLONE
+C> SYS:C/Dir
+C> RAM:Dir
+S> OK
+S> .
+```
+
+**Destination exists with NOREPLACE:**
+
+```
+C> COPY NOREPLACE
+C> SYS:C/Dir
+C> RAM:Dir
+S> ERR 202 Destination already exists
+S> .
+```
+
+---
+
+## SETCOMMENT
+
+Sets the file comment (filenote) on a file or directory.
+
+### Syntax
+
+```
+SETCOMMENT <path>\t<comment>
+```
+
+The path and comment are separated by a literal TAB character (0x09).
+An empty comment (TAB followed by nothing) clears the existing comment.
+
+### Response
+
+```
+OK
+.
+```
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing arguments | `ERR 100 Missing arguments` |
+| Missing tab separator | `ERR 100 Missing tab separator` |
+| Missing path | `ERR 100 Missing path` |
+| Path not found | `ERR 200 <dos error>` |
+
+### Examples
+
+**Set a comment:**
+
+```
+C> SETCOMMENT RAM:test.txt\tImportant file
+S> OK
+S> .
+```
+
+**Clear a comment:**
+
+```
+C> SETCOMMENT RAM:test.txt\t
+S> OK
 S> .
 ```
 
@@ -1695,6 +1964,8 @@ fast_free=<bytes>
 total_free=<bytes>
 chip_total=<bytes>
 fast_total=<bytes>
+chip_largest=<bytes>
+fast_largest=<bytes>
 exec_version=<major.revision>
 kickstart=<revision>
 bsdsocket=<major.revision>
@@ -1710,6 +1981,8 @@ The payload consists of key=value lines in a fixed order:
 | `total_free` | Total free memory in bytes (`AvailMem(MEMF_ANY)`) |
 | `chip_total` | Total chip memory in bytes (requires exec v39+; omitted on older systems) |
 | `fast_total` | Total fast memory in bytes (requires exec v39+; omitted on older systems) |
+| `chip_largest` | Largest contiguous chip memory block (bytes) |
+| `fast_largest` | Largest contiguous fast memory block (bytes) |
 | `exec_version` | exec.library version, dot-separated (e.g., `40.68`) |
 | `kickstart` | Kickstart revision number (e.g., `40`) |
 | `bsdsocket` | bsdsocket.library version, dot-separated (e.g., `4.364`) |
@@ -1743,6 +2016,8 @@ S> fast_free=12582912
 S> total_free=14426112
 S> chip_total=2097152
 S> fast_total=16777216
+S> chip_largest=1802240
+S> fast_largest=12451840
 S> exec_version=40.68
 S> kickstart=40
 S> bsdsocket=4.364
@@ -2251,6 +2526,271 @@ None. This command always succeeds.
 C> UPTIME
 S> OK
 S> seconds=3661
+S> .
+```
+
+---
+
+## CAPABILITIES
+
+Returns daemon metadata and the list of supported commands.
+
+### Syntax
+
+```
+CAPABILITIES
+```
+
+No arguments. Any trailing text is ignored.
+
+### Response
+
+```
+OK
+version=<daemon_version>
+protocol=<protocol_version>
+max_clients=<n>
+max_cmd_len=<n>
+commands=<comma_separated_list>
+.
+```
+
+| Field | Description |
+|-------|-------------|
+| `version` | Daemon version (e.g. `0.7.0`) |
+| `protocol` | Protocol version (currently `1.0`) |
+| `max_clients` | Maximum simultaneous client connections |
+| `max_cmd_len` | Maximum command line length in bytes |
+| `commands` | Alphabetically sorted, comma-separated list of all supported commands |
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Examples
+
+```
+C> CAPABILITIES
+S> OK
+S> version=0.7.0
+S> protocol=1.0
+S> max_clients=8
+S> max_cmd_len=4096
+S> commands=APPEND,AREXX,ASSIGN,ASSIGNS,CAPABILITIES,CHECKSUM,COPY,...
+S> .
+```
+
+---
+
+## DEVICES
+
+Lists all Exec device drivers currently loaded in the system.
+
+### Syntax
+
+```
+DEVICES
+```
+
+No arguments. Any trailing text is ignored.
+
+### Response
+
+```
+OK
+<name>\t<version>
+<name>\t<version>
+...
+.
+```
+
+Each payload line has two tab-separated fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Device driver name (e.g. `timer.device`) |
+| `version` | Version string in `major.minor` format |
+
+### Error Conditions
+
+None. This command always succeeds.
+
+### Examples
+
+```
+C> DEVICES
+S> OK
+S> timer.device	50.1
+S> input.device	40.1
+S> keyboard.device	40.1
+S> gameport.device	40.1
+S> .
+```
+
+---
+
+## ENV
+
+Returns the value of a global AmigaOS environment variable.
+
+### Syntax
+
+```
+ENV <name>
+```
+
+### Response
+
+```
+OK
+value=<value>
+[truncated=true]
+.
+```
+
+| Field | Description |
+|-------|-------------|
+| `value` | Variable value (may be up to 4095 characters) |
+| `truncated` | Present only if the value was truncated at the 4096-byte buffer limit |
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing name | `ERR 100 Missing variable name` |
+| Variable not found | `ERR 200 Variable not found` |
+
+### Examples
+
+```
+C> ENV Workbench
+S> OK
+S> value=40
+S> .
+```
+
+---
+
+## LIBVER
+
+Returns the version of an Amiga library or device driver.
+
+### Syntax
+
+```
+LIBVER <name>
+```
+
+`<name>` is the full library or device name including the suffix
+(e.g. `exec.library`, `timer.device`).
+
+For exec.library, the version is read directly from SysBase. For
+devices (names ending in `.device`), the device list is searched
+under Forbid(). For all other libraries, OpenLibrary() is used.
+
+### Response
+
+```
+OK
+name=<name>
+version=<major>.<minor>
+.
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Library/device name as provided |
+| `version` | Version string in `major.minor` format |
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing name | `ERR 100 Missing library name` |
+| Library not found | `ERR 200 Library not found` |
+| Device not found | `ERR 200 Device not found` |
+
+### Examples
+
+```
+C> LIBVER exec.library
+S> OK
+S> name=exec.library
+S> version=40.68
+S> .
+```
+
+```
+C> LIBVER timer.device
+S> OK
+S> name=timer.device
+S> version=50.1
+S> .
+```
+
+---
+
+## SETENV
+
+Sets or deletes a global AmigaOS environment variable.
+
+### Syntax
+
+```
+SETENV [VOLATILE] <name> [<value>]
+```
+
+Three modes:
+
+| Mode | Syntax | Effect |
+|------|--------|--------|
+| Set (persistent) | `SETENV name value` | Sets in ENV: and ENVARC: |
+| Set (volatile) | `SETENV VOLATILE name value` | Sets in ENV: only (lost on reboot) |
+| Delete | `SETENV name` | Removes from ENV: and ENVARC: |
+| Delete (volatile) | `SETENV VOLATILE name` | Removes from ENV: only |
+
+`VOLATILE` is a reserved keyword. It cannot be used as a variable name
+(the daemon returns ERR 100 if VOLATILE appears alone).
+
+### Response
+
+```
+OK
+.
+```
+
+### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing name | `ERR 100 Missing variable name` |
+| Name too long | `ERR 100 Variable name too long` |
+| VOLATILE used alone | `ERR 100 VOLATILE is a reserved keyword` |
+| SetVar failed | `ERR 300 SetVar failed` |
+
+### Examples
+
+**Set persistent:**
+
+```
+C> SETENV MyVar hello
+S> OK
+S> .
+```
+
+**Set volatile:**
+
+```
+C> SETENV VOLATILE TempVar 42
+S> OK
+S> .
+```
+
+**Delete:**
+
+```
+C> SETENV MyVar
+S> OK
 S> .
 ```
 

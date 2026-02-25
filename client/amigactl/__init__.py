@@ -376,14 +376,22 @@ class AmigaConnection:
                     "STAT has non-numeric size: {!r}".format(result["size"]))
         return result
 
-    def read(self, path: str) -> bytes:
-        """Download a file.
+    def read(self, path: str, offset: Optional[int] = None, length: Optional[int] = None) -> bytes:
+        """Download a file (or partial file).
 
         Returns the file contents as bytes.
+
+        offset: Start reading at this byte offset (default: 0).
+        length: Read at most this many bytes (default: entire file).
         """
         if self._sock is None:
             raise ProtocolError("Not connected")
-        send_command(self._sock, "READ {}".format(path))
+        cmd = "READ {}".format(path)
+        if offset is not None:
+            cmd += " OFFSET {}".format(offset)
+        if length is not None:
+            cmd += " LENGTH {}".format(length)
+        send_command(self._sock, cmd)
         status_line = read_line(self._sock)
         if status_line == "ERR" or status_line.startswith("ERR "):
             # Read sentinel and raise
@@ -447,6 +455,42 @@ class AmigaConnection:
             raise ProtocolError(
                 "WRITE OK line missing numeric size: {!r}".format(info))
 
+    def append(self, path: str, data: bytes) -> int:
+        """Append data to an existing file on the Amiga.
+
+        data must be bytes. The file must already exist.
+        Returns the number of bytes appended.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+        send_command(self._sock,
+                     "APPEND {} {}".format(path, len(data)))
+
+        # Read READY or ERR
+        line = read_line(self._sock)
+        if line == "ERR" or line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(line[4:])
+        if line != "READY":
+            raise ProtocolError(
+                "Expected READY, got: {!r}".format(line))
+
+        # Send DATA chunks + END
+        send_data_chunks(self._sock, data)
+
+        # Read final response
+        status, info, payload = read_response(self._sock)
+        if status == "ERR":
+            _raise_for_error(info)
+        stripped = info.strip()
+        if not stripped:
+            raise ProtocolError("APPEND OK line missing byte count")
+        try:
+            return int(stripped)
+        except ValueError:
+            raise ProtocolError(
+                "APPEND OK line missing numeric size: {!r}".format(info))
+
     def delete(self, path: str) -> None:
         """Delete a file or empty directory."""
         self._send_command("DELETE {}".format(path))
@@ -456,6 +500,29 @@ class AmigaConnection:
         if self._sock is None:
             raise ProtocolError("Not connected")
         msg = "RENAME\n{}\n{}\n".format(old_path, new_path)
+        self._sock.sendall(msg.encode(ENCODING))
+
+        status, info, payload = read_response(self._sock)
+        if status == "ERR":
+            _raise_for_error(info)
+
+    def copy(self, src: str, dst: str, noclone: bool = False, noreplace: bool = False) -> None:
+        """Copy a file on the Amiga.
+
+        Copies src to dst. By default, preserves metadata (protection
+        bits, datestamp, comment).
+
+        noclone: If True, do not copy metadata.
+        noreplace: If True, fail if dst already exists.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+        flags = ""
+        if noclone:
+            flags += " NOCLONE"
+        if noreplace:
+            flags += " NOREPLACE"
+        msg = "COPY{}\n{}\n{}\n".format(flags, src, dst)
         self._sock.sendall(msg.encode(ENCODING))
 
         status, info, payload = read_response(self._sock)
@@ -636,6 +703,58 @@ class AmigaConnection:
             result[key] = value
         return result
 
+    def libver(self, name: str) -> dict:
+        """Get the version of an Amiga library or device.
+
+        name: Library name (e.g. "exec.library", "timer.device").
+
+        Returns a dict with keys:
+            name: Library/device name (str).
+            version: Version string "major.minor" (str).
+        """
+        info, payload = self._send_command(
+            "LIBVER {}".format(name))
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        return result
+
+    def env(self, name: str) -> dict:
+        """Get an AmigaOS environment variable.
+
+        Returns a dict with keys:
+            value: Variable value (str).
+            truncated: "true" if value was truncated (str, optional).
+        """
+        info, payload = self._send_command(
+            "ENV {}".format(name))
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        return result
+
+    def setenv(self, name: str, value: Optional[str] = None, volatile: bool = False) -> None:
+        """Set or delete an AmigaOS environment variable.
+
+        name: Variable name.
+        value: Value to set. None to delete the variable.
+        volatile: If True, set in ENV: only (lost on reboot).
+                  If False (default), also persist to ENVARC:.
+        """
+        if value is not None:
+            if volatile:
+                cmd = "SETENV VOLATILE {} {}".format(name, value)
+            else:
+                cmd = "SETENV {} {}".format(name, value)
+        else:
+            if volatile:
+                cmd = "SETENV VOLATILE {}".format(name)
+            else:
+                cmd = "SETENV {}".format(name)
+        self._send_command(cmd)
+
     def assigns(self) -> dict:
         """List logical assigns.
 
@@ -735,6 +854,44 @@ class AmigaConnection:
                     "TASKS entry has non-numeric field: {!r}".format(line))
         return entries
 
+    def devices(self) -> List[dict]:
+        """List Exec devices.
+
+        Returns a list of dicts with keys:
+            name: Device name (str).
+            version: Version string "major.minor" (str).
+        """
+        _info, payload = self._send_command("DEVICES")
+        entries = []
+        for line in payload:
+            parts = line.split("\t")
+            if len(parts) != 2:
+                raise ProtocolError(
+                    "DEVICES entry has {} fields, expected 2: {!r}".format(
+                        len(parts), line))
+            entries.append({
+                "name": parts[0],
+                "version": parts[1],
+            })
+        return entries
+
+    def capabilities(self) -> dict:
+        """Get daemon capabilities and supported commands.
+
+        Returns a dict with keys:
+            version: Daemon version (str).
+            protocol: Protocol version (str).
+            max_clients: Maximum simultaneous clients (str).
+            max_cmd_len: Maximum command line length (str).
+            commands: Comma-separated list of supported commands (str).
+        """
+        _info, payload = self._send_command("CAPABILITIES")
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        return result
+
     # -- File operations (continued) ---------------------------------------
 
     def setdate(self, path: str, datestamp: Optional[str] = None) -> str:
@@ -754,6 +911,36 @@ class AmigaConnection:
             key, _, value = line.partition("=")
             result[key] = value
         return result.get("datestamp", "")
+
+    def checksum(self, path: str) -> dict:
+        """Compute CRC32 checksum of a remote file.
+
+        Returns a dict with keys:
+            crc32: Hex string (e.g. "a1b2c3d4").
+            size: File size in bytes (int).
+        """
+        info, payload = self._send_command(
+            "CHECKSUM {}".format(path))
+        result = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            result[key] = value
+        if "size" in result:
+            try:
+                result["size"] = int(result["size"])
+            except ValueError:
+                raise ProtocolError(
+                    "CHECKSUM has non-numeric size: {!r}".format(
+                        result["size"]))
+        return result
+
+    def setcomment(self, path: str, comment: str) -> None:
+        """Set the file comment on a remote file.
+
+        path: Amiga file path.
+        comment: Comment string (empty string to clear).
+        """
+        self._send_command("SETCOMMENT {}\t{}".format(path, comment))
 
     # -- ARexx and file streaming ------------------------------------------
 

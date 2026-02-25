@@ -43,15 +43,19 @@ response fields, error conditions, and example transcripts.
 
 | Method | Returns | Docs |
 |--------|---------|------|
-| `read(path)` | `bytes` | [READ](COMMANDS.md#read) |
+| `read(path, offset=None, length=None)` | `bytes` | [READ](COMMANDS.md#read) |
 | `write(path, data: bytes)` | `int` -- bytes written | [WRITE](COMMANDS.md#write) |
+| `append(path, data: bytes)` | `int` -- bytes appended | [APPEND](COMMANDS.md#append) |
 | `dir(path, recursive=False)` | `list[dict]` | [DIR](COMMANDS.md#dir) |
 | `stat(path)` | `dict` | [STAT](COMMANDS.md#stat) |
+| `copy(src, dst, noclone=False, noreplace=False)` | None | [COPY](COMMANDS.md#copy) |
 | `delete(path)` | None | [DELETE](COMMANDS.md#delete) |
 | `rename(old_path, new_path)` | None | [RENAME](COMMANDS.md#rename) |
 | `makedir(path)` | None | [MAKEDIR](COMMANDS.md#makedir) |
 | `protect(path, value=None)` | `str` -- hex bits | [PROTECT](COMMANDS.md#protect) |
 | `setdate(path, datestamp=None)` | `str` -- new datestamp | [SETDATE](COMMANDS.md#setdate) |
+| `checksum(path)` | `dict` -- crc32, size | [CHECKSUM](COMMANDS.md#checksum) |
+| `setcomment(path, comment)` | None | [SETCOMMENT](COMMANDS.md#setcomment) |
 
 ### Execution
 
@@ -69,11 +73,16 @@ response fields, error conditions, and example transcripts.
 | Method | Returns | Docs |
 |--------|---------|------|
 | `sysinfo()` | `dict` -- all values are `str` | [SYSINFO](COMMANDS.md#sysinfo) |
+| `libver(name)` | `dict` -- name, version | [LIBVER](COMMANDS.md#libver) |
+| `env(name)` | `dict` -- value, truncated | [ENV](COMMANDS.md#env) |
+| `setenv(name, value=None, volatile=False)` | None | [SETENV](COMMANDS.md#setenv) |
 | `assigns()` | `dict` -- name -> path | [ASSIGNS](COMMANDS.md#assigns) |
 | `assign(name, path=None, mode=None)` | None | [ASSIGN](COMMANDS.md#assign) |
 | `volumes()` | `list[dict]` -- int values for sizes | [VOLUMES](COMMANDS.md#volumes) |
 | `ports()` | `list[str]` | [PORTS](COMMANDS.md#ports) |
 | `tasks()` | `list[dict]` | [TASKS](COMMANDS.md#tasks) |
+| `devices()` | `list[dict]` -- name, version | [DEVICES](COMMANDS.md#devices) |
+| `capabilities()` | `dict` -- version, protocol, etc. | [CAPABILITIES](COMMANDS.md#capabilities) |
 
 ### ARexx and Streaming
 
@@ -151,6 +160,17 @@ text = data.decode("iso-8859-1")
 amiga.write(path, text.encode("iso-8859-1"))
 ```
 
+### Partial file read
+
+```python
+# Read 100 bytes starting at offset 1000
+data = amiga.read(path, offset=1000, length=100)
+```
+
+The `offset` and `length` parameters are optional.  If only `offset` is
+given, the read continues to end of file.  If only `length` is given,
+the read starts from the beginning.
+
 ### Async process polling
 
 ```python
@@ -222,3 +242,16 @@ All exception classes are importable from `amigactl`.
 5. **Max 8 simultaneous clients.** Close connections when done.
 
 6. **No .. in paths.** Use `/` for parent directory (Amiga convention).
+
+7. **SETENV VOLATILE is a keyword.** You cannot set a variable named
+   "VOLATILE" via `setenv("VOLATILE", "value")`. The daemon interprets
+   it as the volatile mode flag. Use `execute("setenv VOLATILE value")`
+   as a workaround if this edge case matters.
+
+8. **APPEND requires an existing file.** Unlike `write()`, which creates
+   a new file, `append()` fails with `NotFoundError` if the file does
+   not exist.  Create it with `write(path, b"")` first if needed.
+
+9. **checksum() returns hex string, not int.** The `crc32` field is an
+   8-character lowercase hex string (e.g., `"a1b2c3d4"`), not a Python
+   integer.  Use `int(result["crc32"], 16)` to convert if needed.

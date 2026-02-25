@@ -1,12 +1,14 @@
 """Interactive shell for amigactl."""
 
 import cmd
+import difflib
 import fnmatch
 import os
 import re
 import shlex
 import shutil
 import sys
+import time
 
 from . import (
     AmigaConnection, AmigactlError, NotFoundError, ProtocolError,
@@ -175,6 +177,221 @@ _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 def _visible_len(s):
     """Return display width of string, ignoring ANSI escape codes."""
     return len(_ANSI_RE.sub('', s))
+
+
+def _find_filter(entries, pattern, type_filter=None):
+    """Filter directory entries by glob pattern and optional type.
+
+    entries     List of dir entry dicts (from conn.dir).
+    pattern     Glob pattern string matched against basename only.
+    type_filter 'f' for files only, 'd' for directories only, or None.
+
+    Returns matching entries. Matching is case-insensitive.
+    """
+    pattern_lower = pattern.lower()
+    result = []
+    for entry in entries:
+        if type_filter == "f" and entry["type"].lower() == "dir":
+            continue
+        if type_filter == "d" and entry["type"].lower() != "dir":
+            continue
+        name = entry["name"]
+        # Match against basename only (last component)
+        if "/" in name:
+            basename = name.rsplit("/", 1)[1]
+        else:
+            basename = name
+        if fnmatch.fnmatch(basename.lower(), pattern_lower):
+            result.append(entry)
+    return result
+
+
+def _build_tree(entries):
+    """Build a nested tree structure from recursive DIR entries.
+
+    entries     List of dir entry dicts with relative path names.
+
+    Returns a list of root-level nodes. Each node is a dict:
+        {'name': str, 'type': str, 'children': []}
+    """
+    root_children = []
+    # Map from directory path to its children list for fast lookup
+    dir_map = {}
+    dir_map[""] = root_children
+
+    # Sort entries so directories come before their contents
+    sorted_entries = sorted(entries, key=lambda e: e["name"].lower())
+
+    for entry in sorted_entries:
+        name = entry["name"]
+        if "/" in name:
+            parent_path, basename = name.rsplit("/", 1)
+        else:
+            parent_path = ""
+            basename = name
+
+        node = {
+            "name": basename,
+            "type": entry["type"].lower(),
+            "children": [],
+        }
+
+        # Ensure parent exists in dir_map
+        if parent_path not in dir_map:
+            # Create intermediate directory nodes as needed
+            parts = parent_path.split("/")
+            current = ""
+            for part in parts:
+                prev = current
+                current = part if not current else current + "/" + part
+                if current not in dir_map:
+                    intermediate = {
+                        "name": part,
+                        "type": "dir",
+                        "children": [],
+                    }
+                    dir_map[current] = intermediate["children"]
+                    parent_list = dir_map.get(prev, root_children)
+                    parent_list.append(intermediate)
+
+        parent_list = dir_map.get(parent_path, root_children)
+        parent_list.append(node)
+
+        if node["type"] == "dir":
+            dir_map[name] = node["children"]
+
+    return root_children
+
+
+def _format_tree(root_name, tree, dirs_only=False, ascii_mode=False):
+    """Render a tree structure as a list of display lines.
+
+    root_name   Name of the root directory to display.
+    tree        List of nodes from _build_tree().
+    dirs_only   If True, only show directories.
+    ascii_mode  If True, use ASCII box-drawing characters.
+
+    Returns (lines, dir_count, file_count) where lines is a list of
+    strings and the counts are totals across the entire tree.
+    """
+    if ascii_mode:
+        branch = "|-- "
+        last_branch = "`-- "
+        vertical = "|   "
+        blank = "    "
+    else:
+        branch = "\u251c\u2500\u2500 "
+        last_branch = "\u2514\u2500\u2500 "
+        vertical = "\u2502   "
+        blank = "    "
+
+    lines = [root_name]
+    dir_count = 0
+    file_count = 0
+
+    def _walk(children, prefix):
+        nonlocal dir_count, file_count
+        # Filter if dirs_only
+        if dirs_only:
+            visible = [c for c in children if c["type"] == "dir"]
+        else:
+            visible = list(children)
+
+        for i, node in enumerate(visible):
+            is_last = (i == len(visible) - 1)
+            connector = last_branch if is_last else branch
+
+            lines.append(prefix + connector + node["name"])
+
+            if node["type"] == "dir":
+                dir_count += 1
+                child_prefix = prefix + (blank if is_last else vertical)
+                _walk(node["children"], child_prefix)
+            else:
+                file_count += 1
+
+    _walk(tree, "")
+    return lines, dir_count, file_count
+
+
+def _grep_lines(text, pattern, is_regex=False, ignore_case=False):
+    """Search text for lines matching a pattern.
+
+    text         Content as a string.
+    pattern      Search pattern (literal string or regex).
+    is_regex     If True, compile pattern as regex; otherwise escape it.
+    ignore_case  If True, match case-insensitively.
+
+    Returns list of (line_number, line_text) tuples. line_number is
+    1-based.
+    """
+    flags = re.IGNORECASE if ignore_case else 0
+    if is_regex:
+        compiled = re.compile(pattern, flags)
+    else:
+        compiled = re.compile(re.escape(pattern), flags)
+
+    results = []
+    for i, line in enumerate(text.splitlines(), 1):
+        if compiled.search(line):
+            results.append((i, line))
+    return results
+
+
+def _du_accumulate(entries):
+    """Accumulate per-directory sizes from recursive DIR entries.
+
+    entries     List of dir entry dicts (from recursive DIR).
+
+    Returns (dir_sizes, total) where dir_sizes is a list of
+    (directory_path, size) tuples with per-directory subtotals
+    (including all descendants), and total is the grand total.
+    """
+    dir_totals = {}  # directory path -> accumulated size
+    dir_totals["."] = 0  # root directory
+
+    for entry in entries:
+        name = entry["name"]
+        size = entry["size"]
+
+        if "/" in name:
+            parent = name.rsplit("/", 1)[0]
+        else:
+            parent = "."
+
+        if parent not in dir_totals:
+            dir_totals[parent] = 0
+        dir_totals[parent] += size
+
+    # Build result: propagate subdirectory sizes upward
+    # Sort by depth (deepest first) so children are processed before parents
+    sorted_dirs = sorted(dir_totals.keys(),
+                         key=lambda d: d.count("/"), reverse=True)
+
+    # Propagate: add each dir's total into its parent
+    propagated = dict(dir_totals)
+    for d in sorted_dirs:
+        if d == ".":
+            continue
+        if "/" in d:
+            parent = d.rsplit("/", 1)[0]
+        else:
+            parent = "."
+        if parent not in propagated:
+            propagated[parent] = 0
+        propagated[parent] += propagated[d]
+
+    # Build output list sorted alphabetically, "." first
+    result = []
+    for d in sorted(propagated.keys()):
+        if d == ".":
+            continue
+        result.append((d, propagated[d]))
+    # Append root as "." at the end
+    total = propagated["."]
+    result.append((".", total))
+
+    return result, total
 
 
 # ---------------------------------------------------------------------------
@@ -808,25 +1025,61 @@ class AmigaShell(cmd.Cmd):
     def do_cat(self, arg):
         """Print a remote file's contents to the terminal.
 
-    Usage: cat PATH
+    Usage: cat [--offset N] [--length N] PATH
+
+    --offset N  Start reading at byte offset N.
+    --length N  Read at most N bytes.
 
     Outputs the raw bytes of the file to stdout. Use 'get' to save
     to a local file instead.
 
     Examples:
         cat SYS:S/Startup-Sequence
+        cat --offset 100 --length 50 RAM:test.txt
         cat User-Startup"""
-        path = arg.strip()
-        if not path:
-            print("Usage: cat PATH")
-            return
         if not self._check_connected():
             return
-        path = self._resolve_path(path)
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if not parts:
+            print("Usage: cat [--offset N] [--length N] PATH")
+            return
+
+        offset = None
+        length = None
+        path_parts = []
+        i = 0
+        while i < len(parts):
+            if parts[i] == "--offset" and i + 1 < len(parts):
+                try:
+                    offset = int(parts[i + 1])
+                except ValueError:
+                    print("Invalid offset: {}".format(parts[i + 1]))
+                    return
+                i += 2
+            elif parts[i] == "--length" and i + 1 < len(parts):
+                try:
+                    length = int(parts[i + 1])
+                except ValueError:
+                    print("Invalid length: {}".format(parts[i + 1]))
+                    return
+                i += 2
+            else:
+                path_parts.append(parts[i])
+                i += 1
+
+        if not path_parts:
+            print("Usage: cat [--offset N] [--length N] PATH")
+            return
+
+        path = self._resolve_path(path_parts[0])
         if path is None:
             return
 
-        data = self._run(self.conn.read, path)
+        data = self._run(self.conn.read, path, offset=offset, length=length)
         if data is None:
             return
 
@@ -929,6 +1182,54 @@ class AmigaShell(cmd.Cmd):
         self._dir_cache.invalidate()
         print(self.cw.success(
             "Uploaded {} bytes to {}".format(written, remote)))
+
+    def do_append(self, arg):
+        """Append a local file to a remote file.
+
+    Usage: append LOCAL REMOTE
+
+    LOCAL   File on this computer to append.
+    REMOTE  Amiga file to append to (must already exist).
+
+    Examples:
+        append extra.txt RAM:logfile.txt"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg)
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if len(parts) != 2:
+            print("Usage: append LOCAL REMOTE")
+            return
+
+        local = parts[0]
+        remote = self._resolve_path(parts[1])
+        if remote is None:
+            return
+
+        try:
+            with open(local, "rb") as f:
+                data = f.read()
+        except IOError as e:
+            print(self.cw.error("Local read error: {}".format(e)))
+            return
+
+        written = self._run(self.conn.append, remote, data)
+        if written is None:
+            return
+
+        print(self.cw.success(
+            "Appended {} bytes to {}".format(written, remote)))
+
+    def complete_append(self, text, line, begidx, endidx):
+        """Complete append: first arg is local, second is Amiga path."""
+        prefix = line[:begidx]
+        args = prefix.split()
+        if len(args) >= 2:
+            return self._complete_path(text, line, begidx, endidx)
+        return []
 
     def do_edit(self, arg):
         """Edit a remote file in a local editor.
@@ -1197,6 +1498,64 @@ class AmigaShell(cmd.Cmd):
             self._dir_cache.invalidate()
             print(self.cw.success("Created: {}".format(path)))
 
+    def do_cp(self, arg):
+        """Copy a file on the Amiga.
+
+    Usage: cp [-P] [-n] SOURCE DEST
+
+    SOURCE  File to copy.
+    DEST    Destination path.
+    -P      Do not clone metadata (protection, date, comment).
+    -n      Do not replace if destination exists.
+
+    Examples:
+        cp RAM:file.txt RAM:backup.txt
+        cp -n SYS:S/Startup-Sequence RAM:"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        noclone = False
+        noreplace = False
+        path_parts = []
+        for part in parts:
+            if part.startswith("-") and len(part) > 1:
+                for ch in part[1:]:
+                    if ch == "P":
+                        noclone = True
+                    elif ch == "n":
+                        noreplace = True
+                    else:
+                        print("Unknown flag: -{}".format(ch))
+                        return
+            else:
+                path_parts.append(part)
+
+        if len(path_parts) != 2:
+            print("Usage: cp [-P] [-n] SOURCE DEST")
+            return
+
+        src = self._resolve_path(path_parts[0])
+        if src is None:
+            return
+        dst = self._resolve_path(path_parts[1])
+        if dst is None:
+            return
+
+        result = self._run(self.conn.copy, src, dst,
+                           noclone=noclone, noreplace=noreplace)
+        if result is not None:
+            self._dir_cache.invalidate()
+            print(self.cw.success("Copied: {} -> {}".format(src, dst)))
+
+    do_copy = do_cp
+
+    complete_cp = _complete_path
+    complete_copy = _complete_path
+
     def do_chmod(self, arg):
         """Get or set AmigaOS protection bits.
 
@@ -1324,6 +1683,74 @@ class AmigaShell(cmd.Cmd):
                 self.cw.key("datestamp"), result))
         else:
             print("Created {}".format(path))
+
+    def do_checksum(self, arg):
+        """Compute CRC32 checksum of a remote file.
+
+    Usage: checksum PATH
+
+    Displays the CRC32 hash and file size.
+
+    Examples:
+        checksum SYS:C/Dir
+        checksum RAM:test.txt"""
+        path = arg.strip()
+        if not path:
+            print("Usage: checksum PATH")
+            return
+        if not self._check_connected():
+            return
+        path = self._resolve_path(path)
+        if path is None:
+            return
+
+        result = self._run(self.conn.checksum, path)
+        if result is None:
+            return
+
+        print("{}={}".format(
+            self.cw.key("crc32"), result.get("crc32", "")))
+        print("{}={}".format(
+            self.cw.key("size"), result.get("size", "")))
+
+    complete_checksum = _complete_path
+
+    def do_setcomment(self, arg):
+        """Set the file comment on a remote file.
+
+    Usage: setcomment PATH COMMENT
+           setcomment PATH ""
+
+    An empty comment clears the existing comment.
+
+    Examples:
+        setcomment RAM:test.txt "Important file"
+        setcomment RAM:test.txt ""
+        setcomment Startup-Sequence "Modified 2026-02-24\""""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg)
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if len(parts) < 2:
+            print("Usage: setcomment PATH COMMENT")
+            return
+
+        path = self._resolve_path(parts[0])
+        if path is None:
+            return
+        comment = " ".join(parts[1:])
+
+        result = self._run(self.conn.setcomment, path, comment)
+        if result is not None:
+            print(self.cw.success("Comment set on {}".format(path)))
+
+    do_comment = do_setcomment
+
+    complete_setcomment = _complete_path
+    complete_comment = _complete_path
 
     # -- Execution and process management ----------------------------------
 
@@ -1608,6 +2035,115 @@ class AmigaShell(cmd.Cmd):
         for key, value in info.items():
             print("{}={}".format(self.cw.key(key), value))
 
+    def do_libver(self, arg):
+        """Get the version of an Amiga library or device.
+
+    Usage: libver NAME
+
+    NAME    Library or device name (e.g. exec.library,
+            timer.device).
+
+    Examples:
+        libver exec.library
+        libver dos.library
+        libver timer.device"""
+        name = arg.strip()
+        if not name:
+            print("Usage: libver NAME")
+            return
+        if not self._check_connected():
+            return
+
+        result = self._run(self.conn.libver, name)
+        if result is None:
+            return
+
+        print("{}={}".format(
+            self.cw.key("name"), result.get("name", "")))
+        print("{}={}".format(
+            self.cw.key("version"), result.get("version", "")))
+
+    def do_env(self, arg):
+        """Get an AmigaOS environment variable.
+
+    Usage: env NAME
+
+    Prints the value of the named global environment variable.
+
+    Examples:
+        env Workbench
+        env Language"""
+        name = arg.strip()
+        if not name:
+            print("Usage: env NAME")
+            return
+        if not self._check_connected():
+            return
+
+        result = self._run(self.conn.env, name)
+        if result is None:
+            return
+
+        value = result.get("value", "")
+        truncated = result.get("truncated")
+        print(value)
+        if truncated:
+            print(self.cw.error("(value truncated)"))
+
+    do_getenv = do_env
+
+    def do_setenv(self, arg):
+        """Set or delete an AmigaOS environment variable.
+
+    Usage: setenv NAME VALUE
+           setenv -v NAME VALUE
+           setenv NAME
+
+    NAME    Variable name.
+    VALUE   Value to set. Omit to delete the variable.
+    -v      Volatile only (ENV: only, not persisted to ENVARC:).
+
+    Examples:
+        setenv MyVar hello
+        setenv -v TempVar 42
+        setenv MyVar"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if not parts:
+            print("Usage: setenv [-v] NAME [VALUE]")
+            return
+
+        volatile = False
+        idx = 0
+
+        if parts[0] == "-v":
+            volatile = True
+            idx = 1
+
+        if idx >= len(parts):
+            print("Usage: setenv [-v] NAME [VALUE]")
+            return
+
+        name = parts[idx]
+        idx += 1
+
+        value = None
+        if idx < len(parts):
+            value = " ".join(parts[idx:])
+
+        result = self._run(self.conn.setenv, name, value=value,
+                           volatile=volatile)
+        if result is not None:
+            if value is not None:
+                print(self.cw.success("Set: {}={}".format(name, value)))
+            else:
+                print(self.cw.success("Deleted: {}".format(name)))
+
     def do_assigns(self, arg):
         """List all logical assigns on the Amiga.
 
@@ -1817,6 +2353,67 @@ class AmigaShell(cmd.Cmd):
                 t["state"], max_state,
                 t["stacksize"], max_stack))
 
+    def do_devices(self, arg):
+        """List Exec devices on the Amiga.
+
+    Usage: devices
+
+    Shows the name and version of each device driver loaded
+    in the system."""
+        if not self._check_connected():
+            return
+
+        devs = self._run(self.conn.devices)
+        if devs is None:
+            return
+
+        if not devs:
+            print("No devices.")
+            return
+
+        # Calculate column widths
+        max_name = len("NAME")
+        max_ver = len("VERSION")
+        for d in devs:
+            if len(d["name"]) > max_name:
+                max_name = len(d["name"])
+            if len(d["version"]) > max_ver:
+                max_ver = len(d["version"])
+
+        header = "{:<{}}  {:>{}}".format(
+            "NAME", max_name, "VERSION", max_ver)
+        print(self.cw.bold(header))
+        for d in devs:
+            print("{:<{}}  {:>{}}".format(
+                d["name"], max_name,
+                d["version"], max_ver))
+
+    def do_capabilities(self, arg):
+        """Show daemon capabilities and supported commands.
+
+    Usage: capabilities
+
+    Displays daemon version, protocol version, limits, and the
+    full list of supported commands."""
+        if not self._check_connected():
+            return
+
+        caps = self._run(self.conn.capabilities)
+        if caps is None:
+            return
+
+        for key, value in caps.items():
+            if key == "commands":
+                # Format command list in columns
+                print("{}=".format(self.cw.key(key)))
+                commands = value.split(",")
+                for cmd in commands:
+                    print("  {}".format(cmd))
+            else:
+                print("{}={}".format(self.cw.key(key), value))
+
+    do_caps = do_capabilities
+
     # -- ARexx -------------------------------------------------------------
 
     def do_arexx(self, arg):
@@ -1856,6 +2453,515 @@ class AmigaShell(cmd.Cmd):
         if output:
             print(output)
         print("Return code: {}".format(rc))
+
+    # -- Search and analysis -----------------------------------------------
+
+    def do_find(self, arg):
+        """Search for files and directories by name pattern.
+
+    Usage: find PATH PATTERN
+           find PATH -name PATTERN
+           find PATH -type f PATTERN
+           find PATH -type d PATTERN
+
+    PATH      Directory to search recursively.
+    PATTERN   Glob pattern (e.g., *.info, S*). Case-insensitive.
+    -name     Explicit pattern flag (optional).
+    -type f   Files only.
+    -type d   Directories only.
+
+    Examples:
+        find SYS: *.info
+        find Work: -type f *.c
+        find RAM: -name test*"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if not parts:
+            print("Usage: find PATH PATTERN")
+            return
+
+        path = None
+        pattern = None
+        type_filter = None
+        i = 0
+
+        # First non-flag argument is the path
+        if i < len(parts) and not parts[i].startswith("-"):
+            path = parts[i]
+            i += 1
+
+        # Parse remaining arguments
+        while i < len(parts):
+            if parts[i] == "-name":
+                i += 1
+                if i < len(parts):
+                    pattern = parts[i]
+                    i += 1
+                else:
+                    print("Usage: find PATH -name PATTERN")
+                    return
+            elif parts[i] == "-type":
+                i += 1
+                if i < len(parts) and parts[i] in ("f", "d"):
+                    type_filter = parts[i]
+                    i += 1
+                else:
+                    print("Usage: find PATH -type f|d PATTERN")
+                    return
+            elif not parts[i].startswith("-"):
+                pattern = parts[i]
+                i += 1
+            else:
+                print("Unknown flag: {}".format(parts[i]))
+                return
+
+        if path is None or pattern is None:
+            print("Usage: find PATH PATTERN")
+            return
+
+        path = self._resolve_path(path)
+        if path is None:
+            return
+
+        entries = self._run(self.conn.dir, path, recursive=True)
+        if entries is None:
+            return
+
+        matches = _find_filter(entries, pattern, type_filter)
+        for entry in matches:
+            name = entry["name"]
+            if entry["type"].lower() == "dir":
+                print(self.cw.directory(name))
+            else:
+                print(name)
+
+    complete_find = _complete_path
+
+    def do_tree(self, arg):
+        """Display a directory tree.
+
+    Usage: tree [PATH]
+           tree -d [PATH]
+           tree --ascii [PATH]
+
+    PATH      Directory to display (default: current directory).
+    -d        Show directories only.
+    --ascii   Use ASCII box-drawing characters instead of Unicode.
+
+    Examples:
+        tree
+        tree SYS:S
+        tree -d Work:
+        tree --ascii RAM:"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        dirs_only = False
+        ascii_mode = False
+        path_parts = []
+
+        for part in parts:
+            if part == "--ascii":
+                ascii_mode = True
+            elif part.startswith("-") and len(part) > 1 and part != "--ascii":
+                for ch in part[1:]:
+                    if ch == "d":
+                        dirs_only = True
+                    else:
+                        print("Unknown flag: -{}".format(ch))
+                        return
+            else:
+                path_parts.append(part)
+
+        if not path_parts:
+            if self.cwd is not None:
+                path = self.cwd
+            else:
+                print("Usage: tree [PATH]"
+                      " (or set a directory with 'cd' first)")
+                return
+        else:
+            path = self._resolve_path(path_parts[0])
+            if path is None:
+                return
+
+        entries = self._run(self.conn.dir, path, recursive=True)
+        if entries is None:
+            return
+
+        tree = _build_tree(entries)
+        lines, dir_count, file_count = _format_tree(
+            path, tree, dirs_only=dirs_only, ascii_mode=ascii_mode)
+
+        for line in lines:
+            print(line)
+
+        print("\n{} directories, {} files".format(dir_count, file_count))
+
+    complete_tree = _complete_path
+
+    def do_grep(self, arg):
+        """Search file contents for a pattern.
+
+    Usage: grep PATTERN FILE
+           grep -i PATTERN FILE
+           grep -E PATTERN FILE
+           grep -r PATTERN PATH
+           grep -n PATTERN FILE
+           grep -c PATTERN FILE
+           grep -l PATTERN PATH
+
+    PATTERN   Search string (literal by default).
+    FILE      File to search.
+    PATH      Directory to search (with -r).
+
+    -E        Treat PATTERN as a regular expression.
+    -i        Case-insensitive matching.
+    -r        Recursive: search all files under PATH.
+    -n        Show line numbers.
+    -c        Show match count only.
+    -l        Show matching filenames only (implies -r).
+
+    Examples:
+        grep hello SYS:S/Startup-Sequence
+        grep -rn TODO Work:src
+        grep -Ei "error|warn" RAM:logfile
+        grep -rl password SYS:"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if not parts:
+            print("Usage: grep PATTERN FILE")
+            return
+
+        is_regex = False
+        ignore_case = False
+        recursive = False
+        show_lines = False
+        count_only = False
+        list_only = False
+        positional = []
+
+        for part in parts:
+            if part.startswith("-") and len(part) > 1:
+                for ch in part[1:]:
+                    if ch == "E":
+                        is_regex = True
+                    elif ch == "i":
+                        ignore_case = True
+                    elif ch == "r":
+                        recursive = True
+                    elif ch == "n":
+                        show_lines = True
+                    elif ch == "c":
+                        count_only = True
+                    elif ch == "l":
+                        list_only = True
+                        recursive = True
+                    else:
+                        print("Unknown flag: -{}".format(ch))
+                        return
+            else:
+                positional.append(part)
+
+        if len(positional) < 2:
+            print("Usage: grep PATTERN FILE")
+            return
+
+        pattern = positional[0]
+        target = self._resolve_path(positional[1])
+        if target is None:
+            return
+
+        # Validate pattern compiles
+        try:
+            flags = re.IGNORECASE if ignore_case else 0
+            if is_regex:
+                re.compile(pattern, flags)
+            else:
+                re.compile(re.escape(pattern), flags)
+        except re.error as e:
+            print(self.cw.error("Invalid pattern: {}".format(e)))
+            return
+
+        if recursive:
+            entries = self._run(self.conn.dir, target, recursive=True)
+            if entries is None:
+                return
+
+            files = [e for e in entries if e["type"].lower() != "dir"]
+            for entry in files:
+                full_path = _join_amiga_path(target, entry["name"])
+                data = self._run(self.conn.read, full_path)
+                if data is None:
+                    continue
+                text = data.decode("iso-8859-1")
+                matches = _grep_lines(text, pattern,
+                                      is_regex=is_regex,
+                                      ignore_case=ignore_case)
+                if not matches:
+                    continue
+
+                if list_only:
+                    print(entry["name"])
+                    continue
+
+                if count_only:
+                    print("{}:{}".format(entry["name"], len(matches)))
+                    continue
+
+                for lineno, line in matches:
+                    if show_lines:
+                        print("{}:{}:{}".format(
+                            entry["name"], lineno, line))
+                    else:
+                        print("{}:{}".format(entry["name"], line))
+        else:
+            data = self._run(self.conn.read, target)
+            if data is None:
+                return
+            text = data.decode("iso-8859-1")
+            matches = _grep_lines(text, pattern,
+                                  is_regex=is_regex,
+                                  ignore_case=ignore_case)
+
+            if count_only:
+                print(len(matches))
+                return
+
+            for lineno, line in matches:
+                if show_lines:
+                    print("{}:{}".format(lineno, line))
+                else:
+                    print(line)
+
+    complete_grep = _complete_path
+
+    def do_diff(self, arg):
+        """Compare two remote files.
+
+    Usage: diff FILE1 FILE2
+
+    Downloads both files and displays a unified diff. Binary files
+    are detected (presence of null bytes) and reported without
+    attempting a text diff.
+
+    Output is colorized: additions in green, deletions in red,
+    hunk headers in bold.
+
+    Examples:
+        diff SYS:S/Startup-Sequence SYS:S/Startup-Sequence.bak
+        diff RAM:old.txt RAM:new.txt"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg)
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        if len(parts) != 2:
+            print("Usage: diff FILE1 FILE2")
+            return
+
+        path1 = self._resolve_path(parts[0])
+        if path1 is None:
+            return
+        path2 = self._resolve_path(parts[1])
+        if path2 is None:
+            return
+
+        data1 = self._run(self.conn.read, path1)
+        if data1 is None:
+            return
+        data2 = self._run(self.conn.read, path2)
+        if data2 is None:
+            return
+
+        # Binary detection
+        if b"\x00" in data1 or b"\x00" in data2:
+            if data1 == data2:
+                print("Binary files are identical")
+            else:
+                print("Binary files differ")
+            return
+
+        text1 = data1.decode("iso-8859-1")
+        text2 = data2.decode("iso-8859-1")
+        lines1 = text1.splitlines(True)
+        lines2 = text2.splitlines(True)
+
+        diff_lines = difflib.unified_diff(
+            lines1, lines2, fromfile=path1, tofile=path2)
+
+        has_output = False
+        for line in diff_lines:
+            has_output = True
+            # Strip trailing newline for print
+            display = line.rstrip("\n")
+            if line.startswith("@@"):
+                print(self.cw.bold(display))
+            elif line.startswith("+"):
+                print(self.cw.success(display))
+            elif line.startswith("-"):
+                print(self.cw.error(display))
+            else:
+                print(display)
+
+        if not has_output:
+            print("Files are identical")
+
+    complete_diff = _complete_path
+
+    def do_du(self, arg):
+        """Show disk usage for a directory.
+
+    Usage: du [PATH]
+           du -s [PATH]
+           du -h [PATH]
+
+    PATH    Directory to analyze (default: current directory).
+    -s      Summary only (just the total).
+    -h      Human-readable sizes (K, M, G).
+
+    Shows per-directory subtotals and a grand total.
+
+    Examples:
+        du
+        du -sh Work:
+        du SYS:S"""
+        if not self._check_connected():
+            return
+        try:
+            parts = shlex.split(arg) if arg.strip() else []
+        except ValueError as e:
+            print("Parse error: {}".format(e))
+            return
+        summary_only = False
+        human_readable = False
+        path_parts = []
+
+        for part in parts:
+            if part.startswith("-") and len(part) > 1:
+                for ch in part[1:]:
+                    if ch == "s":
+                        summary_only = True
+                    elif ch == "h":
+                        human_readable = True
+                    else:
+                        print("Unknown flag: -{}".format(ch))
+                        return
+            else:
+                path_parts.append(part)
+
+        if not path_parts:
+            if self.cwd is not None:
+                path = self.cwd
+            else:
+                print("Usage: du [PATH]"
+                      " (or set a directory with 'cd' first)")
+                return
+        else:
+            path = self._resolve_path(path_parts[0])
+            if path is None:
+                return
+
+        entries = self._run(self.conn.dir, path, recursive=True)
+        if entries is None:
+            return
+
+        dir_sizes, total = _du_accumulate(entries)
+
+        def fmt(size):
+            if human_readable:
+                return format_size(size)
+            return str(size)
+
+        if summary_only:
+            print("{}\t{}".format(fmt(total), path))
+        else:
+            for dirname, size in dir_sizes:
+                if dirname == ".":
+                    display = path
+                else:
+                    display = dirname
+                print("{}\t{}".format(fmt(size), display))
+
+    complete_du = _complete_path
+
+    def do_watch(self, arg):
+        """Repeatedly run a command and display its output.
+
+    Usage: watch [-n SECONDS] COMMAND
+
+    SECONDS   Refresh interval (default: 2).
+    COMMAND   Any shell command to repeat.
+
+    Press Ctrl-C to stop.
+
+    Examples:
+        watch ps
+        watch -n 5 ls -l RAM:
+        watch exec avail"""
+        if not self._check_connected():
+            return
+        raw = arg.strip()
+        if not raw:
+            print("Usage: watch [-n SECONDS] COMMAND")
+            return
+
+        interval = 2.0
+        if raw.startswith("-n ") or raw.startswith("-n\t"):
+            rest = raw[3:].lstrip()
+            space = None
+            for j, ch in enumerate(rest):
+                if ch in (" ", "\t"):
+                    space = j
+                    break
+            if space is None:
+                print("Usage: watch [-n SECONDS] COMMAND")
+                return
+            try:
+                interval = float(rest[:space])
+            except ValueError:
+                print("Invalid interval: {}".format(rest[:space]))
+                return
+            if interval <= 0:
+                print("Interval must be positive")
+                return
+            command = rest[space:].lstrip()
+        else:
+            command = raw
+
+        if not command:
+            print("Usage: watch [-n SECONDS] COMMAND")
+            return
+
+        try:
+            while True:
+                # Clear screen and move cursor to top-left
+                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.flush()
+                print("Every {:.1f}s: {}".format(interval, command))
+                print()
+                self.onecmd(command)
+                if self.conn is None:
+                    return
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print()
 
     # -- File streaming ----------------------------------------------------
 
@@ -2005,7 +3111,8 @@ class AmigaShell(cmd.Cmd):
 
     def get_names(self):
         """Hide internal commands from help listing."""
-        hidden = {'do_EOF', 'do_quit', 'do_dir'}
+        hidden = {'do_EOF', 'do_quit', 'do_dir', 'do_copy',
+                  'do_comment', 'do_getenv', 'do_caps'}
         return [n for n in super().get_names() if n not in hidden]
 
     def emptyline(self):

@@ -50,7 +50,7 @@ On successful connection, the daemon sends a banner line:
 AMIGACTL <version>\n
 ```
 
-`<version>` is a dotted version string (e.g., `0.6.1`).  The client
+`<version>` is a dotted version string (e.g., `0.7.0`).  The client
 SHOULD read and validate the banner before sending any commands.  The
 banner is not followed by a sentinel -- it is a single line, not a
 response envelope.
@@ -212,9 +212,10 @@ status line (`OK ...` or `ERR ...`) and the banner are never dot-stuffed.
 
 ## Binary Data Framing
 
-Some commands (READ, WRITE, EXEC, AREXX, TAIL) transfer binary or
-large data that cannot be reliably represented as dot-stuffed text lines.  These commands
-use **DATA/END chunked framing** within the response envelope.
+Some commands (READ, WRITE, APPEND, EXEC, AREXX, TAIL) transfer binary
+or large data that cannot be reliably represented as dot-stuffed text
+lines.  These commands use **DATA/END chunked framing** within the
+response envelope.
 
 ### READ Response (Server to Client)
 
@@ -287,6 +288,26 @@ Server: OK <bytes_written>\n.\n
 - **Partial WRITE on disconnect:** If the client disconnects before
   sending END, the server deletes the temporary file.
 
+### APPEND Request (Client to Server)
+
+APPEND uses the same READY handshake as WRITE.  The command line is
+`APPEND <path> <size>\n` where `<path>` is the file to append to and
+`<size>` is the number of bytes to append.  The file must already exist.
+
+```
+Client: APPEND <path> <size>\n
+Server: READY\n
+Client: DATA <chunk_len>\n<raw bytes>
+Client: DATA <chunk_len>\n<raw bytes>
+...
+Client: END\n
+Server: OK <bytes_appended>\n.\n
+```
+
+The handshake, DATA/END chunking, and error handling are identical to
+WRITE.  The only difference is that APPEND opens the file for appending
+rather than creating a new file via a temporary rename.
+
 ### EXEC Response
 
 EXEC uses the same DATA/END framing for captured command output:
@@ -340,23 +361,25 @@ patterns already defined in this protocol:
 
 ### Key=Value Payload (Text Lines, Dot-Stuffed)
 
-Used by **PROCSTAT**, **SYSINFO**, **SETDATE**: the payload consists of `key=value`
-lines in a fixed order, one per line, subject to dot-stuffing.  These
-follow the same framing as other text-payload commands (STAT, PROTECT).
+Used by **PROCSTAT**, **SYSINFO**, **SETDATE**, **CHECKSUM**, **LIBVER**,
+**ENV**, **CAPABILITIES**: the payload consists of `key=value` lines in
+a fixed order, one per line, subject to dot-stuffing.  These follow the
+same framing as other text-payload commands (STAT, PROTECT).
 
 ### Tab-Separated Payload (Text Lines, Dot-Stuffed)
 
-Used by **PROCLIST**, **ASSIGNS**, **VOLUMES**, **TASKS**: the payload
-consists of lines with tab-separated fields, subject to dot-stuffing.
-These follow the same framing as DIR.
+Used by **PROCLIST**, **ASSIGNS**, **VOLUMES**, **TASKS**, **DEVICES**:
+the payload consists of lines with tab-separated fields, subject to
+dot-stuffing.  These follow the same framing as DIR.
 
 **PORTS** uses one port name per payload line (no tabs), dot-stuffed.
 
 ### Simple OK/ERR (No Payload)
 
-Used by **SIGNAL**, **KILL**: the response is `OK\n.\n` on success or
-`ERR <code> <message>\n.\n` on failure.  No payload lines.  These
-follow the same framing as DELETE and MAKEDIR.
+Used by **SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**: the
+response is `OK\n.\n` on success or `ERR <code> <message>\n.\n` on
+failure.  No payload lines.  These follow the same framing as DELETE and
+MAKEDIR.
 
 ### DATA/END Binary Framing
 
@@ -414,15 +437,35 @@ additional input lines after the command verb:
   same line-ending and max-length rules as request lines.  See
   COMMANDS.md for details.
 
+- **COPY** uses the same three-line format as RENAME: the verb line
+  (with optional flags such as `NOCLONE` and `NOREPLACE`) is followed
+  by the source path and destination path on separate lines.  See
+  COMMANDS.md for details.
+
 If the client disconnects mid-command (after sending the verb but before
 all required input lines), the server discards the partial command and
 closes the connection.
 
+## Tab-Separated Arguments
+
+Most commands separate arguments with spaces.  **SETCOMMENT** uses a
+tab character (0x09) to separate the path from the comment:
+
+```
+SETCOMMENT <path>\t<comment>\n
+```
+
+The tab delimiter is required because file comments may contain spaces.
+An empty comment (tab followed by nothing) clears the existing comment.
+
 ## Protocol Versioning
 
 The banner line (`AMIGACTL <version>`) communicates the daemon version.
-The protocol does not have a separate version number; it evolves with the
-daemon version.
+
+Since version 0.7.0, the daemon also supports a `CAPABILITIES` command
+that returns a `protocol=1.0` field for explicit protocol version
+negotiation.  Clients can use `CAPABILITIES` to discover supported
+commands and protocol limits at runtime.
 
 Clients SHOULD parse the version from the banner and use it to determine
 feature availability.  Unrecognized commands always produce
@@ -452,7 +495,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.6.1\n
+S: AMIGACTL 0.7.0\n
 
 C: PING\n
 S: OK\n
@@ -460,7 +503,7 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.6.1\n
+S: amigactld 0.7.0\n
 S: .\n
 
 C: SYSINFO\n

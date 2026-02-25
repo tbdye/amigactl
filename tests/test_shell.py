@@ -17,6 +17,11 @@ from amigactl.shell import (
     _format_protection,
     _normalize_dotdot,
     _visible_len,
+    _find_filter,
+    _build_tree,
+    _format_tree,
+    _grep_lines,
+    _du_accumulate,
 )
 from amigactl.colors import ColorWriter, _supports_color
 
@@ -334,3 +339,189 @@ class TestEditorFallback:
                       or "vi")
             parts = shlex.split(editor)
             assert parts == ["code", "--wait"]
+
+
+# ---------------------------------------------------------------------------
+# Helper for dir entry construction
+# ---------------------------------------------------------------------------
+
+def _entry(name, type_="FILE", size=100):
+    """Create a minimal dir entry dict for testing."""
+    return {"name": name, "type": type_, "size": size,
+            "protection": "00", "datestamp": "2026-01-01 12:00:00"}
+
+
+# ---------------------------------------------------------------------------
+# _find_filter()
+# ---------------------------------------------------------------------------
+
+class TestFindFilter:
+    """Tests for glob pattern and type filtering of directory entries."""
+
+    def test_basic_pattern(self):
+        entries = [
+            _entry("readme.txt"),
+            _entry("image.png"),
+            _entry("notes.txt"),
+        ]
+        result = _find_filter(entries, "*.txt")
+        assert len(result) == 2
+        names = [e["name"] for e in result]
+        assert "readme.txt" in names
+        assert "notes.txt" in names
+
+    def test_case_insensitive(self):
+        entries = [
+            _entry("readme.txt"),
+            _entry("NOTES.TXT"),
+            _entry("image.png"),
+        ]
+        result = _find_filter(entries, "*.TXT")
+        assert len(result) == 2
+        names = [e["name"] for e in result]
+        assert "readme.txt" in names
+        assert "NOTES.TXT" in names
+
+    def test_type_filter_files_only(self):
+        entries = [
+            _entry("readme.txt"),
+            _entry("docs", "DIR", 0),
+            _entry("notes.txt"),
+        ]
+        result = _find_filter(entries, "*", type_filter="f")
+        assert len(result) == 2
+        assert all(e["type"] == "FILE" for e in result)
+
+
+# ---------------------------------------------------------------------------
+# _build_tree() / _format_tree()
+# ---------------------------------------------------------------------------
+
+class TestTree:
+    """Tests for tree building and rendering."""
+
+    def test_nested_tree(self):
+        entries = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("C/Dir", size=567),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        tree = _build_tree(entries)
+        lines, dir_count, file_count = _format_tree("ROOT:", tree)
+        assert lines[0] == "ROOT:"
+        assert dir_count == 2
+        assert file_count == 3
+        # Verify box-drawing characters and names appear in lines
+        joined = "\n".join(lines)
+        assert "\u251c" in joined or "\u2514" in joined  # branch chars
+        assert "Copy" in joined
+        assert "Dir" in joined
+        assert "Startup-Sequence" in joined
+
+    def test_dirs_only(self):
+        entries = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        tree = _build_tree(entries)
+        lines, dir_count, file_count = _format_tree("ROOT:", tree,
+                                                     dirs_only=True)
+        assert file_count == 0
+        assert dir_count == 2
+
+    def test_empty_tree(self):
+        tree = _build_tree([])
+        lines, dir_count, file_count = _format_tree("ROOT:", tree)
+        assert lines == ["ROOT:"]
+        assert dir_count == 0
+        assert file_count == 0
+
+
+# ---------------------------------------------------------------------------
+# _grep_lines()
+# ---------------------------------------------------------------------------
+
+class TestGrep:
+    """Tests for line-by-line text search."""
+
+    def test_fixed_string(self):
+        text = "hello world\ngoodbye world\nhello again"
+        result = _grep_lines(text, "hello")
+        assert len(result) == 2
+        assert result[0][1] == "hello world"
+        assert result[1][1] == "hello again"
+
+    def test_case_insensitive(self):
+        text = "Hello World\nhello world\nHELLO WORLD"
+        result = _grep_lines(text, "hello", ignore_case=True)
+        assert len(result) == 3
+
+    def test_line_numbers(self):
+        text = "alpha\nbeta\ngamma\nbeta again"
+        result = _grep_lines(text, "beta")
+        assert result[0][0] == 2
+        assert result[1][0] == 4
+
+    def test_no_match(self):
+        text = "nothing here\nor here\nor anywhere"
+        result = _grep_lines(text, "missing")
+        assert result == []
+
+    def test_regex_mode(self):
+        text = "error: something broke\nwarning: check this\ninfo: all good"
+        result = _grep_lines(text, "error|warn", is_regex=True)
+        assert len(result) == 2
+        assert "error" in result[0][1]
+        assert "warn" in result[1][1]
+
+    def test_special_chars_escaped(self):
+        text = "foo.bar\nfooXbar\nfoo-bar"
+        result = _grep_lines(text, "foo.bar")
+        assert len(result) == 1
+        assert result[0][1] == "foo.bar"
+
+
+# ---------------------------------------------------------------------------
+# _du_accumulate()
+# ---------------------------------------------------------------------------
+
+class TestDu:
+    """Tests for per-directory size accumulation."""
+
+    def test_basic_accumulation(self):
+        entries = [
+            _entry("A/file1", size=100),
+            _entry("A/file2", size=200),
+            _entry("B/file3", size=50),
+        ]
+        result, total = _du_accumulate(entries)
+        dir_sizes = dict(result)
+        assert dir_sizes["A"] == 300
+        assert dir_sizes["B"] == 50
+        assert dir_sizes["."] == 350
+
+    def test_nested_propagation(self):
+        entries = [
+            _entry("A", "DIR", 0),
+            _entry("A/B", "DIR", 0),
+            _entry("A/B/deep.txt", size=500),
+            _entry("A/shallow.txt", size=100),
+        ]
+        result, total = _du_accumulate(entries)
+        dir_sizes = dict(result)
+        assert dir_sizes["A/B"] == 500
+        assert dir_sizes["A"] == 600
+        assert dir_sizes["."] == 600
+
+    def test_summary_total(self):
+        entries = [
+            _entry("A/file1", size=100),
+            _entry("A/file2", size=200),
+            _entry("B/file3", size=50),
+        ]
+        result, total = _du_accumulate(entries)
+        assert total == 350

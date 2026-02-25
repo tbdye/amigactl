@@ -85,13 +85,13 @@ def cmd_stat(conn, args):
 
 def cmd_cat(conn, args):
     """Handle the 'cat' subcommand."""
-    data = conn.read(args.path)
+    data = conn.read(args.path, offset=args.offset, length=args.length)
     sys.stdout.buffer.write(data)
 
 
 def cmd_get(conn, args):
     """Handle the 'get' subcommand."""
-    data = conn.read(args.remote)
+    data = conn.read(args.remote, offset=args.offset, length=args.length)
     local = args.local
     if local is None:
         # Extract basename from Amiga path
@@ -323,6 +323,74 @@ def cmd_tail(conn, args):
             pass
 
 
+def cmd_cp(conn, args):
+    """Handle the 'cp' subcommand."""
+    conn.copy(args.source, args.dest,
+              noclone=args.no_clone, noreplace=args.no_replace)
+    print("Copied")
+
+
+def cmd_append(conn, args):
+    """Handle the 'append' subcommand."""
+    with open(args.local, "rb") as f:
+        data = f.read()
+    written = conn.append(args.remote, data)
+    print("Appended {} bytes to {}".format(written, args.remote))
+
+
+def cmd_checksum(conn, args):
+    """Handle the 'checksum' subcommand."""
+    result = conn.checksum(args.path)
+    print("crc32={}".format(result.get("crc32", "")))
+    print("size={}".format(result.get("size", "")))
+
+
+def cmd_setcomment(conn, args):
+    """Handle the 'setcomment' subcommand."""
+    conn.setcomment(args.path, args.comment)
+    print("Comment set")
+
+
+def cmd_libver(conn, args):
+    """Handle the 'libver' subcommand."""
+    result = conn.libver(args.name)
+    print("name={}".format(result.get("name", "")))
+    print("version={}".format(result.get("version", "")))
+
+
+def cmd_env(conn, args):
+    """Handle the 'env' subcommand."""
+    result = conn.env(args.name)
+    print(result.get("value", ""))
+
+
+def cmd_setenv(conn, args):
+    """Handle the 'setenv' subcommand."""
+    conn.setenv(args.name, value=args.value,
+                volatile=args.volatile)
+    if args.value is not None:
+        print("Set")
+    else:
+        print("Deleted")
+
+
+def cmd_devices(conn, args):
+    """Handle the 'devices' subcommand."""
+    devs = conn.devices()
+    if not devs:
+        return
+    print("{}\t{}".format("NAME", "VERSION"))
+    for d in devs:
+        print("{}\t{}".format(d["name"], d["version"]))
+
+
+def cmd_capabilities(conn, args):
+    """Handle the 'capabilities' subcommand."""
+    caps = conn.capabilities()
+    for key, value in caps.items():
+        print("{}={}".format(key, value))
+
+
 def _default_config_path(host=None, port=None):
     """Return the path to amigactl.conf in the client directory.
 
@@ -483,18 +551,31 @@ def main() -> None:
 
     p_cat = subparsers.add_parser("cat", help="Print file contents to stdout")
     p_cat.add_argument("path", help="Amiga file path")
+    p_cat.add_argument("--offset", type=int, default=None,
+                       help="Start reading at byte offset")
+    p_cat.add_argument("--length", type=int, default=None,
+                       help="Read at most this many bytes")
 
     p_get = subparsers.add_parser("get", help="Download a file")
     p_get.add_argument("remote", help="Amiga file path")
     p_get.add_argument("local", nargs="?", default=None,
                        help="Local file path (default: same name in "
                             "current directory)")
+    p_get.add_argument("--offset", type=int, default=None,
+                       help="Start reading at byte offset")
+    p_get.add_argument("--length", type=int, default=None,
+                       help="Read at most this many bytes")
 
     p_put = subparsers.add_parser("put", help="Upload a file")
     p_put.add_argument("local", help="Local file path")
     p_put.add_argument("remote", nargs="?", default=None,
                        help="Amiga file path (default: same name in "
                             "current Amiga directory)")
+
+    p_append = subparsers.add_parser("append",
+                                      help="Append local file to remote file")
+    p_append.add_argument("local", help="Local file to append")
+    p_append.add_argument("remote", help="Amiga file to append to")
 
     p_rm = subparsers.add_parser("rm", help="Delete a file or empty directory")
     p_rm.add_argument("path", help="Amiga path")
@@ -503,6 +584,14 @@ def main() -> None:
     p_mv.add_argument("old", help="Current Amiga path")
     p_mv.add_argument("new", help="New Amiga path")
 
+    p_cp = subparsers.add_parser("cp", help="Copy a file on the Amiga")
+    p_cp.add_argument("source", help="Source Amiga path")
+    p_cp.add_argument("dest", help="Destination Amiga path")
+    p_cp.add_argument("-P", "--no-clone", action="store_true",
+                      help="Do not copy metadata (protection, date, comment)")
+    p_cp.add_argument("-n", "--no-replace", action="store_true",
+                      help="Fail if destination already exists")
+
     p_mkdir = subparsers.add_parser("mkdir", help="Create a directory")
     p_mkdir.add_argument("path", help="Amiga path")
 
@@ -510,6 +599,15 @@ def main() -> None:
     p_chmod.add_argument("path", help="Amiga path")
     p_chmod.add_argument("value", nargs="?", default=None,
                          help="Hex protection value to set (omit to get)")
+
+    p_checksum = subparsers.add_parser("checksum",
+                                        help="Compute CRC32 checksum of a file")
+    p_checksum.add_argument("path", help="Amiga file path")
+
+    p_setcomment = subparsers.add_parser("setcomment",
+                                          help="Set file comment")
+    p_setcomment.add_argument("path", help="Amiga file path")
+    p_setcomment.add_argument("comment", help="Comment string (use '' to clear)")
 
     p_exec = subparsers.add_parser("exec", help="Execute a CLI command")
     p_exec.add_argument("-C", metavar="DIR", default=None,
@@ -543,6 +641,24 @@ def main() -> None:
     p_kill.add_argument("id", type=int, help="Process ID")
 
     subparsers.add_parser("sysinfo", help="Show system information")
+
+    p_libver = subparsers.add_parser("libver",
+                                      help="Get library or device version")
+    p_libver.add_argument("name",
+                           help="Library or device name (e.g. exec.library)")
+
+    p_env = subparsers.add_parser("env",
+                                   help="Get an environment variable")
+    p_env.add_argument("name", help="Variable name")
+
+    p_setenv = subparsers.add_parser("setenv",
+                                      help="Set or delete an environment variable")
+    p_setenv.add_argument("-v", "--volatile", action="store_true",
+                          help="Volatile only (not persisted to ENVARC:)")
+    p_setenv.add_argument("name", help="Variable name")
+    p_setenv.add_argument("value", nargs="?", default=None,
+                           help="Value to set (omit to delete)")
+
     subparsers.add_parser("assigns", help="List logical assigns")
 
     p_assign = subparsers.add_parser("assign",
@@ -559,6 +675,9 @@ def main() -> None:
     subparsers.add_parser("ports", help="List active Exec message ports")
     subparsers.add_parser("volumes", help="List mounted volumes")
     subparsers.add_parser("tasks", help="List running tasks/processes")
+    subparsers.add_parser("devices", help="List Exec devices")
+    subparsers.add_parser("capabilities",
+                           help="Show daemon capabilities")
     subparsers.add_parser("uptime", help="Show daemon uptime")
 
     p_touch = subparsers.add_parser("touch", help="Set file datestamp (creates file if missing)")
@@ -617,35 +736,44 @@ def main() -> None:
         args.command = "shell"
 
     dispatch = {
-        "version": cmd_version,
-        "ping": cmd_ping,
-        "shutdown": cmd_shutdown,
-        "reboot": cmd_reboot,
-        "ls": cmd_ls,
-        "stat": cmd_stat,
-        "cat": cmd_cat,
-        "get": cmd_get,
-        "put": cmd_put,
-        "rm": cmd_rm,
-        "mv": cmd_mv,
-        "mkdir": cmd_mkdir,
-        "chmod": cmd_chmod,
-        "exec": cmd_exec,
-        "run": cmd_run,
-        "ps": cmd_ps,
-        "status": cmd_status,
-        "signal": cmd_signal,
-        "kill": cmd_kill,
-        "sysinfo": cmd_sysinfo,
-        "assigns": cmd_assigns,
-        "assign": cmd_assign,
-        "ports": cmd_ports,
-        "volumes": cmd_volumes,
-        "tasks": cmd_tasks,
-        "uptime": cmd_uptime,
-        "touch": cmd_touch,
+        "append": cmd_append,
         "arexx": cmd_arexx,
+        "assign": cmd_assign,
+        "assigns": cmd_assigns,
+        "capabilities": cmd_capabilities,
+        "cat": cmd_cat,
+        "checksum": cmd_checksum,
+        "chmod": cmd_chmod,
+        "cp": cmd_cp,
+        "devices": cmd_devices,
+        "env": cmd_env,
+        "exec": cmd_exec,
+        "get": cmd_get,
+        "kill": cmd_kill,
+        "libver": cmd_libver,
+        "ls": cmd_ls,
+        "mkdir": cmd_mkdir,
+        "mv": cmd_mv,
+        "ping": cmd_ping,
+        "ports": cmd_ports,
+        "ps": cmd_ps,
+        "put": cmd_put,
+        "reboot": cmd_reboot,
+        "rm": cmd_rm,
+        "run": cmd_run,
+        "setcomment": cmd_setcomment,
+        "setenv": cmd_setenv,
+        "shutdown": cmd_shutdown,
+        "signal": cmd_signal,
+        "stat": cmd_stat,
+        "status": cmd_status,
+        "sysinfo": cmd_sysinfo,
         "tail": cmd_tail,
+        "tasks": cmd_tasks,
+        "touch": cmd_touch,
+        "uptime": cmd_uptime,
+        "version": cmd_version,
+        "volumes": cmd_volumes,
     }
 
     # Shell subcommand manages its own connection lifecycle

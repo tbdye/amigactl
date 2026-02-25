@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amigactl"
-version = "0.6.1"
+version = "0.7.0"
 description = "Python client for amigactl, a remote access toolkit for AmigaOS"
 license = "GPL-3.0-only"
 requires-python = ">=3.8"
