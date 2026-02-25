@@ -664,3 +664,151 @@ class TestExecAsync:
         2. Before any complete, send another EXEC ASYNC.
         3. Verify ERR 500 response ('Process table full').
         """
+
+
+# ---------------------------------------------------------------------------
+# Signal names (CTRL_D, CTRL_E, CTRL_F)
+# ---------------------------------------------------------------------------
+
+class TestSignalNames:
+    """Tests for SIGNAL with non-default signal names."""
+
+    def test_signal_ctrl_d(self, raw_connection):
+        """SIGNAL with CTRL_D on a running process returns OK."""
+        sock, _banner = raw_connection
+
+        # Launch a long-running process
+        send_command(sock, "EXEC ASYNC wait 10")
+        status, _payload = read_response(sock)
+        assert status.startswith("OK")
+        proc_id = status[3:].strip()
+
+        time.sleep(0.5)
+
+        # Send CTRL_D
+        send_command(sock, "SIGNAL {} CTRL_D".format(proc_id))
+        status, payload = read_response(sock)
+        assert status == "OK", (
+            "SIGNAL CTRL_D failed: {!r}".format(status)
+        )
+        assert payload == []
+
+        # Clean up: send CTRL_C to terminate
+        send_command(sock, "SIGNAL {}".format(proc_id))
+        read_response(sock)
+
+    def test_signal_ctrl_e(self, raw_connection):
+        """SIGNAL with CTRL_E on a running process returns OK."""
+        sock, _banner = raw_connection
+
+        send_command(sock, "EXEC ASYNC wait 10")
+        status, _payload = read_response(sock)
+        assert status.startswith("OK")
+        proc_id = status[3:].strip()
+
+        time.sleep(0.5)
+
+        send_command(sock, "SIGNAL {} CTRL_E".format(proc_id))
+        status, payload = read_response(sock)
+        assert status == "OK", (
+            "SIGNAL CTRL_E failed: {!r}".format(status)
+        )
+        assert payload == []
+
+        # Clean up
+        send_command(sock, "SIGNAL {}".format(proc_id))
+        read_response(sock)
+
+    def test_signal_ctrl_f(self, raw_connection):
+        """SIGNAL with CTRL_F on a running process returns OK."""
+        sock, _banner = raw_connection
+
+        send_command(sock, "EXEC ASYNC wait 10")
+        status, _payload = read_response(sock)
+        assert status.startswith("OK")
+        proc_id = status[3:].strip()
+
+        time.sleep(0.5)
+
+        send_command(sock, "SIGNAL {} CTRL_F".format(proc_id))
+        status, payload = read_response(sock)
+        assert status == "OK", (
+            "SIGNAL CTRL_F failed: {!r}".format(status)
+        )
+        assert payload == []
+
+        # Clean up
+        send_command(sock, "SIGNAL {}".format(proc_id))
+        read_response(sock)
+
+
+# ---------------------------------------------------------------------------
+# Process table eviction
+# ---------------------------------------------------------------------------
+
+class TestExecAsyncEviction:
+    """Tests for process table eviction of EXITED entries."""
+
+    def test_exec_async_eviction(self, raw_connection):
+        """Launch 16 quick processes, let them exit. Launch one more --
+        should succeed (old EXITED entries evicted)."""
+        sock, _banner = raw_connection
+
+        # Launch 16 quick processes
+        for i in range(16):
+            send_command(sock, "EXEC ASYNC echo done{}".format(i))
+            status, _payload = read_response(sock)
+            assert status.startswith("OK"), (
+                "EXEC ASYNC {} failed: {!r}".format(i, status)
+            )
+
+        # Wait for all to exit
+        time.sleep(3)
+
+        # Launch one more -- should evict an EXITED entry
+        send_command(sock, "EXEC ASYNC echo evicted")
+        status, _payload = read_response(sock)
+        assert status.startswith("OK"), (
+            "17th EXEC ASYNC should succeed via eviction, got: {!r}".format(
+                status)
+        )
+        proc_id = status[3:].strip()
+        assert proc_id.isdigit(), (
+            "Expected numeric process ID, got: {!r}".format(proc_id)
+        )
+
+        # Verify the process exists in PROCLIST
+        time.sleep(1)
+        send_command(sock, "PROCLIST")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        found = False
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 1 and fields[0] == proc_id:
+                found = True
+                break
+        assert found, (
+            "Process {} not found in PROCLIST after eviction".format(proc_id)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Large output
+# ---------------------------------------------------------------------------
+
+class TestExecLargeOutput:
+    """Tests for EXEC with output exceeding one DATA chunk."""
+
+    def test_exec_large_output(self, raw_connection):
+        """EXEC list SYS: ALL produces output exceeding 4096 bytes."""
+        sock, _banner = raw_connection
+        send_command(sock, "EXEC list SYS: ALL")
+        rc, data = read_exec_response(sock)
+        assert rc == 0, (
+            "list SYS: ALL failed with rc={}".format(rc)
+        )
+        assert len(data) > 4096, (
+            "Expected >4096 bytes of output, got {}".format(len(data))
+        )

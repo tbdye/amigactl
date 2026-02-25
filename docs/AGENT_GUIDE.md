@@ -72,9 +72,9 @@ response fields, error conditions, and example transcripts.
 
 | Method | Returns | Docs |
 |--------|---------|------|
-| `sysinfo()` | `dict` -- all values are `str` | [SYSINFO](COMMANDS.md#sysinfo) |
+| `sysinfo()` | `dict` -- memory values are `int`, version strings are `str` | [SYSINFO](COMMANDS.md#sysinfo) |
 | `libver(name)` | `dict` -- name, version | [LIBVER](COMMANDS.md#libver) |
-| `env(name)` | `dict` -- value, truncated | [ENV](COMMANDS.md#env) |
+| `env(name)` | `str` -- the variable value | [ENV](COMMANDS.md#env) |
 | `setenv(name, value=None, volatile=False)` | None | [SETENV](COMMANDS.md#setenv) |
 | `assigns()` | `dict` -- name -> path | [ASSIGNS](COMMANDS.md#assigns) |
 | `assign(name, path=None, mode=None)` | None | [ASSIGN](COMMANDS.md#assign) |
@@ -82,7 +82,7 @@ response fields, error conditions, and example transcripts.
 | `ports()` | `list[str]` | [PORTS](COMMANDS.md#ports) |
 | `tasks()` | `list[dict]` | [TASKS](COMMANDS.md#tasks) |
 | `devices()` | `list[dict]` -- name, version | [DEVICES](COMMANDS.md#devices) |
-| `capabilities()` | `dict` -- version, protocol, etc. | [CAPABILITIES](COMMANDS.md#capabilities) |
+| `capabilities()` | `dict` -- max\_clients and max\_cmd\_len are `int`, rest are `str` | [CAPABILITIES](COMMANDS.md#capabilities) |
 
 ### ARexx and Streaming
 

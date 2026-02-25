@@ -2084,11 +2084,7 @@ class AmigaShell(cmd.Cmd):
         if result is None:
             return
 
-        value = result.get("value", "")
-        truncated = result.get("truncated")
-        print(value)
-        if truncated:
-            print(self.cw.error("(value truncated)"))
+        print(result)
 
     do_getenv = do_env
 

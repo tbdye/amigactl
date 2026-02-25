@@ -743,8 +743,8 @@ class TestEnv:
 
         conn.setenv("amigactl_test_client", "clientval")
         result = conn.env("amigactl_test_client")
-        assert result.get("value") == "clientval", (
-            "Expected value=clientval, got: {!r}".format(result.get("value"))
+        assert result == "clientval", (
+            "Expected 'clientval', got: {!r}".format(result)
         )
 
     def test_setenv_delete_via_client(self, conn, cleanup_env):
@@ -754,7 +754,7 @@ class TestEnv:
         conn.setenv("amigactl_test_del", "todelete")
         # Verify it exists
         result = conn.env("amigactl_test_del")
-        assert result.get("value") == "todelete"
+        assert result == "todelete"
 
         # Delete it
         conn.setenv("amigactl_test_del")
@@ -938,4 +938,149 @@ class TestCapabilities:
             )
         assert "COPY" in result["commands"], (
             "COPY not found in commands: {!r}".format(result["commands"])
+        )
+        assert isinstance(result["max_clients"], int), (
+            "max_clients should be int, got: {!r}".format(
+                type(result["max_clients"]))
+        )
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITIES (numeric validation)
+# ---------------------------------------------------------------------------
+
+class TestCapabilitiesNumeric:
+    """Tests for CAPABILITIES numeric field validation."""
+
+    def test_capabilities_max_clients_numeric(self, raw_connection):
+        """CAPABILITIES max_clients is present and numeric with value 8."""
+        sock, _banner = raw_connection
+        send_command(sock, "CAPABILITIES")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert "max_clients" in kv, (
+            "max_clients missing from CAPABILITIES. Keys: {}".format(
+                sorted(kv.keys()))
+        )
+        assert kv["max_clients"].isdigit(), (
+            "max_clients should be numeric, got: {!r}".format(
+                kv["max_clients"])
+        )
+        assert int(kv["max_clients"]) == 8, (
+            "max_clients should be 8, got: {}".format(kv["max_clients"])
+        )
+
+    def test_capabilities_max_cmd_len_numeric(self, raw_connection):
+        """CAPABILITIES max_cmd_len is present and numeric with value 4096."""
+        sock, _banner = raw_connection
+        send_command(sock, "CAPABILITIES")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert "max_cmd_len" in kv, (
+            "max_cmd_len missing from CAPABILITIES. Keys: {}".format(
+                sorted(kv.keys()))
+        )
+        assert kv["max_cmd_len"].isdigit(), (
+            "max_cmd_len should be numeric, got: {!r}".format(
+                kv["max_cmd_len"])
+        )
+        assert int(kv["max_cmd_len"]) == 4096, (
+            "max_cmd_len should be 4096, got: {}".format(kv["max_cmd_len"])
+        )
+
+
+# ---------------------------------------------------------------------------
+# ASSIGN mode validation (client-side)
+# ---------------------------------------------------------------------------
+
+class TestAssignModeValidation:
+    """Tests for assign() mode parameter validation."""
+
+    def test_assign_invalid_mode(self, conn):
+        """assign() with invalid mode raises ValueError."""
+        with pytest.raises(ValueError):
+            conn.assign("TEST:", "RAM:", mode="invalid")
+
+
+# ---------------------------------------------------------------------------
+# AmigaConnection repr
+# ---------------------------------------------------------------------------
+
+class TestClientRepr:
+    """Tests for AmigaConnection.__repr__."""
+
+    def test_connection_repr(self, conn):
+        """repr(conn) contains host and 'connected'."""
+        r = repr(conn)
+        assert "connected" in r, (
+            "repr should contain 'connected', got: {!r}".format(r)
+        )
+
+
+# ---------------------------------------------------------------------------
+# ENV return type validation
+# ---------------------------------------------------------------------------
+
+class TestEnvReturnType:
+    """Tests for env() return type after API change."""
+
+    def test_env_returns_string(self, conn, cleanup_env):
+        """env() returns str, not dict."""
+        cleanup_env.add("amigactl_test_env_type")
+
+        conn.setenv("amigactl_test_env_type", "testval")
+        result = conn.env("amigactl_test_env_type")
+        assert isinstance(result, str), (
+            "env() should return str, got: {!r}".format(type(result))
+        )
+        assert result == "testval", (
+            "Expected 'testval', got: {!r}".format(result)
+        )
+
+
+# ---------------------------------------------------------------------------
+# SYSINFO numeric conversion validation
+# ---------------------------------------------------------------------------
+
+class TestSysinfoNumericConversion:
+    """Tests for sysinfo() memory value int conversion."""
+
+    def test_sysinfo_memory_values_are_int(self, conn):
+        """sysinfo() returns int for memory keys."""
+        result = conn.sysinfo()
+        for key in ("chip_free", "fast_free", "total_free"):
+            assert isinstance(result[key], int), (
+                "{} should be int, got: {!r}".format(key, type(result[key]))
+            )
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITIES numeric conversion validation
+# ---------------------------------------------------------------------------
+
+class TestCapabilitiesNumericConversion:
+    """Tests for capabilities() numeric type conversion."""
+
+    def test_capabilities_numeric_types(self, conn):
+        """capabilities() returns int for max_clients and max_cmd_len."""
+        result = conn.capabilities()
+        assert isinstance(result["max_clients"], int), (
+            "max_clients should be int, got: {!r}".format(
+                type(result["max_clients"]))
+        )
+        assert isinstance(result["max_cmd_len"], int), (
+            "max_cmd_len should be int, got: {!r}".format(
+                type(result["max_cmd_len"]))
         )

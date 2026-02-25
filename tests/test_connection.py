@@ -15,6 +15,7 @@ executed.
 
 import re
 import socket
+import time
 
 import pytest
 
@@ -394,6 +395,133 @@ class TestManual:
         """Start the daemon with ALLOW_REMOTE_REBOOT YES in
         S:amigactld.conf.  Send 'REBOOT CONFIRM' and verify the response
         is 'OK Rebooting', followed by the system rebooting."""
+
+
+# ---------------------------------------------------------------------------
+# MAX_CLIENTS enforcement
+# ---------------------------------------------------------------------------
+
+class TestMaxClients:
+    """Tests for maximum simultaneous client enforcement."""
+
+    def test_max_clients_enforcement(self, amiga_host, amiga_port):
+        """Open 8 connections (all get banners), 9th gets EOF."""
+        sockets = []
+        try:
+            # Open 8 connections -- all should succeed
+            for i in range(8):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((amiga_host, amiga_port))
+                banner = _read_banner(s)
+                assert banner.startswith("AMIGACTL"), (
+                    "Connection {} did not get banner: {!r}".format(i, banner)
+                )
+                sockets.append(s)
+
+            # 9th connection should be rejected (EOF, no banner)
+            rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            rejected.settimeout(5)
+            sockets.append(rejected)
+            rejected.connect((amiga_host, amiga_port))
+            data = rejected.recv(1)
+            assert data == b"", (
+                "9th connection should get EOF, got: {!r}".format(data)
+            )
+        finally:
+            for s in sockets:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+    def test_max_clients_recovery(self, amiga_host, amiga_port):
+        """After hitting the limit, close one connection and verify a new
+        one succeeds."""
+        sockets = []
+        try:
+            # Open 8 connections
+            for i in range(8):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((amiga_host, amiga_port))
+                _read_banner(s)
+                sockets.append(s)
+
+            # Verify 9th is rejected
+            rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            rejected.settimeout(5)
+            rejected.connect((amiga_host, amiga_port))
+            data = rejected.recv(1)
+            assert data == b""
+            rejected.close()
+
+            # Close the first connection to free a slot
+            sockets[0].close()
+            sockets[0] = None
+            time.sleep(0.5)
+
+            # New connection should succeed
+            recovery = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            recovery.settimeout(5)
+            recovery.connect((amiga_host, amiga_port))
+            banner = _read_banner(recovery)
+            assert banner.startswith("AMIGACTL"), (
+                "Recovery connection did not get banner: {!r}".format(banner)
+            )
+
+            send_command(recovery, "PING")
+            status, payload = read_response(recovery)
+            assert status == "OK"
+            recovery.close()
+        finally:
+            for s in sockets:
+                if s is not None:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+
+    def test_rapid_connect_disconnect(self, amiga_host, amiga_port):
+        """Open and close 50 connections rapidly. Verify daemon survives."""
+        import random
+        random.seed(42)
+
+        for i in range(50):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            try:
+                s.connect((amiga_host, amiga_port))
+                choice = random.randint(0, 2)
+                if choice == 0:
+                    # Close immediately without reading banner
+                    pass
+                elif choice == 1:
+                    # Read banner, then close
+                    _read_banner(s)
+                else:
+                    # Read banner, send PING (don't read response), close
+                    _read_banner(s)
+                    send_command(s, "PING")
+            except (ConnectionError, OSError):
+                pass  # Some connections may fail under load
+            finally:
+                s.close()
+
+        # Verify daemon is alive with a clean connection
+        final = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        final.settimeout(5)
+        try:
+            final.connect((amiga_host, amiga_port))
+            banner = _read_banner(final)
+            assert banner.startswith("AMIGACTL"), (
+                "Final connection did not get banner: {!r}".format(banner)
+            )
+            send_command(final, "PING")
+            status, payload = read_response(final)
+            assert status == "OK"
+        finally:
+            final.close()
 
 
 # ---------------------------------------------------------------------------

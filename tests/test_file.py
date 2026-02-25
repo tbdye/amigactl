@@ -19,11 +19,13 @@ import pytest
 
 from conftest import (
     _read_line,
+    _recv_exact,
     read_data_response,
     read_response,
     send_command,
     send_copy,
     send_append_data,
+    send_raw_write_start,
     send_rename,
     send_write_data,
 )
@@ -1805,3 +1807,701 @@ class TestSetComment:
 
         info = conn.stat(path)
         assert info["comment"] == "client comment"
+
+
+# ---------------------------------------------------------------------------
+# WRITE robustness
+# ---------------------------------------------------------------------------
+
+class TestWriteRobustness:
+    """Tests for malformed WRITE handshakes and size mismatches."""
+
+    def test_write_malformed_data_header_alpha(self, raw_connection,
+                                                cleanup_paths,
+                                                amiga_host, amiga_port):
+        """Send DATA abc after READY. Daemon should disconnect."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_malformed_alpha.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        result = send_raw_write_start(sock, path, 10)
+        assert result == "READY"
+
+        # Send malformed DATA header
+        sock.sendall(b"DATA abc\n")
+
+        # Daemon should close the connection
+        try:
+            data = sock.recv(1024)
+            # Empty recv means EOF (connection closed)
+            assert data == b"", (
+                "Expected EOF after malformed DATA, got: {!r}".format(data)
+            )
+        except (ConnectionResetError, ConnectionError, OSError):
+            pass  # Also acceptable -- connection reset
+
+        # Verify daemon is still alive via new connection
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+            send_command(verify, "PING")
+            status, payload = read_response(verify)
+            assert status == "OK"
+        finally:
+            verify.close()
+
+    def test_write_malformed_data_header_negative(self, raw_connection,
+                                                   cleanup_paths,
+                                                   amiga_host, amiga_port):
+        """Send DATA -1 after READY. Daemon should disconnect."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_malformed_neg.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        result = send_raw_write_start(sock, path, 10)
+        assert result == "READY"
+
+        sock.sendall(b"DATA -1\n")
+
+        try:
+            data = sock.recv(1024)
+            assert data == b"", (
+                "Expected EOF after malformed DATA, got: {!r}".format(data)
+            )
+        except (ConnectionResetError, ConnectionError, OSError):
+            pass
+
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+            send_command(verify, "PING")
+            status, payload = read_response(verify)
+            assert status == "OK"
+        finally:
+            verify.close()
+
+    def test_write_malformed_data_header_huge(self, raw_connection,
+                                               cleanup_paths,
+                                               amiga_host, amiga_port):
+        """Send DATA 99999 after READY (exceeds chunk limit). Daemon should disconnect."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_malformed_huge.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        result = send_raw_write_start(sock, path, 10)
+        assert result == "READY"
+
+        # Send oversized chunk header + some padding bytes
+        sock.sendall(b"DATA 99999\n" + b"x" * 10)
+
+        try:
+            data = sock.recv(1024)
+            assert data == b"", (
+                "Expected EOF after oversized DATA, got: {!r}".format(data)
+            )
+        except (ConnectionResetError, ConnectionError, OSError):
+            pass
+
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+            send_command(verify, "PING")
+            status, payload = read_response(verify)
+            assert status == "OK"
+        finally:
+            verify.close()
+
+    def test_write_size_mismatch_over(self, raw_connection, cleanup_paths,
+                                       amiga_host, amiga_port):
+        """Declare size 10, send 20 bytes. Daemon returns ERR 300."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_mismatch_over.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        result = send_raw_write_start(sock, path, 10)
+        assert result == "READY"
+
+        # Send 20 bytes in a valid DATA chunk, then END
+        sock.sendall(b"DATA 20\n" + b"x" * 20)
+        sock.sendall(b"END\n")
+
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 300"), (
+            "Expected ERR 300 for size mismatch, got: {!r}".format(status)
+        )
+
+        # Verify daemon alive
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+            send_command(verify, "PING")
+            vs, _ = read_response(verify)
+            assert vs == "OK"
+        finally:
+            verify.close()
+
+    def test_write_size_mismatch_under(self, raw_connection, cleanup_paths,
+                                        amiga_host, amiga_port):
+        """Declare size 10, send only 5 bytes. Daemon returns ERR 300."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_mismatch_under.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        result = send_raw_write_start(sock, path, 10)
+        assert result == "READY"
+
+        # Send only 5 bytes, then END
+        sock.sendall(b"DATA 5\n" + b"x" * 5)
+        sock.sendall(b"END\n")
+
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 300"), (
+            "Expected ERR 300 for size mismatch, got: {!r}".format(status)
+        )
+
+        # Verify daemon alive
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+            send_command(verify, "PING")
+            vs, _ = read_response(verify)
+            assert vs == "OK"
+        finally:
+            verify.close()
+
+
+# ---------------------------------------------------------------------------
+# Mid-transfer disconnect
+# ---------------------------------------------------------------------------
+
+class TestMidTransferDisconnect:
+    """Tests for client disconnect during file transfer."""
+
+    def test_write_disconnect_mid_transfer(self, amiga_host, amiga_port,
+                                            cleanup_paths):
+        """Start WRITE, send partial DATA, disconnect. Verify daemon alive
+        and no temp file left."""
+        path = "RAM:amigactl_test_disconnect.bin"
+        cleanup_paths.add(path)
+        cleanup_paths.add(path + ".amigactld.tmp")
+
+        # Open a socket and start a WRITE handshake
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        result = send_raw_write_start(sock, path, 100)
+        assert result == "READY"
+
+        # Send partial data and disconnect
+        sock.sendall(b"DATA 50\n" + b"x" * 50)
+        sock.close()
+
+        # Wait for daemon to process the disconnect
+        time.sleep(1)
+
+        # Verify daemon is alive
+        verify = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        verify.settimeout(5)
+        try:
+            verify.connect((amiga_host, amiga_port))
+            _read_line(verify)  # banner
+
+            send_command(verify, "PING")
+            status, _ = read_response(verify)
+            assert status == "OK"
+
+            # Verify temp file was cleaned up
+            send_command(verify, "STAT {}".format(path + ".amigactld.tmp"))
+            status, _ = read_response(verify)
+            assert status.startswith("ERR 200"), (
+                "Temp file should have been cleaned up, got: {!r}".format(
+                    status)
+            )
+        finally:
+            verify.close()
+
+
+# ---------------------------------------------------------------------------
+# Delete-protected file
+# ---------------------------------------------------------------------------
+
+class TestDeleteProtected:
+    """Tests for deleting files with protection bits."""
+
+    def test_delete_protected_file(self, raw_connection, cleanup_paths):
+        """WRITE file, set delete-protect, DELETE fails with ERR 201.
+        Restore protection, DELETE succeeds."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_delprot.bin"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"protected content")
+        assert status.startswith("OK"), (
+            "WRITE failed: {!r}".format(status)
+        )
+
+        # Set delete-protect (bit 0)
+        send_command(sock, "PROTECT {} 00000001".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # DELETE should fail
+        send_command(sock, "DELETE {}".format(path))
+        status, _ = read_response(sock)
+        assert status.startswith("ERR 201"), (
+            "Expected ERR 201 for delete-protected file, got: {!r}".format(
+                status)
+        )
+
+        # Restore protection
+        send_command(sock, "PROTECT {} 00000000".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # DELETE should succeed now
+        send_command(sock, "DELETE {}".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+
+# ---------------------------------------------------------------------------
+# Protected access
+# ---------------------------------------------------------------------------
+
+class TestProtectedAccess:
+    """Tests for read and write protected files."""
+
+    def test_read_protected_file(self, raw_connection, cleanup_paths):
+        """WRITE file, set read-protect, READ returns ERR 201."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_readprot.bin"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"read protected")
+        assert status.startswith("OK")
+
+        # Set read-protect (bit 3)
+        send_command(sock, "PROTECT {} 00000008".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # READ should fail
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert info.startswith("ERR 201"), (
+            "Expected ERR 201 for read-protected file, got: {!r}".format(
+                info)
+        )
+
+        # Restore protection
+        send_command(sock, "PROTECT {} 00000000".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+    def test_write_protected_file(self, raw_connection, cleanup_paths):
+        """WRITE file, set write-protect, second WRITE returns ERR 201."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_writeprot.bin"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"write protected")
+        assert status.startswith("OK")
+
+        # Set write-protect (bit 2)
+        send_command(sock, "PROTECT {} 00000004".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # Second WRITE should fail
+        status, _ = send_write_data(sock, path, b"overwrite attempt")
+        assert status.startswith("ERR 201"), (
+            "Expected ERR 201 for write-protected file, got: {!r}".format(
+                status)
+        )
+
+        # Restore protection
+        send_command(sock, "PROTECT {} 00000000".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+
+# ---------------------------------------------------------------------------
+# Path length
+# ---------------------------------------------------------------------------
+
+class TestWritePathLength:
+    """Tests for WRITE path length limits."""
+
+    def test_write_path_too_long(self, raw_connection):
+        """WRITE with path exceeding 497 chars returns ERR 300."""
+        sock, _banner = raw_connection
+        # 501 chars total (RAM: + 497 a's), over the 497-char path limit
+        long_path = "RAM:" + "a" * 497
+        send_command(sock, "WRITE {} 5".format(long_path))
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 300"), (
+            "Expected ERR 300 for path too long, got: {!r}".format(status)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dot-stuffing
+# ---------------------------------------------------------------------------
+
+class TestDotStuffing:
+    """Tests for dot-stuffing in file names."""
+
+    def test_dir_dot_stuffed_entry(self, raw_connection, cleanup_paths):
+        """Create file named .dotfile, DIR the parent, verify entry
+        appears correctly after dot-unstuffing."""
+        sock, _banner = raw_connection
+        dir_path = "RAM:amigactl_test_dotdir"
+        file_path = dir_path + "/.dotfile"
+        cleanup_paths.add(dir_path)
+        cleanup_paths.add(file_path)
+
+        # Create directory
+        send_command(sock, "MAKEDIR {}".format(dir_path))
+        status, _ = read_response(sock)
+        assert status == "OK", (
+            "MAKEDIR failed: {!r}".format(status)
+        )
+
+        # Create .dotfile
+        status, _ = send_write_data(sock, file_path, b"dot content")
+        assert status.startswith("OK")
+
+        # DIR the parent
+        send_command(sock, "DIR {}".format(dir_path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        # Find .dotfile in entries
+        found = False
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 2 and fields[1] == ".dotfile":
+                found = True
+                break
+        assert found, (
+            ".dotfile not found in DIR output. Payload: {!r}".format(payload)
+        )
+
+    def test_stat_dot_stuffed_name(self, raw_connection, cleanup_paths):
+        """STAT a file named .dotfile, verify name survives dot-unstuffing.
+        The name= payload line starts with a dot, so the daemon must
+        dot-stuff it (send ..dotfile) and read_response() unstuffs it."""
+        sock, _banner = raw_connection
+        path = "RAM:.dotfile"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"dot stat content")
+        assert status.startswith("OK")
+
+        # STAT the file
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert kv["name"] == ".dotfile", (
+            "Expected name='.dotfile', got: {!r}".format(kv.get("name"))
+        )
+
+
+# ---------------------------------------------------------------------------
+# SETDATE on directory
+# ---------------------------------------------------------------------------
+
+class TestSetdateDirectory:
+    """Tests for SETDATE on directories."""
+
+    def test_setdate_directory(self, raw_connection, cleanup_paths):
+        """MAKEDIR, SETDATE, STAT to verify datestamp on a directory."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_setdate_dir"
+        cleanup_paths.add(path)
+
+        # Create directory
+        send_command(sock, "MAKEDIR {}".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # Set datestamp
+        send_command(sock, "SETDATE {} 2023-03-15 10:00:00".format(path))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # Verify via STAT
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert kv["datestamp"] == "2023-03-15 10:00:00", (
+            "Expected datestamp='2023-03-15 10:00:00', got: {!r}".format(
+                kv.get("datestamp"))
+        )
+
+
+# ---------------------------------------------------------------------------
+# COPY disconnect
+# ---------------------------------------------------------------------------
+
+class TestCopyDisconnect:
+    """Tests for client disconnect during COPY command."""
+
+    def test_copy_disconnect_mid_command(self, raw_connection, cleanup_paths,
+                                         amiga_host, amiga_port):
+        """Create source file, then on a separate socket send partial
+        COPY (verb + source but no dest), disconnect. Verify daemon alive."""
+        sock, _banner = raw_connection
+        src_path = "RAM:amigactl_test_copydisconnect.bin"
+        cleanup_paths.add(src_path)
+
+        # Create source file via raw_connection
+        status, _ = send_write_data(sock, src_path, b"copy disconnect test")
+        assert status.startswith("OK")
+
+        # Open a separate socket and send partial COPY
+        partial = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        partial.settimeout(5)
+        partial.connect((amiga_host, amiga_port))
+        _read_line(partial)  # banner
+
+        # Send COPY verb + source but no destination
+        partial.sendall(b"COPY\n")
+        partial.sendall(src_path.encode("iso-8859-1") + b"\n")
+        partial.close()
+
+        # Wait for daemon to process
+        time.sleep(0.2)
+
+        # Verify daemon is alive via the original connection
+        send_command(sock, "PING")
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+
+# ---------------------------------------------------------------------------
+# APPEND invalid size
+# ---------------------------------------------------------------------------
+
+class TestAppendInvalidSize:
+    """Tests for APPEND with invalid size parameter."""
+
+    def test_append_invalid_size(self, raw_connection):
+        """APPEND path notanumber returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "APPEND RAM:somefile notanumber")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100"), (
+            "Expected ERR 100 for invalid size, got: {!r}".format(status)
+        )
+
+
+# ---------------------------------------------------------------------------
+# COPY wire format
+# ---------------------------------------------------------------------------
+
+class TestCopyWireFormat:
+    """Tests for COPY three-line wire format with delays."""
+
+    def test_copy_wire_format_segmented(self, raw_connection, cleanup_paths):
+        """COPY sent as three separate sendall() calls with small delays."""
+        sock, _banner = raw_connection
+        src = "RAM:amigactl_test_copywire_src.bin"
+        dst = "RAM:amigactl_test_copywire_dst.bin"
+        cleanup_paths.add(src)
+        cleanup_paths.add(dst)
+
+        content = b"copy wire format test content"
+
+        # Create source file
+        status, _ = send_write_data(sock, src, content)
+        assert status.startswith("OK")
+
+        # Send COPY in three segments with delays
+        sock.sendall(b"COPY\n")
+        time.sleep(0.05)
+        sock.sendall(src.encode("iso-8859-1") + b"\n")
+        time.sleep(0.05)
+        sock.sendall(dst.encode("iso-8859-1") + b"\n")
+
+        status, payload = read_response(sock)
+        assert status == "OK", (
+            "COPY failed: {!r}".format(status)
+        )
+
+        # Verify destination content matches source
+        send_command(sock, "READ {}".format(dst))
+        info, data = read_data_response(sock)
+        assert data == content
+
+
+# ---------------------------------------------------------------------------
+# MAKEDIR parent
+# ---------------------------------------------------------------------------
+
+class TestMakedirParent:
+    """Tests for MAKEDIR with nonexistent parent."""
+
+    def test_makedir_nonexistent_parent(self, raw_connection):
+        """MAKEDIR with nonexistent parent returns ERR 200."""
+        sock, _banner = raw_connection
+        send_command(sock, "MAKEDIR RAM:nonexistent_amigactl_test/child")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 200"), (
+            "Expected ERR 200 for nonexistent parent, got: {!r}".format(
+                status)
+        )
+
+
+# ---------------------------------------------------------------------------
+# SETCOMMENT max length
+# ---------------------------------------------------------------------------
+
+class TestSetcommentMaxLength:
+    """Tests for SETCOMMENT maximum comment length."""
+
+    def test_setcomment_max_length(self, raw_connection, cleanup_paths):
+        """SETCOMMENT with 79-char comment succeeds (AmigaOS limit)."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_maxcomment.bin"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"comment test")
+        assert status.startswith("OK")
+
+        # Set 79-character comment
+        comment = "A" * 79
+        send_command(sock, "SETCOMMENT {}\t{}".format(path, comment))
+        status, _ = read_response(sock)
+        assert status == "OK", (
+            "SETCOMMENT 79 chars failed: {!r}".format(status)
+        )
+
+        # Verify via STAT
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert kv["comment"] == comment, (
+            "Expected 79-char comment, got {} chars: {!r}".format(
+                len(kv["comment"]), kv["comment"])
+        )
+
+
+# ---------------------------------------------------------------------------
+# ISO-8859-1
+# ---------------------------------------------------------------------------
+
+class TestIso8859:
+    """Tests for ISO-8859-1 character handling in content and metadata."""
+
+    def test_write_read_iso8859_content(self, raw_connection, cleanup_paths):
+        """Write and read back content containing ISO-8859-1 characters
+        (bytes 0x80-0xFF)."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_iso_content.bin"
+        cleanup_paths.add(path)
+
+        content = bytes(range(0x80, 0x100))  # 128 bytes
+
+        status, _ = send_write_data(sock, path, content)
+        assert status.startswith("OK")
+
+        send_command(sock, "READ {}".format(path))
+        info, data = read_data_response(sock)
+        assert data == content, (
+            "ISO-8859-1 round-trip failed: {} bytes written, {} read".format(
+                len(content), len(data))
+        )
+
+    def test_setcomment_iso8859(self, raw_connection, cleanup_paths):
+        """Set a file comment containing ISO-8859-1 characters."""
+        sock, _banner = raw_connection
+        path = "RAM:amigactl_test_iso_comment.bin"
+        cleanup_paths.add(path)
+
+        # Create file
+        status, _ = send_write_data(sock, path, b"iso comment test")
+        assert status.startswith("OK")
+
+        # Set comment with accented characters
+        comment = "Pr\xfcfung \xe4\xf6\xfc"
+        send_command(sock, "SETCOMMENT {}\t{}".format(path, comment))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # Verify via STAT
+        send_command(sock, "STAT {}".format(path))
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, value = line.partition("=")
+            kv[key] = value
+
+        assert kv["comment"] == comment, (
+            "Expected comment {!r}, got: {!r}".format(comment, kv["comment"])
+        )
+
+    def test_env_iso8859_value(self, raw_connection, cleanup_env):
+        """SETENV/ENV round-trip with ISO-8859-1 value."""
+        sock, _banner = raw_connection
+        cleanup_env.add("amigactl_test_iso")
+
+        value = "W\xf6rter"
+        send_command(sock, "SETENV amigactl_test_iso {}".format(value))
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        send_command(sock, "ENV amigactl_test_iso")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        kv = {}
+        for line in payload:
+            key, _, val = line.partition("=")
+            kv[key] = val
+
+        assert kv.get("value") == value, (
+            "Expected {!r}, got: {!r}".format(value, kv.get("value"))
+        )

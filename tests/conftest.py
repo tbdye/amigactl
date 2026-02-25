@@ -192,6 +192,27 @@ def send_append_data(sock, path, data):
     return read_response(sock)
 
 
+def send_raw_write_start(sock, path, declared_size):
+    """Send WRITE command and read READY handshake.
+
+    Returns "READY" on success, or the ERR status line on failure.
+    On ERR, also reads and discards the sentinel.
+
+    After receiving "READY", the caller is responsible for sending
+    DATA/END chunks (correct or malformed) and reading the final
+    response.
+    """
+    send_command(sock, "WRITE {} {}".format(path, declared_size))
+    ready_line = _read_line(sock)
+    if ready_line.startswith("ERR "):
+        sentinel = _read_line(sock)
+        assert sentinel == "."
+        return ready_line
+    assert ready_line == "READY", \
+        "Expected READY, got: {!r}".format(ready_line)
+    return "READY"
+
+
 # ---------------------------------------------------------------------------
 # Command-line options
 # ---------------------------------------------------------------------------
@@ -302,6 +323,12 @@ class _CleanupTracker:
             sock.connect((self.host, self.port))
             _read_line(sock)  # banner
             for path in reversed(self.paths):
+                # Clear protection bits so delete-protected files can be removed
+                send_command(sock, "PROTECT {} 00000000".format(path))
+                try:
+                    read_response(sock)
+                except Exception:
+                    pass
                 send_command(sock, "DELETE {}".format(path))
                 try:
                     read_response(sock)

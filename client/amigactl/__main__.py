@@ -361,7 +361,7 @@ def cmd_libver(conn, args):
 def cmd_env(conn, args):
     """Handle the 'env' subcommand."""
     result = conn.env(args.name)
-    print(result.get("value", ""))
+    print(result)
 
 
 def cmd_setenv(conn, args):

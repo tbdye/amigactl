@@ -185,6 +185,11 @@ class AmigaConnection:
         self.close()
         return None
 
+    def __repr__(self) -> str:
+        state = "connected" if self._sock is not None else "disconnected"
+        return "AmigaConnection({!r}, port={}, {})".format(
+            self.host, self.port, state)
+
     # -- Connection lifecycle ----------------------------------------------
 
     def connect(self) -> None:
@@ -329,8 +334,9 @@ class AmigaConnection:
     def dir(self, path: str, recursive: bool = False) -> List[dict]:
         """List directory contents.
 
-        Returns a list of dicts with keys: type, name, size, protection,
-        datestamp.
+        Returns a list of dicts with keys: type (str, "FILE" or "DIR"),
+        name (str), size (int), protection (8-digit hex str), datestamp
+        (str, "YYYY-MM-DD HH:MM:SS" in local Amiga time).
         """
         cmd = "DIR {}".format(path)
         if recursive:
@@ -360,8 +366,9 @@ class AmigaConnection:
     def stat(self, path: str) -> dict:
         """Get file/directory metadata.
 
-        Returns a dict with keys: type, name, size, protection,
-        datestamp, comment.
+        Returns a dict with keys: type, name, size (int), protection
+        (8-digit hex str), datestamp (str, "YYYY-MM-DD HH:MM:SS" in local
+        Amiga time), comment (str, may be empty).
         """
         info, payload = self._send_command("STAT {}".format(path))
         result = {}
@@ -534,10 +541,33 @@ class AmigaConnection:
         self._send_command("MAKEDIR {}".format(path))
 
     def protect(self, path: str, value: Optional[str] = None) -> str:
-        """Get or set protection bits.
+        """Get or set AmigaOS protection bits.
 
-        If value is None, returns current protection as hex string.
-        If value is a hex string, sets protection and returns new value.
+        If value is None, returns current protection as an 8-digit hex string.
+        If value is an 8-digit hex string, sets protection and returns the new
+        value.
+
+        AmigaOS protection bits have INVERTED semantics for bits 0-3:
+        a SET bit means the operation is DENIED (opposite of Unix).
+
+        Bit layout (32-bit hex, right to left):
+            Bit 0: Delete   (set = delete denied)
+            Bit 1: Execute  (set = execute denied)
+            Bit 2: Write    (set = write denied)
+            Bit 3: Read     (set = read denied)
+            Bit 4: Archive  (set = archived)
+            Bit 5: Pure     (set = re-entrant)
+            Bit 6: Script   (set = script file)
+            Bit 7: Hold     (set = hold in memory)
+
+        Examples:
+            "00000000" -- all operations allowed (default for new files)
+            "0000000f" -- all RWED operations denied
+            "00000001" -- delete denied, read/write/execute allowed
+            "00000008" -- read denied, delete/write/execute allowed
+
+        To make a file read-only (deny write and delete):
+            protect(path, "00000005")  # bits 0 (delete) + 2 (write) set
         """
         if value is not None:
             cmd = "PROTECT {} {}".format(path, value)
@@ -693,14 +723,29 @@ class AmigaConnection:
     def sysinfo(self) -> dict:
         """Get system information.
 
-        Returns a dict of key=value pairs. Memory values are strings
-        (caller may convert to int as needed).
+        Returns a dict of key=value pairs. Memory values (chip_free,
+        fast_free, total_free, chip_total, fast_total, chip_largest,
+        fast_largest) are returned as int. Version strings
+        (exec_version, kickstart, bsdsocket) are returned as str.
         """
         _info, payload = self._send_command("SYSINFO")
         result = {}
         for line in payload:
             key, _, value = line.partition("=")
             result[key] = value
+        # Convert memory values to int
+        _MEMORY_KEYS = {
+            "chip_free", "fast_free", "total_free",
+            "chip_total", "fast_total", "chip_largest", "fast_largest",
+        }
+        for key in _MEMORY_KEYS:
+            if key in result:
+                try:
+                    result[key] = int(result[key])
+                except ValueError:
+                    raise ProtocolError(
+                        "SYSINFO has non-numeric {}: {!r}".format(
+                            key, result[key]))
         return result
 
     def libver(self, name: str) -> dict:
@@ -720,12 +765,12 @@ class AmigaConnection:
             result[key] = value
         return result
 
-    def env(self, name: str) -> dict:
+    def env(self, name: str) -> str:
         """Get an AmigaOS environment variable.
 
-        Returns a dict with keys:
-            value: Variable value (str).
-            truncated: "true" if value was truncated (str, optional).
+        Returns the variable's value as a string.
+
+        Raises NotFoundError if the variable does not exist.
         """
         info, payload = self._send_command(
             "ENV {}".format(name))
@@ -733,15 +778,19 @@ class AmigaConnection:
         for line in payload:
             key, _, value = line.partition("=")
             result[key] = value
-        return result
+        return result.get("value", "")
 
-    def setenv(self, name: str, value: Optional[str] = None, volatile: bool = False) -> None:
+    def setenv(self, name: str, value: Optional[str] = None,
+               volatile: bool = False) -> None:
         """Set or delete an AmigaOS environment variable.
 
         name: Variable name.
         value: Value to set. None to delete the variable.
-        volatile: If True, set in ENV: only (lost on reboot).
-                  If False (default), also persist to ENVARC:.
+        volatile: If False (default), the variable is saved to both
+                  ENV: (current session) and ENVARC: (persists across
+                  reboots -- the AmigaOS equivalent of writing to disk).
+                  If True, the variable is set in ENV: only and will be
+                  lost when the Amiga reboots.
         """
         if value is not None:
             if volatile:
@@ -777,8 +826,12 @@ class AmigaConnection:
 
         name must include trailing colon (e.g., "TEST:").
         mode: None (lock-based, default), "late", or "add".
+              Raises ValueError for any other value.
         path: target path. If None, removes the assign.
         """
+        if mode is not None and mode not in ("late", "add"):
+            raise ValueError(
+                "mode must be None, 'late', or 'add', got: {!r}".format(mode))
         if path is not None:
             if mode == "late":
                 self._send_command(
@@ -881,8 +934,8 @@ class AmigaConnection:
         Returns a dict with keys:
             version: Daemon version (str).
             protocol: Protocol version (str).
-            max_clients: Maximum simultaneous clients (str).
-            max_cmd_len: Maximum command line length (str).
+            max_clients: Maximum simultaneous clients (int).
+            max_cmd_len: Maximum command line length (int).
             commands: Comma-separated list of supported commands (str).
         """
         _info, payload = self._send_command("CAPABILITIES")
@@ -890,6 +943,14 @@ class AmigaConnection:
         for line in payload:
             key, _, value = line.partition("=")
             result[key] = value
+        for key in ("max_clients", "max_cmd_len"):
+            if key in result:
+                try:
+                    result[key] = int(result[key])
+                except ValueError:
+                    raise ProtocolError(
+                        "CAPABILITIES has non-numeric {}: {!r}".format(
+                            key, result[key]))
         return result
 
     # -- File operations (continued) ---------------------------------------
@@ -916,7 +977,9 @@ class AmigaConnection:
         """Compute CRC32 checksum of a remote file.
 
         Returns a dict with keys:
-            crc32: Hex string (e.g. "a1b2c3d4").
+            crc32: 8-character lowercase hex string (e.g. "a1b2c3d4").
+                   To convert to an integer: int(result["crc32"], 16).
+                   Matches Python's zlib.crc32() & 0xFFFFFFFF.
             size: File size in bytes (int).
         """
         info, payload = self._send_command(
