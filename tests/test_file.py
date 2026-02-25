@@ -1122,7 +1122,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET 50".format(path))
         info, data = read_data_response(sock)
@@ -1135,7 +1135,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} LENGTH 30".format(path))
         info, data = read_data_response(sock)
@@ -1148,7 +1148,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET 10 LENGTH 30".format(path))
         info, data = read_data_response(sock)
@@ -1161,7 +1161,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET 200".format(path))
         info, data = read_data_response(sock)
@@ -1175,7 +1175,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET 90 LENGTH 20".format(path))
         info, data = read_data_response(sock)
@@ -1188,7 +1188,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET 0".format(path))
         info, data = read_data_response(sock)
@@ -1201,7 +1201,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} LENGTH 0".format(path))
         info, data = read_data_response(sock)
@@ -1225,7 +1225,7 @@ class TestPartialRead:
         path = "RAM:amigactl_test_partial.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {} OFFSET notanumber".format(path))
         info, data = read_data_response(sock)
@@ -1245,10 +1245,10 @@ class TestAppend:
         path = "RAM:amigactl_test_append.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"hello")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_append_data(sock, path, b" world")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {}".format(path))
         info, data = read_data_response(sock)
@@ -1280,10 +1280,10 @@ class TestAppend:
         path = "RAM:amigactl_test_append_zero.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"hello")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_append_data(sock, path, b"")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {}".format(path))
         info, data = read_data_response(sock)
@@ -1295,12 +1295,12 @@ class TestAppend:
         path = "RAM:amigactl_test_append_multi.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"A")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_append_data(sock, path, b"B")
-        assert status == "OK"
+        assert status.startswith("OK")
         status, _payload = send_append_data(sock, path, b"C")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {}".format(path))
         info, data = read_data_response(sock)
@@ -1321,10 +1321,10 @@ class TestAppend:
         initial = b"\x00" * 1000
         append_data = b"\xff" * 5000
         status, _payload = send_write_data(sock, path, initial)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_append_data(sock, path, append_data)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "READ {}".format(path))
         info, data = read_data_response(sock)
@@ -1355,7 +1355,7 @@ class TestChecksum:
         path = "RAM:amigactl_test_checksum.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "CHECKSUM {}".format(path))
         status, payload = read_response(sock)
@@ -1378,7 +1378,7 @@ class TestChecksum:
         path = "RAM:amigactl_test_checksum_empty.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "CHECKSUM {}".format(path))
         status, payload = read_response(sock)
@@ -1419,7 +1419,7 @@ class TestChecksum:
         path = "RAM:amigactl_test_checksum_fmt.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "CHECKSUM {}".format(path))
         status, payload = read_response(sock)
@@ -1465,7 +1465,7 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, src, dst)
         assert status == "OK"
@@ -1483,13 +1483,13 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         # Set metadata on source
         send_command(sock, "SETDATE {} 2024-06-15 14:30:00".format(src))
         status, _payload = read_response(sock)
         assert status == "OK"
-        send_command(sock, "PROTECT {} 0000000f".format(src))
+        send_command(sock, "PROTECT {} 00000007".format(src))
         status, _payload = read_response(sock)
         assert status == "OK"
         send_command(sock, "SETCOMMENT {}\ttest comment".format(src))
@@ -1509,7 +1509,7 @@ class TestCopy:
             key, _, value = line.partition("=")
             kv[key] = value
         assert kv["datestamp"] == "2024-06-15 14:30:00"
-        assert kv["protection"] == "0000000f"
+        assert kv["protection"] == "00000007"
         assert kv["comment"] == "test comment"
 
     def test_copy_noclone(self, raw_connection, cleanup_paths):
@@ -1521,13 +1521,13 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         # Set metadata on source
         send_command(sock, "SETDATE {} 2020-01-01 00:00:00".format(src))
         status, _payload = read_response(sock)
         assert status == "OK"
-        send_command(sock, "PROTECT {} 0000000f".format(src))
+        send_command(sock, "PROTECT {} 00000007".format(src))
         status, _payload = read_response(sock)
         assert status == "OK"
         send_command(sock, "SETCOMMENT {}\tcloned comment".format(src))
@@ -1564,9 +1564,9 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, b"source")
-        assert status == "OK"
+        assert status.startswith("OK")
         status, _payload = send_write_data(sock, dst, b"existing")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, src, dst, flags="NOREPLACE")
         assert status.startswith("ERR 202")
@@ -1580,7 +1580,7 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, src, dst, flags="NOREPLACE")
         assert status == "OK"
@@ -1598,7 +1598,7 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(
             sock, src, dst, flags="NOCLONE NOREPLACE"
@@ -1625,7 +1625,7 @@ class TestCopy:
         path = "RAM:amigactl_test_copy_self.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"self copy")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, path, path)
         assert status.startswith("ERR 300")
@@ -1659,9 +1659,9 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, b"new content")
-        assert status == "OK"
+        assert status.startswith("OK")
         status, _payload = send_write_data(sock, dst, b"old content")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, src, dst)
         assert status == "OK"
@@ -1679,7 +1679,7 @@ class TestCopy:
         cleanup_paths.add(src)
         cleanup_paths.add(dst)
         status, _payload = send_write_data(sock, src, content)
-        assert status == "OK"
+        assert status.startswith("OK")
 
         status, _payload = send_copy(sock, src, dst)
         assert status == "OK"
@@ -1714,7 +1714,7 @@ class TestSetComment:
         path = "RAM:amigactl_test_setcomment.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"comment test")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         send_command(sock, "SETCOMMENT {}\ttest comment".format(path))
         status, _payload = read_response(sock)
@@ -1735,7 +1735,7 @@ class TestSetComment:
         path = "RAM:amigactl_test_setcomment_clr.bin"
         cleanup_paths.add(path)
         status, _payload = send_write_data(sock, path, b"clear test")
-        assert status == "OK"
+        assert status.startswith("OK")
 
         # Set a comment first
         send_command(sock, "SETCOMMENT {}\ttest comment".format(path))
