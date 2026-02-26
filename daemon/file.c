@@ -208,6 +208,26 @@ static int format_dir_entry(const struct FileInfoBlock *fib,
     return len;
 }
 
+/* Join an Amiga directory path with a child filename.
+ * If path ends with ':', omit the '/' separator (volume root).
+ * Returns the number of characters written (excluding NUL), or
+ * -1 if the result would exceed bufsize. */
+static int join_amiga_path(char *buf, int bufsize,
+                           const char *path, const char *child)
+{
+    int n;
+    int len = strlen(path);
+
+    if (len > 0 && path[len - 1] == ':')
+        n = snprintf(buf, bufsize, "%s%s", path, child);
+    else
+        n = snprintf(buf, bufsize, "%s/%s", path, child);
+
+    if (n < 0 || n >= bufsize)
+        return -1;
+    return n;
+}
+
 /* Maximum recursion depth for dir_recurse() to prevent runaway descent */
 #define DIR_MAX_DEPTH 32
 
@@ -277,9 +297,9 @@ static int dir_recurse(LONG fd, const char *path, const char *prefix,
                          prefix, fib->fib_FileName);
             if (n < 0 || n >= (int)sizeof(w->newprefix))
                 continue; /* path too long, skip entry */
-            n = snprintf(w->newpath, sizeof(w->newpath), "%s/%s",
-                         path, fib->fib_FileName);
-            if (n < 0 || n >= (int)sizeof(w->newpath))
+            n = join_amiga_path(w->newpath, sizeof(w->newpath),
+                                path, (const char *)fib->fib_FileName);
+            if (n < 0)
                 continue; /* path too long, skip entry */
             rc = dir_recurse(fd, w->newpath, w->newprefix, depth + 1);
             if (rc < 0)
@@ -407,9 +427,9 @@ int cmd_dir(struct client *c, const char *args)
                          fib->fib_FileName);
             if (n < 0 || n >= (int)sizeof(subprefix))
                 continue; /* path too long, skip entry */
-            n = snprintf(subpath, sizeof(subpath), "%s/%s",
-                         path, fib->fib_FileName);
-            if (n < 0 || n >= (int)sizeof(subpath))
+            n = join_amiga_path(subpath, sizeof(subpath),
+                                path, (const char *)fib->fib_FileName);
+            if (n < 0)
                 continue; /* path too long, skip entry */
             if (dir_recurse(c->fd, subpath, subprefix, 0) < 0) {
                 FreeDosObject(DOS_FIB, fib);
@@ -1332,7 +1352,7 @@ static ULONG crc32_update(ULONG crc, const char *buf, int len)
     return crc;
 }
 
-/* ---- New wave 1 command handlers ---- */
+/* ---- Additional file command handlers ---- */
 
 int cmd_copy(struct client *c, const char *args)
 {

@@ -1222,6 +1222,7 @@ class AmigaShell(cmd.Cmd):
 
         print(self.cw.success(
             "Appended {} bytes to {}".format(written, remote)))
+        self._dir_cache.invalidate()
 
     def complete_append(self, text, line, begidx, endidx):
         """Complete append: first arg is local, second is Amiga path."""
@@ -1746,6 +1747,7 @@ class AmigaShell(cmd.Cmd):
         result = self._run(self.conn.setcomment, path, comment)
         if result is not None:
             print(self.cw.success("Comment set on {}".format(path)))
+            self._dir_cache.invalidate()
 
     do_comment = do_setcomment
 

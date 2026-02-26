@@ -5,12 +5,12 @@ Remote access toolkit for AmigaOS.
 amigactl provides structured, programmatic remote access to AmigaOS over TCP.
 It consists of a lightweight C daemon (amigactld) running on the Amiga and a
 Python client library and CLI tool on the client side. Together they expose
-39 commands spanning file operations (copy, checksum, streaming), CLI command
-execution, ARexx dispatch, environment variables, library version queries, and
-system introspection (assigns, volumes, ports, tasks, devices) through a simple
-text protocol with machine-parseable responses. The interactive shell adds
-search and navigation commands (find, tree, grep, diff, du). Designed for
-trusted LANs and emulator setups.
+35 daemon commands spanning file operations (copy, checksum, streaming), CLI
+command execution, ARexx dispatch, environment variables, library version
+queries, and system introspection (assigns, volumes, ports, tasks, devices)
+through a simple text protocol with machine-parseable responses. The interactive
+shell adds 6 client-side search and navigation commands (find, tree, grep, diff,
+du, watch). Designed for trusted LANs and emulator setups.
 
 ## Architecture
 
@@ -455,6 +455,7 @@ amigactl/
 |   +-- mkicon.py                    # Workbench icon generator
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
+|   +-- amigactld.info               # Workbench icon
 |   +-- build_lha.sh                 # LHA packaging script
 +-- docs/
 |   +-- PROTOCOL.md                  # Wire protocol spec

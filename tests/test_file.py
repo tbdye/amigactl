@@ -211,6 +211,169 @@ class TestDir:
         assert payload == []
 
 
+def _setup_recursive_fixture(sock, cleanup_paths):
+    """Create a test directory structure on RAM: for recursive DIR tests."""
+    # Pre-clean stale data from interrupted prior runs (deepest first)
+    _stale = [
+        "RAM:amigactl_rectest_proto/sub1/deep/file3.txt",
+        "RAM:amigactl_rectest_proto/sub1/deep",
+        "RAM:amigactl_rectest_proto/sub1/file2.txt",
+        "RAM:amigactl_rectest_proto/sub1",
+        "RAM:amigactl_rectest_proto/file1.txt",
+        "RAM:amigactl_rectest_proto",
+    ]
+    for path in _stale:
+        send_command(sock, "DELETE {}".format(path))
+        try:
+            read_response(sock)
+        except Exception:
+            pass
+
+    # Create directories
+    send_command(sock, "MAKEDIR RAM:amigactl_rectest_proto")
+    status, _ = read_response(sock)
+    assert status == "OK", "MAKEDIR amigactl_rectest_proto failed: {}".format(status)
+    cleanup_paths.add("RAM:amigactl_rectest_proto")
+
+    send_command(sock, "MAKEDIR RAM:amigactl_rectest_proto/sub1")
+    status, _ = read_response(sock)
+    assert status == "OK"
+    cleanup_paths.add("RAM:amigactl_rectest_proto/sub1")
+
+    send_command(sock, "MAKEDIR RAM:amigactl_rectest_proto/sub1/deep")
+    status, _ = read_response(sock)
+    assert status == "OK"
+    cleanup_paths.add("RAM:amigactl_rectest_proto/sub1/deep")
+
+    # Create files
+    status, _ = send_write_data(sock, "RAM:amigactl_rectest_proto/file1.txt", b"top")
+    assert status.startswith("OK")
+    cleanup_paths.add("RAM:amigactl_rectest_proto/file1.txt")
+
+    status, _ = send_write_data(sock, "RAM:amigactl_rectest_proto/sub1/file2.txt", b"mid")
+    assert status.startswith("OK")
+    cleanup_paths.add("RAM:amigactl_rectest_proto/sub1/file2.txt")
+
+    status, _ = send_write_data(sock, "RAM:amigactl_rectest_proto/sub1/deep/file3.txt", b"deep")
+    assert status.startswith("OK")
+    cleanup_paths.add("RAM:amigactl_rectest_proto/sub1/deep/file3.txt")
+
+
+class TestDirRecursiveVolumeRoot:
+    """Tests for DIR RECURSIVE when the base path is a volume root.
+
+    Regression tests for the bug where snprintf("%s/%s", "RAM:", child)
+    produced invalid paths like "RAM:/C" instead of "RAM:C", causing
+    recursion to silently stop at the first level.
+    """
+
+    def test_dir_recursive_volume_root(self, raw_connection, cleanup_paths):
+        """DIR RAM: RECURSIVE returns entries with nested paths."""
+        sock, _ = raw_connection
+        _setup_recursive_fixture(sock, cleanup_paths)
+
+        send_command(sock, "DIR RAM: RECURSIVE")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        # Parse entry names from tab-separated payload
+        names = []
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 2:
+                names.append(fields[1])
+
+        # At least one entry should have / in the name (proves recursion works)
+        nested = [n for n in names if "/" in n]
+        assert len(nested) > 0, \
+            "No nested entries found -- recursion from volume root may be broken"
+
+        # Our deep test file should be reachable
+        deep_matches = [n for n in names
+                        if "amigactl_rectest_proto/sub1/file2.txt" in n.lower()]
+        assert len(deep_matches) > 0, \
+            "sub1/file2.txt not found in recursive listing from RAM:"
+
+    def test_dir_recursive_volume_root_entry_names(self, raw_connection,
+                                                    cleanup_paths):
+        """DIR on a non-volume-root path returns correct nested names."""
+        sock, _ = raw_connection
+        _setup_recursive_fixture(sock, cleanup_paths)
+
+        send_command(sock, "DIR RAM:amigactl_rectest_proto RECURSIVE")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        names = []
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 2:
+                names.append(fields[1])
+
+        # Normalize to lowercase for case-insensitive matching
+        names_lower = [n.lower() for n in names]
+
+        expected = [
+            "file1.txt",
+            "sub1",
+            "sub1/file2.txt",
+            "sub1/deep",
+            "sub1/deep/file3.txt",
+        ]
+        for exp in expected:
+            assert exp in names_lower, \
+                "Expected '{}' in listing, got: {}".format(exp, names)
+
+        assert len(names) == 5, \
+            "Expected 5 entries, got {}: {}".format(len(names), names)
+
+    def test_dir_recursive_volume_root_produces_nested(self, raw_connection,
+                                                        cleanup_paths):
+        """DIR RAM: RECURSIVE produces entries with two levels of nesting."""
+        sock, _ = raw_connection
+        _setup_recursive_fixture(sock, cleanup_paths)
+
+        send_command(sock, "DIR RAM: RECURSIVE")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        names = []
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 2:
+                names.append(fields[1])
+
+        # Find entries with 2+ levels of / (proves deep recursion from volume root)
+        deep_matches = [n for n in names
+                        if "amigactl_rectest_proto/sub1/deep" in n.lower()]
+        assert len(deep_matches) > 0, \
+            "No deeply nested entries found from volume root listing"
+
+    def test_dir_recursive_subdir_still_works(self, raw_connection,
+                                               cleanup_paths):
+        """DIR on a subdirectory path still works correctly after the fix."""
+        sock, _ = raw_connection
+        _setup_recursive_fixture(sock, cleanup_paths)
+
+        send_command(sock, "DIR RAM:amigactl_rectest_proto/sub1 RECURSIVE")
+        status, payload = read_response(sock)
+        assert status == "OK"
+
+        names = []
+        for line in payload:
+            fields = line.split("\t")
+            if len(fields) >= 2:
+                names.append(fields[1])
+
+        names_lower = [n.lower() for n in names]
+
+        assert "file2.txt" in names_lower
+        assert "deep" in names_lower
+        assert "deep/file3.txt" in names_lower
+        assert len(names) == 3, \
+            "Expected 3 entries, got {}: {}".format(len(names), names)
+
+
 # ---------------------------------------------------------------------------
 # STAT
 # ---------------------------------------------------------------------------

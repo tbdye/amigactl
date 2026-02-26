@@ -5,6 +5,8 @@ daemon.  They exercise the formatting and path manipulation helpers used
 by the interactive shell.
 """
 
+import cmd
+import io
 import os
 from unittest import mock
 
@@ -22,6 +24,8 @@ from amigactl.shell import (
     _format_tree,
     _grep_lines,
     _du_accumulate,
+    AmigaShell,
+    _DirCache,
 )
 from amigactl.colors import ColorWriter, _supports_color
 
@@ -525,3 +529,432 @@ class TestDu:
         ]
         result, total = _du_accumulate(entries)
         assert total == 350
+
+
+# ---------------------------------------------------------------------------
+# Shell command tests (mock-based)
+# ---------------------------------------------------------------------------
+
+def _make_shell():
+    """Create an AmigaShell with a mocked connection for unit testing."""
+    shell = AmigaShell.__new__(AmigaShell)
+    cmd.Cmd.__init__(shell)
+    shell.host = "test"
+    shell.port = 6800
+    shell.timeout = 30
+    shell.conn = mock.MagicMock()
+    shell.cw = ColorWriter(force_color=False)
+    shell.cwd = "SYS:"
+    shell._dir_cache = _DirCache()
+    shell._editor = None
+    return shell
+
+
+class TestDoTree:
+    """Tests for do_tree shell command."""
+
+    def test_tree_basic(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        shell.do_tree("SYS:")
+        out = capsys.readouterr().out
+        assert "SYS:" in out
+        assert "2 directories, 2 files" in out
+        assert "Copy" in out
+        assert "Startup-Sequence" in out
+
+    def test_tree_ascii(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        shell.do_tree("--ascii SYS:")
+        out = capsys.readouterr().out
+        assert "|--" in out or "`--" in out
+        # Unicode box chars should be absent
+        assert "\u251c" not in out
+        assert "\u2514" not in out
+
+    def test_tree_dirs_only(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        shell.do_tree("-d SYS:")
+        out = capsys.readouterr().out
+        assert "2 directories, 0 files" in out
+        assert "Copy" not in out
+        assert "Startup-Sequence" not in out
+
+    def test_tree_empty(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = []
+        shell.do_tree("RAM:")
+        out = capsys.readouterr().out
+        assert "0 directories, 0 files" in out
+
+
+class TestDoFind:
+    """Tests for do_find shell command."""
+
+    def test_find_name_pattern(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("readme.txt"),
+            _entry("icon.info"),
+            _entry("notes.txt"),
+            _entry("sub", "DIR", 0),
+        ]
+        shell.do_find("SYS: *.info")
+        out = capsys.readouterr().out
+        assert "icon.info" in out
+        assert "readme.txt" not in out
+
+    def test_find_type_file(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("readme.txt"),
+            _entry("sub", "DIR", 0),
+            _entry("sub/note.txt"),
+        ]
+        shell.do_find("SYS: -type f *")
+        out = capsys.readouterr().out
+        assert "readme.txt" in out
+        assert "sub/note.txt" in out
+        # "sub" by itself (the dir) should not appear
+        lines = [l.strip() for l in out.strip().split("\n") if l.strip()]
+        dir_only_lines = [l for l in lines if l.strip() == "sub"]
+        assert len(dir_only_lines) == 0
+
+    def test_find_type_dir(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("readme.txt"),
+            _entry("sub", "DIR", 0),
+            _entry("sub/note.txt"),
+        ]
+        shell.do_find("SYS: -type d *")
+        out = capsys.readouterr().out
+        assert "sub" in out
+        assert "readme.txt" not in out
+
+    def test_find_no_matches(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("readme.txt"),
+            _entry("notes.txt"),
+        ]
+        shell.do_find("SYS: *.nonexistent")
+        out = capsys.readouterr().out
+        assert out.strip() == ""
+
+
+class TestDoDu:
+    """Tests for do_du shell command."""
+
+    def test_du_basic(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("A", "DIR", 0),
+            _entry("A/file1", size=100),
+            _entry("A/file2", size=200),
+            _entry("B", "DIR", 0),
+            _entry("B/file3", size=50),
+        ]
+        shell.do_du("SYS:")
+        out = capsys.readouterr().out
+        assert "A" in out
+        assert "B" in out
+
+    def test_du_summary(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("A", "DIR", 0),
+            _entry("A/file1", size=100),
+            _entry("A/file2", size=200),
+        ]
+        shell.do_du("-s SYS:")
+        out = capsys.readouterr().out
+        lines = [l for l in out.strip().split("\n") if l.strip()]
+        assert len(lines) == 1
+        assert "SYS:" in lines[0]
+
+    def test_du_human_readable(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("big", "DIR", 0),
+            _entry("big/large.dat", size=1048576),
+        ]
+        shell.do_du("-h SYS:")
+        out = capsys.readouterr().out
+        # Should contain K or M suffixes
+        assert "M" in out or "K" in out
+
+
+class TestDoGrep:
+    """Tests for do_grep shell command."""
+
+    def test_grep_recursive(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("file1.txt"),
+            _entry("file2.txt"),
+        ]
+        shell.conn.read.side_effect = [
+            b"hello world\ngoodbye\n",
+            b"nothing here\nhello again\n",
+        ]
+        shell.do_grep("-r hello SYS:")
+        out = capsys.readouterr().out
+        assert "hello world" in out
+        assert "hello again" in out
+
+    def test_grep_case_insensitive(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("test.txt"),
+        ]
+        shell.conn.read.return_value = b"Hello World\nhello world\nHELLO\n"
+        shell.do_grep("-ri HELLO SYS:")
+        out = capsys.readouterr().out
+        assert out.count("\n") >= 3  # all 3 lines match
+
+    def test_grep_line_numbers(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("test.txt"),
+        ]
+        shell.conn.read.return_value = b"alpha\nbeta\ngamma\nbeta again\n"
+        shell.do_grep("-rn beta SYS:")
+        out = capsys.readouterr().out
+        assert "2:" in out
+        assert "4:" in out
+
+    def test_grep_count(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("test.txt"),
+        ]
+        shell.conn.read.return_value = b"hello\nworld\nhello again\n"
+        shell.do_grep("-rc hello SYS:")
+        out = capsys.readouterr().out
+        assert "2" in out
+
+    def test_grep_filenames_only(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("match.txt"),
+            _entry("nomatch.txt"),
+        ]
+        shell.conn.read.side_effect = [
+            b"hello world\n",
+            b"nothing here\n",
+        ]
+        shell.do_grep("-rl hello SYS:")
+        out = capsys.readouterr().out
+        assert "match.txt" in out
+        assert "hello world" not in out
+
+    def test_grep_regex(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("test.txt"),
+        ]
+        shell.conn.read.return_value = b"error: broke\nwarning: check\ninfo: ok\n"
+        shell.do_grep("-rE 'error|warn' SYS:")
+        out = capsys.readouterr().out
+        assert "error" in out
+        assert "warn" in out
+
+    def test_grep_single_file(self, capsys):
+        shell = _make_shell()
+        shell.conn.read.return_value = b"hello world\ngoodbye\n"
+        shell.do_grep("hello SYS:test.txt")
+        out = capsys.readouterr().out
+        assert "hello world" in out
+        assert "goodbye" not in out
+
+
+class TestDoLs:
+    """Tests for do_ls shell command."""
+
+    def test_ls_basic(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("file1.txt"),
+            _entry("sub", "DIR", 0),
+            _entry("file2.txt"),
+        ]
+        shell.do_ls("SYS:")
+        out = capsys.readouterr().out
+        assert "file1.txt" in out
+        assert "sub" in out
+        assert "file2.txt" in out
+
+    def test_ls_long_format(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("file1.txt", size=1234),
+        ]
+        shell.do_ls("-l SYS:")
+        out = capsys.readouterr().out
+        assert "file1.txt" in out
+        assert "1234" in out or "rwed" in out
+
+    def test_ls_recursive(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("C", "DIR", 0),
+            _entry("C/Copy", size=1234),
+            _entry("S", "DIR", 0),
+            _entry("S/Startup-Sequence", size=200),
+        ]
+        shell.do_ls("-r SYS:")
+        out = capsys.readouterr().out
+        assert "C/Copy" in out or "Copy" in out
+        assert "S/Startup-Sequence" in out or "Startup-Sequence" in out
+
+    def test_ls_glob_pattern(self, capsys):
+        shell = _make_shell()
+        shell.conn.dir.return_value = [
+            _entry("readme.txt"),
+            _entry("icon.info"),
+            _entry("notes.txt"),
+        ]
+        shell.do_ls("*.info")
+        out = capsys.readouterr().out
+        assert "icon.info" in out
+        assert "readme.txt" not in out
+
+    def test_ls_cwd_fallback(self, capsys):
+        shell = _make_shell()
+        shell.cwd = "SYS:"
+        shell.conn.dir.return_value = [
+            _entry("file.txt"),
+        ]
+        shell.do_ls("")
+        shell.conn.dir.assert_called_once_with("SYS:", recursive=False)
+
+
+class TestDoCd:
+    """Tests for do_cd shell command."""
+
+    def test_cd_absolute(self, capsys):
+        shell = _make_shell()
+        shell.conn.stat.return_value = {
+            "type": "DIR", "name": "Work", "size": 0,
+            "protection": "00", "datestamp": "2026-01-01 12:00:00",
+        }
+        shell.do_cd("Work:")
+        assert shell.cwd == "Work:"
+
+    def test_cd_relative(self, capsys):
+        shell = _make_shell()
+        shell.cwd = "SYS:"
+        shell.conn.stat.return_value = {
+            "type": "DIR", "name": "S", "size": 0,
+            "protection": "00", "datestamp": "2026-01-01 12:00:00",
+        }
+        shell.do_cd("S")
+        assert shell.cwd == "SYS:S"
+
+    def test_cd_parent(self, capsys):
+        shell = _make_shell()
+        shell.cwd = "SYS:S"
+        shell.conn.stat.return_value = {
+            "type": "DIR", "name": "SYS", "size": 0,
+            "protection": "00", "datestamp": "2026-01-01 12:00:00",
+        }
+        shell.do_cd("..")
+        assert shell.cwd == "SYS:"
+
+    def test_cd_no_args(self, capsys):
+        shell = _make_shell()
+        shell.cwd = "Work:Projects"
+        shell.conn.stat.return_value = {
+            "type": "DIR", "name": "SYS", "size": 0,
+            "protection": "00", "datestamp": "2026-01-01 12:00:00",
+        }
+        shell.do_cd("")
+        assert shell.cwd == "SYS:"
+
+
+class TestDoCp:
+    """Tests for do_cp shell command."""
+
+    def test_cp_basic(self, capsys):
+        shell = _make_shell()
+        shell.do_cp("RAM:a.txt RAM:b.txt")
+        shell.conn.copy.assert_called_once_with(
+            "RAM:a.txt", "RAM:b.txt", noclone=False, noreplace=False)
+
+    def test_cp_noclone(self, capsys):
+        shell = _make_shell()
+        shell.do_cp("-P RAM:a.txt RAM:b.txt")
+        shell.conn.copy.assert_called_once_with(
+            "RAM:a.txt", "RAM:b.txt", noclone=True, noreplace=False)
+
+    def test_cp_noreplace(self, capsys):
+        shell = _make_shell()
+        shell.do_cp("-n RAM:a.txt RAM:b.txt")
+        shell.conn.copy.assert_called_once_with(
+            "RAM:a.txt", "RAM:b.txt", noclone=False, noreplace=True)
+
+    def test_cp_combined_flags(self, capsys):
+        shell = _make_shell()
+        shell.do_cp("-Pn RAM:a.txt RAM:b.txt")
+        shell.conn.copy.assert_called_once_with(
+            "RAM:a.txt", "RAM:b.txt", noclone=True, noreplace=True)
+
+
+class TestDoCat:
+    """Tests for do_cat shell command."""
+
+    def test_cat_basic(self):
+        shell = _make_shell()
+        shell.conn.read.return_value = b"hello"
+        with mock.patch("sys.stdout") as mock_stdout:
+            mock_stdout.buffer = mock.MagicMock()
+            shell.do_cat("SYS:test.txt")
+        shell.conn.read.assert_called_once()
+        args, kwargs = shell.conn.read.call_args
+        assert args[0] == "SYS:test.txt"
+
+    def test_cat_offset(self):
+        shell = _make_shell()
+        shell.conn.read.return_value = b"data"
+        with mock.patch("sys.stdout") as mock_stdout:
+            mock_stdout.buffer = mock.MagicMock()
+            shell.do_cat("--offset 10 SYS:test.txt")
+        args, kwargs = shell.conn.read.call_args
+        assert kwargs.get("offset") == 10 or (len(args) > 1 and args[1] == 10)
+
+    def test_cat_length(self):
+        shell = _make_shell()
+        shell.conn.read.return_value = b"data"
+        with mock.patch("sys.stdout") as mock_stdout:
+            mock_stdout.buffer = mock.MagicMock()
+            shell.do_cat("--length 5 SYS:test.txt")
+        args, kwargs = shell.conn.read.call_args
+        assert kwargs.get("length") == 5 or (len(args) > 2 and args[2] == 5)
+
+    def test_cat_offset_and_length(self):
+        shell = _make_shell()
+        shell.conn.read.return_value = b"data"
+        with mock.patch("sys.stdout") as mock_stdout:
+            mock_stdout.buffer = mock.MagicMock()
+            shell.do_cat("--offset 10 --length 5 SYS:test.txt")
+        args, kwargs = shell.conn.read.call_args
+        assert kwargs.get("offset") == 10 or (len(args) > 1 and args[1] == 10)
+        assert kwargs.get("length") == 5 or (len(args) > 2 and args[2] == 5)

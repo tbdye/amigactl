@@ -72,7 +72,7 @@ response fields, error conditions, and example transcripts.
 
 | Method | Returns | Docs |
 |--------|---------|------|
-| `sysinfo()` | `dict` -- memory values are `int`, version strings are `str` | [SYSINFO](COMMANDS.md#sysinfo) |
+| `sysinfo()` | `dict` -- see keys below | [SYSINFO](COMMANDS.md#sysinfo) |
 | `libver(name)` | `dict` -- name, version | [LIBVER](COMMANDS.md#libver) |
 | `env(name)` | `str` -- the variable value | [ENV](COMMANDS.md#env) |
 | `setenv(name, value=None, volatile=False)` | None | [SETENV](COMMANDS.md#setenv) |
@@ -83,6 +83,21 @@ response fields, error conditions, and example transcripts.
 | `tasks()` | `list[dict]` | [TASKS](COMMANDS.md#tasks) |
 | `devices()` | `list[dict]` -- name, version | [DEVICES](COMMANDS.md#devices) |
 | `capabilities()` | `dict` -- max\_clients and max\_cmd\_len are `int`, rest are `str` | [CAPABILITIES](COMMANDS.md#capabilities) |
+
+**`sysinfo()` keys:**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `chip_free` | `int` | Free chip memory (bytes) |
+| `fast_free` | `int` | Free fast memory (bytes) |
+| `total_free` | `int` | Total free memory (bytes) |
+| `chip_total` | `int` | Total chip memory (bytes; omitted on exec < v39) |
+| `fast_total` | `int` | Total fast memory (bytes; omitted on exec < v39) |
+| `chip_largest` | `int` | Largest contiguous chip block (bytes) |
+| `fast_largest` | `int` | Largest contiguous fast block (bytes) |
+| `exec_version` | `str` | exec.library version (e.g., `"40.68"`) |
+| `kickstart` | `str` | Kickstart revision (e.g., `"40"`) |
+| `bsdsocket` | `str` | bsdsocket.library version (e.g., `"4.364"`) |
 
 ### ARexx and Streaming
 
@@ -100,9 +115,14 @@ essential for correct interaction with AmigaOS.
 ### Path conventions
 
 - Paths use `volume:path/to/file` format (e.g., `SYS:S/Startup-Sequence`)
+- Every absolute path starts with a volume or assign name followed by a
+  colon. There is no leading `/` -- `SYS:C/Dir` is correct, `/C/Dir` is
+  not
 - `/` alone after a path component means parent directory (like `..`)
 - The daemon does NOT translate `..` -- use `/` or resolve client-side
-- Path matching is case-insensitive on most Amiga filesystems
+- Path matching is case-insensitive on most Amiga filesystems, but
+  case-preserving. `SYS:s/startup-sequence` works, but `stat()` returns
+  the name as stored on disk
 
 ### Common volumes
 
@@ -116,6 +136,21 @@ essential for correct interaction with AmigaOS.
 | `LIBS:` | Shared libraries (usually `SYS:Libs`) | `/usr/lib` |
 | `DEVS:` | Device drivers (usually `SYS:Devs`) | `/dev` |
 | `WORK:` | Secondary storage (convention) | `/home` |
+
+### Environment variable persistence
+
+AmigaOS has a two-tier environment variable system unlike anything on
+Unix:
+
+- `ENV:` -- RAM-based, per-session. Variables here are available to
+  running programs but lost on reboot.
+- `ENVARC:` -- Disk-based, persistent. Variables here survive reboots.
+  On boot, `ENVARC:` is copied to `ENV:`.
+
+`setenv(name, value)` writes to both `ENV:` and `ENVARC:` (persistent).
+`setenv(name, value, volatile=True)` writes to `ENV:` only (lost on
+reboot). The `volatile` flag is for temporary values you do not want to
+survive a reboot.
 
 ### Text encoding
 
@@ -146,6 +181,38 @@ depending on how strict you want to be.
 AmigaOS protection bits are inverted for RWED: a SET bit means DENIED
 (opposite of Unix). The `protect()` method returns/accepts raw hex.
 See [PROTECT](COMMANDS.md#protect) for the bit layout.
+
+**Important:** Protection bits on AmigaOS are advisory, not enforced
+by the filesystem kernel. Any program can read or write any file
+regardless of its protection bits. The only exception is the delete-
+protect bit (bit 0), which the filesystem does enforce. Do not rely on
+protection bits for access control.
+
+### File comments
+
+AmigaOS supports a per-file comment string (called a "filenote") stored
+in the filesystem metadata. There is no Unix equivalent. Comments are
+up to 79 characters, cannot contain tab characters (0x09), and are
+returned by `stat()` in the `comment` key. Use `setcomment(path, text)`
+to set and `setcomment(path, "")` to clear.
+
+### Assign types
+
+AmigaOS distinguishes between **volumes** and **assigns**. A volume
+(e.g., `SYS:`, `RAM:`, `WORK:`) is a mounted filesystem.  An assign
+(e.g., `C:`, `LIBS:`, `T:`) is a logical name that maps to one or more
+directories on volumes. `volumes()` lists the former; `assigns()` lists
+the latter.
+
+The `assign()` method supports three modes:
+
+| Mode | Usage | Behavior |
+|------|-------|----------|
+| Lock (default) | `assign("TEST:", "WORK:test")` | Locks the path immediately. Fails if path does not exist. |
+| Late | `assign("TEST:", "WORK:test", mode="late")` | Path is not resolved until first access. Useful for paths on removable media. |
+| Add | `assign("TEST:", "WORK:extra", mode="add")` | Adds a directory to an existing multi-directory assign. The assign must already exist. |
+
+Remove an assign by calling `assign("TEST:")` with no path.
 
 ## Key Patterns
 
@@ -208,6 +275,63 @@ except AmigactlError as e:
     print(f"Amiga error: {e.message} (code {e.code})")
 ```
 
+### Deploy and reboot
+
+Writing a binary and rebooting is the standard deployment pattern. The
+FFS buffer cache can lose recent writes if the reboot happens too
+quickly (see Gotcha 10). Sleep before rebooting to let the cache flush.
+
+```python
+import time
+
+amiga.write("C:amigactld", new_binary)
+time.sleep(5)  # let FFS buffer cache flush to disk
+amiga.reboot()
+```
+
+### Reconnect after reboot
+
+After `reboot()`, the connection is dead. The Amiga takes 15-45 seconds
+to boot depending on hardware and startup sequence. Poll `connect()`
+in a retry loop.
+
+```python
+import time
+from amigactl import AmigaConnection
+
+amiga.reboot()
+time.sleep(20)  # minimum boot time
+
+for attempt in range(12):
+    try:
+        amiga = AmigaConnection(host)
+        amiga.connect()
+        break
+    except OSError:
+        time.sleep(5)
+else:
+    raise RuntimeError("Amiga did not come back after reboot")
+
+print(amiga.version())
+# Remember to call amiga.close() when done, or use a context manager.
+```
+
+### Verify file integrity after write
+
+Use `checksum()` with Python's `zlib.crc32()` to verify a file was
+written correctly.
+
+```python
+import zlib
+
+data = open("local_file", "rb").read()
+amiga.write("C:my_program", data)
+result = amiga.checksum("C:my_program")
+local_crc = "{:08x}".format(zlib.crc32(data) & 0xFFFFFFFF)
+assert result["crc32"] == local_crc, "CRC mismatch"
+assert result["size"] == len(data), "Size mismatch"
+```
+
 ## Error Handling
 
 All exception classes are importable from `amigactl`.
@@ -223,6 +347,37 @@ All exception classes are importable from `amigactl`.
 - `ProtocolError` -- wire protocol violation (client-side)
   - `ServerError` -- server returned ERR status
   - `BinaryTransferError` -- ERR during binary transfer
+
+## Raw Protocol Access
+
+The `amigactl.protocol` module exposes the wire protocol primitives used
+internally by `AmigaConnection`. Import it for edge cases not covered
+by the high-level API (e.g., reading the `truncated` field from ENV
+responses, or implementing custom command sequences).
+
+```python
+from amigactl.protocol import (
+    ENCODING,           # "iso-8859-1"
+    read_line,          # read_line(sock) -> str
+    read_response,      # read_response(sock) -> (status, info, payload)
+    send_command,       # send_command(sock, cmd) -> None
+    recv_exact,         # recv_exact(sock, nbytes) -> bytes
+    read_binary_response,  # read DATA/END chunks after OK
+    read_exec_response,    # read EXEC-style OK rc=N + DATA/END
+    send_data_chunks,      # send DATA/END chunks to server
+    ProtocolError,         # wire protocol violation
+    ServerError,           # server returned ERR status
+    BinaryTransferError,   # ERR during binary transfer
+)
+```
+
+`read_response()` returns `(status, info, payload_lines)` where
+`status` is `"OK"` or `"ERR"`, `info` is the remainder of the status
+line, and `payload_lines` is a list of dot-unstuffed strings. This gives
+access to fields that `AmigaConnection` methods may not expose (e.g.,
+the `truncated=true` line in an ENV response).
+
+See [PROTOCOL.md](PROTOCOL.md) for the wire format specification.
 
 ## Gotchas
 
@@ -255,3 +410,19 @@ All exception classes are importable from `amigactl`.
 9. **checksum() returns hex string, not int.** The `crc32` field is an
    8-character lowercase hex string (e.g., `"a1b2c3d4"`), not a Python
    integer.  Use `int(result["crc32"], 16)` to convert if needed.
+
+10. **reboot() can lose recent writes.** AmigaOS FFS uses a buffer cache.
+    Writes may not be flushed to disk when `reboot()` calls ColdReboot().
+    Sleep at least 5 seconds between the last `write()` and `reboot()`.
+    See the "Deploy and reboot" pattern above.
+
+11. **RAM: is volatile.** Everything on `RAM:` (and `T:`, which usually
+    points to `RAM:T`) is lost on reboot. Do not store anything there
+    that must survive a restart.
+
+12. **env() silently truncates large values.** The daemon reads
+    environment variables into a 4096-byte buffer. Values longer than
+    4095 characters are truncated. The response includes a
+    `truncated=true` field when this happens, but `env()` returns only
+    the value string and discards it. Use the raw protocol
+    (`read_response()`) if you need to detect truncation.
