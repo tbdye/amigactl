@@ -5,7 +5,7 @@ Remote access toolkit for AmigaOS.
 amigactl provides structured, programmatic remote access to AmigaOS over TCP.
 It consists of a lightweight C daemon (amigactld) running on the Amiga and a
 Python client library and CLI tool on the client side. Together they expose
-35 daemon commands spanning file operations (copy, checksum, streaming), CLI
+36 daemon commands spanning file operations (copy, checksum, streaming), CLI
 command execution, ARexx dispatch, environment variables, library version
 queries, and system introspection (assigns, volumes, ports, tasks, devices)
 through a simple text protocol with machine-parseable responses. The interactive
