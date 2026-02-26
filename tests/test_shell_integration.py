@@ -9,12 +9,26 @@ Usage:
 """
 
 import cmd
+import socket
 
 import pytest
 
 from amigactl.shell import AmigaShell, _DirCache
 from amigactl.colors import ColorWriter
-from conftest import send_command, send_write_data, read_response
+from conftest import (
+    _read_line, pre_clean, send_command, send_write_data, read_response,
+)
+
+# Paths managed by the fixture (deepest first for cleanup).
+# Must stay in sync with the explicit MAKEDIR/WRITE commands in setup.
+_FIXTURE_PATHS = [
+    "RAM:amigactl_rectest_shell/sub1/deep/file3.txt",
+    "RAM:amigactl_rectest_shell/sub1/deep",
+    "RAM:amigactl_rectest_shell/sub1/file2.txt",
+    "RAM:amigactl_rectest_shell/sub1",
+    "RAM:amigactl_rectest_shell/file1.txt",
+    "RAM:amigactl_rectest_shell",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +52,16 @@ def shell(conn):
 
 
 # ---------------------------------------------------------------------------
-# Shared test data fixture
+# Module-scoped test data fixture
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def shell_fixture(raw_connection, cleanup_paths):
-    """Create a known directory structure on RAM: for shell integration tests.
+@pytest.fixture(scope="module")
+def shell_fixture(request):
+    """Create a known directory structure on RAM: once per module.
+
+    Uses its own connection for setup and teardown to avoid depending
+    on function-scoped fixtures.  The structure is read-only during
+    tests, so sharing across all tests in the module is safe.
 
     Structure:
         RAM:amigactl_rectest_shell/
@@ -53,58 +71,70 @@ def shell_fixture(raw_connection, cleanup_paths):
                 deep/
                     file3.txt  ("deep level file\\nhello deep\\n")
     """
-    sock, _ = raw_connection
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
 
-    # Pre-clean stale data from interrupted prior runs (deepest first)
-    _stale = [
-        "RAM:amigactl_rectest_shell/sub1/deep/file3.txt",
-        "RAM:amigactl_rectest_shell/sub1/deep",
-        "RAM:amigactl_rectest_shell/sub1/file2.txt",
-        "RAM:amigactl_rectest_shell/sub1",
-        "RAM:amigactl_rectest_shell/file1.txt",
-        "RAM:amigactl_rectest_shell",
-    ]
-    for path in _stale:
-        send_command(sock, "DELETE {}".format(path))
+    # --- Setup: open a connection and create the directory structure ---
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(10)
+    sock.connect((host, port))
+    _read_line(sock)  # banner
+
+    try:
+        # Pre-clean stale data from interrupted prior runs (deepest first)
+        for path in _FIXTURE_PATHS:
+            pre_clean(sock, path)
+
+        # Create directories
+        send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell")
+        status, _ = read_response(sock)
+        assert status == "OK", "MAKEDIR amigactl_rectest_shell: {}".format(status)
+
+        send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell/sub1")
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell/sub1/deep")
+        status, _ = read_response(sock)
+        assert status == "OK"
+
+        # Create files
+        status, _ = send_write_data(
+            sock, "RAM:amigactl_rectest_shell/file1.txt",
+            b"top level file\n")
+        assert status.startswith("OK")
+
+        status, _ = send_write_data(
+            sock, "RAM:amigactl_rectest_shell/sub1/file2.txt",
+            b"mid level file\nhello world\n")
+        assert status.startswith("OK")
+
+        status, _ = send_write_data(
+            sock, "RAM:amigactl_rectest_shell/sub1/deep/file3.txt",
+            b"deep level file\nhello deep\n")
+        assert status.startswith("OK")
+    except Exception:
+        sock.close()
+        raise
+
+    sock.close()
+
+    # --- Yield: all module tests run here ---
+    yield
+
+    # --- Teardown: PROTECT + DELETE in deepest-first order ---
+    try:
+        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock2.settimeout(10)
+        sock2.connect((host, port))
+        _read_line(sock2)  # banner
         try:
-            read_response(sock)
-        except Exception:
-            pass
-
-    # Create directories
-    send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell")
-    status, _ = read_response(sock)
-    assert status == "OK", "MAKEDIR amigactl_rectest_shell: {}".format(status)
-    cleanup_paths.add("RAM:amigactl_rectest_shell")
-
-    send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell/sub1")
-    status, _ = read_response(sock)
-    assert status == "OK"
-    cleanup_paths.add("RAM:amigactl_rectest_shell/sub1")
-
-    send_command(sock, "MAKEDIR RAM:amigactl_rectest_shell/sub1/deep")
-    status, _ = read_response(sock)
-    assert status == "OK"
-    cleanup_paths.add("RAM:amigactl_rectest_shell/sub1/deep")
-
-    # Create files
-    status, _ = send_write_data(
-        sock, "RAM:amigactl_rectest_shell/file1.txt",
-        b"top level file\n")
-    assert status.startswith("OK")
-    cleanup_paths.add("RAM:amigactl_rectest_shell/file1.txt")
-
-    status, _ = send_write_data(
-        sock, "RAM:amigactl_rectest_shell/sub1/file2.txt",
-        b"mid level file\nhello world\n")
-    assert status.startswith("OK")
-    cleanup_paths.add("RAM:amigactl_rectest_shell/sub1/file2.txt")
-
-    status, _ = send_write_data(
-        sock, "RAM:amigactl_rectest_shell/sub1/deep/file3.txt",
-        b"deep level file\nhello deep\n")
-    assert status.startswith("OK")
-    cleanup_paths.add("RAM:amigactl_rectest_shell/sub1/deep/file3.txt")
+            for path in _FIXTURE_PATHS:
+                pre_clean(sock2, path)
+        finally:
+            sock2.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
