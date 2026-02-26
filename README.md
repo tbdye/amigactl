@@ -294,12 +294,13 @@ client/amigactl.sh --host 192.168.6.200 signal 1
 client/amigactl.sh --host 192.168.6.200 kill 1
 client/amigactl.sh --host 192.168.6.200 sysinfo
 client/amigactl.sh --host 192.168.6.200 assigns
+client/amigactl.sh --host 192.168.6.200 assign MyAssign: RAM:mydir
 client/amigactl.sh --host 192.168.6.200 volumes
 client/amigactl.sh --host 192.168.6.200 ports
 client/amigactl.sh --host 192.168.6.200 tasks
 client/amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
 client/amigactl.sh --host 192.168.6.200 cp SYS:C/Dir RAM:Dir
-client/amigactl.sh --host 192.168.6.200 append RAM:logfile.txt localdata.txt
+client/amigactl.sh --host 192.168.6.200 append localdata.txt RAM:logfile.txt
 client/amigactl.sh --host 192.168.6.200 checksum SYS:C/Dir
 client/amigactl.sh --host 192.168.6.200 setcomment RAM:test.txt "Important file"
 client/amigactl.sh --host 192.168.6.200 libver exec.library
@@ -443,6 +444,7 @@ amigactl/
 |   |   +-- shell.py                 # Interactive shell
 |   |   +-- colors.py                # ANSI color support
 |   +-- pyproject.toml
+|   +-- amigactl.conf.example        # Client config template
 +-- tests/
 |   +-- conftest.py                  # Fixtures, CLI options
 |   +-- test_connection.py           # Connection, auth, lifecycle
@@ -451,12 +453,15 @@ amigactl/
 |   +-- test_sysinfo.py              # System info tests
 |   +-- test_arexx.py                # ARexx dispatch tests
 |   +-- test_tail.py                 # File streaming tests
+|   +-- test_shell.py                # Shell command unit tests
+|   +-- test_shell_integration.py    # Shell command integration tests
 +-- tools/
 |   +-- mkicon.py                    # Workbench icon generator
 +-- dist/
 |   +-- amigactld.conf.example       # Config template
 |   +-- amigactld.info               # Workbench icon
 |   +-- build_lha.sh                 # LHA packaging script
+|   +-- amigactld.readme             # Aminet-format distributable readme
 +-- docs/
 |   +-- PROTOCOL.md                  # Wire protocol spec
 |   +-- COMMANDS.md                  # Per-command spec
