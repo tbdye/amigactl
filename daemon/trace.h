@@ -1,9 +1,11 @@
 /*
  * amigactld -- Library call tracing
  *
- * TRACE STATUS, TRACE START, TRACE STOP.
+ * TRACE STATUS, TRACE START [filters], TRACE STOP,
+ * TRACE ENABLE, TRACE DISABLE.
  * Discovers atrace via named semaphore, polls ring buffer,
  * streams events to subscribed clients as DATA chunks.
+ * Supports per-client filters: LIB, FUNC, PROC, ERRORS.
  */
 
 #ifndef AMIGACTLD_TRACE_H
@@ -20,7 +22,7 @@ int trace_init(void);
 void trace_cleanup(void);
 
 /* Command handler for TRACE verb.
- * Dispatches to STATUS, START subcommands.
+ * Dispatches to STATUS, START, ENABLE, DISABLE subcommands.
  * Uses (daemon_state*, idx, args) signature like cmd_arexx,
  * because trace needs daemon-wide state for broadcasting.
  * Returns 0 on success, -1 on send failure (disconnect client). */

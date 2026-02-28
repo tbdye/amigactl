@@ -142,6 +142,51 @@ def _raise_for_error(info: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Trace event parsing
+# ---------------------------------------------------------------------------
+
+def _parse_trace_event(text):
+    # type: (str) -> dict
+    """Parse a tab-separated trace event line into a dict.
+
+    All keys are initialized to defaults so callers can access any key
+    without checking for existence, even if the event line is malformed.
+
+    Returns a dict with keys: type, raw, seq, time, lib, func, task,
+    args, retval.
+    """
+    parts = text.split("\t")
+    event = {
+        "raw": text, "type": "event",
+        "seq": 0, "time": "", "lib": "", "func": "",
+        "task": "", "args": "", "retval": "",
+    }
+    if len(parts) >= 1:
+        try:
+            event["seq"] = int(parts[0])
+        except ValueError:
+            event["seq"] = 0
+    if len(parts) >= 2:
+        event["time"] = parts[1]
+    if len(parts) >= 3:
+        lib_func = parts[2]
+        dot = lib_func.find(".")
+        if dot >= 0:
+            event["lib"] = lib_func[:dot]
+            event["func"] = lib_func[dot + 1:]
+        else:
+            event["lib"] = ""
+            event["func"] = lib_func
+    if len(parts) >= 4:
+        event["task"] = parts[3]
+    if len(parts) >= 5:
+        event["args"] = parts[4]
+    if len(parts) >= 6:
+        event["retval"] = parts[5]
+    return event
+
+
+# ---------------------------------------------------------------------------
 # Connection class
 # ---------------------------------------------------------------------------
 
@@ -1154,3 +1199,177 @@ class AmigaConnection:
                             line))
         finally:
             self._sock.settimeout(old_timeout)
+
+    # -- Library call tracing (atrace) -------------------------------------
+
+    def trace_status(self):
+        # type: () -> dict
+        """Query atrace status.
+
+        Returns a dict with keys:
+            loaded (bool), enabled (bool), patches (int),
+            events_produced (int), events_consumed (int),
+            events_dropped (int), buffer_capacity (int),
+            buffer_used (int).
+
+        Integer fields are only present when atrace is loaded.
+        """
+        info, payload = self._send_command("TRACE STATUS")
+
+        result = {}  # type: dict
+        for line in payload:
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip()
+
+            if key == "loaded":
+                result["loaded"] = val == "1"
+            elif key == "enabled":
+                result["enabled"] = val == "1"
+            elif key in ("patches", "events_produced", "events_consumed",
+                          "events_dropped", "buffer_capacity", "buffer_used"):
+                try:
+                    result[key] = int(val)
+                except ValueError:
+                    result[key] = 0
+
+        return result
+
+    def trace_start(self, callback, lib=None, func=None, proc=None,
+                    errors_only=False):
+        # type: (Callable, Optional[str], Optional[str], Optional[str], bool) -> None
+        """Start a trace event stream.
+
+        callback(event_dict) is called for each trace event.
+        event_dict has keys: type, raw, seq, time, lib, func, task,
+        args, retval.
+
+        Comment lines produce: type="comment", text=<text>.
+
+        Does NOT catch KeyboardInterrupt -- the caller should catch it
+        and call stop_trace() to terminate cleanly.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE START"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if proc:
+            cmd += " PROC={}".format(proc)
+        if errors_only:
+            cmd += " ERRORS"
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR (streaming response -- no sentinel after OK)
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            # Read sentinel and raise
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        old_timeout = self._sock.gettimeout()
+        try:
+            # Block indefinitely waiting for DATA chunks
+            self._sock.settimeout(None)
+
+            while True:
+                line = read_line(self._sock)
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    chunk = recv_exact(self._sock, chunk_len)
+                    text = chunk.decode(ENCODING)
+                    if text.startswith("#"):
+                        callback({
+                            "type": "comment",
+                            "text": text[2:] if len(text) > 2 else "",
+                        })
+                    else:
+                        event = _parse_trace_event(text)
+                        callback(event)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    _raise_for_error(line[4:])
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TRACE: {!r}".format(line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def stop_trace(self):
+        # type: () -> None
+        """Send STOP during an active trace stream and drain remaining
+        DATA chunks until END + sentinel.
+
+        After this call, the connection is back in normal command mode.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        send_command(self._sock, "STOP")
+
+        # Drain remaining DATA chunks until END + sentinel
+        old_timeout = self._sock.gettimeout()
+        self._sock.settimeout(10)  # 10s timeout for drain
+        try:
+            while True:
+                line = read_line(self._sock)
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    recv_exact(self._sock, chunk_len)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    # Stream ended with error -- still drained, return
+                    return
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during STOP drain: {!r}".format(
+                            line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def trace_enable(self):
+        # type: () -> None
+        """Enable atrace globally.
+
+        Raises AmigactlError if atrace is not loaded.
+        """
+        self._send_command("TRACE ENABLE")
+
+    def trace_disable(self):
+        # type: () -> None
+        """Disable atrace globally.
+
+        Raises AmigactlError if atrace is not loaded.
+        """
+        self._send_command("TRACE DISABLE")

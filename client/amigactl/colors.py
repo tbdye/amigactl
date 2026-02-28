@@ -41,8 +41,10 @@ def _supports_color():
 # ANSI escape sequences
 RESET = "\033[0m"
 BOLD = "\033[1m"
+DIM = "\033[2m"
 RED = "\033[31m"
 GREEN = "\033[32m"
+YELLOW = "\033[33m"
 BLUE = "\033[34m"
 CYAN = "\033[36m"
 
@@ -86,5 +88,61 @@ class ColorWriter:
     def bold(self, text):
         return self._wrap(BOLD, text)
 
+    def warning(self, text):
+        return self._wrap(YELLOW, text)
+
+    def dim(self, text):
+        return self._wrap(DIM, text)
+
+    def yellow(self, text):
+        return self._wrap(YELLOW, text)
+
+    def cyan(self, text):
+        return self._wrap(CYAN, text)
+
+    def green(self, text):
+        return self._wrap(GREEN, text)
+
     def write(self, text):
         return text
+
+
+def format_trace_event(event, cw):
+    """Format a trace event dict for columnar terminal output.
+
+    Returns a string ready to print, or None for comment events
+    (which are printed directly by the caller via cw.warning).
+
+    This function is shared between the shell and CLI so both display
+    identical output.  cw is a ColorWriter instance.
+    """
+    if event.get("type") == "comment":
+        return cw.warning("# {}".format(event.get("text", "")))
+
+    retval = event.get("retval", "")
+    retval_formatted = retval
+    if retval in ("NULL", "-1", "0"):
+        retval_formatted = cw.error(retval)
+
+    seq_str = cw.dim(str(event.get("seq", "")))
+    lib_str = event.get("lib", "")
+    func_str = event.get("func", "")
+    lib_func = "{}.{}".format(cw.cyan(lib_str), cw.yellow(func_str))
+    task_str = cw.green(event.get("task", ""))
+
+    # For column alignment, compute visible widths and pad manually
+    # since ANSI escape codes add invisible characters.
+    seq_vis = len(str(event.get("seq", "")))
+    lib_func_vis = len(lib_str) + 1 + len(func_str)
+    task_vis = len(event.get("task", ""))
+
+    return "{}{} {:>13s}  {}{} {}{} {:<40s} {}".format(
+        seq_str,
+        " " * max(0, 10 - seq_vis),
+        event.get("time", ""),
+        lib_func,
+        " " * max(0, 22 - lib_func_vis),
+        task_str,
+        " " * max(0, 16 - task_vis),
+        event.get("args", ""),
+        retval_formatted)

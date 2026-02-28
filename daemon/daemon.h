@@ -60,6 +60,12 @@ struct tail_state {
 /* TRACE streaming state (per-client) */
 struct trace_state {
     int active;              /* 1 = TRACE in progress */
+
+    /* Filters (applied daemon-side, AND-combined) */
+    int filter_lib_id;       /* -1 = all libs, or specific lib_id */
+    WORD filter_lvo;         /* 0 = all functions, or specific LVO */
+    int filter_errors_only;  /* 1 = only events where retval indicates error */
+    char filter_procname[64]; /* "" = all, or substring match on task name */
 };
 
 /* Per-client state */

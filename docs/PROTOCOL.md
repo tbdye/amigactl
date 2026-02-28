@@ -181,12 +181,13 @@ At that point, the response is complete.
 The sentinel is always the last line of a response.  Nothing follows it
 until the client sends the next command.
 
-**Exception: Streaming responses.**  The TAIL command produces an ongoing
-streaming response where DATA chunks may arrive at any time after the OK
-status line, for an indefinite duration.  The sentinel is sent only when
-the stream terminates (via client STOP or server error).  During a TAIL
-stream, the client MAY send `STOP` to request termination.  See the
-ARexx and Streaming Wire Formats section for details.
+**Exception: Streaming responses.**  The TAIL and TRACE commands produce
+ongoing streaming responses where DATA chunks may arrive at any time
+after the OK status line, for an indefinite duration.  The sentinel is
+sent only when the stream terminates (via client STOP or server error).
+During a TAIL or TRACE stream, the client MAY send `STOP` to request
+termination.  See the ARexx and Streaming Wire Formats section for
+details.
 
 ## Dot-Stuffing
 
@@ -212,8 +213,9 @@ status line (`OK ...` or `ERR ...`) and the banner are never dot-stuffed.
 
 ## Binary Data Framing
 
-Some commands (READ, WRITE, APPEND, EXEC, AREXX, TAIL) transfer binary
-or large data that cannot be reliably represented as dot-stuffed text
+Some commands (READ, WRITE, APPEND, EXEC, AREXX, TAIL, TRACE) transfer
+binary or large data that cannot be reliably represented as dot-stuffed
+text
 lines.  These commands use **DATA/END chunked framing** within the
 response envelope.
 
@@ -347,11 +349,11 @@ of the first command's input (for commands that accept multi-line input
 like RENAME), or it may be buffered and processed after the first
 response -- no guarantee is made.
 
-**Exception: TAIL streaming.**  During an active TAIL stream, the client
-sends `STOP\n` to terminate the stream, even though the response sentinel
-has not yet been received.  This is the only case where the client sends
-data before a response is complete.  See the TAIL command specification
-in COMMANDS.md for details.
+**Exception: TAIL and TRACE streaming.**  During an active TAIL or TRACE
+stream, the client sends `STOP\n` to terminate the stream, even though
+the response sentinel has not yet been received.  These are the only
+cases where the client sends data before a response is complete.  See
+the TAIL and TRACE command specifications in COMMANDS.md for details.
 
 ## System Query and Execution Wire Formats
 
@@ -362,9 +364,10 @@ patterns already defined in this protocol:
 ### Key=Value Payload (Text Lines, Dot-Stuffed)
 
 Used by **PROCSTAT**, **SYSINFO**, **SETDATE**, **CHECKSUM**, **LIBVER**,
-**ENV**, **CAPABILITIES**: the payload consists of `key=value` lines in
-a fixed order, one per line, subject to dot-stuffing.  These follow the
-same framing as other text-payload commands (STAT, PROTECT).
+**ENV**, **CAPABILITIES**, **TRACE STATUS**: the payload consists of
+`key=value` lines in a fixed order, one per line, subject to
+dot-stuffing.  These follow the same framing as other text-payload
+commands (STAT, PROTECT).
 
 ### Tab-Separated Payload (Text Lines, Dot-Stuffed)
 
@@ -376,10 +379,10 @@ dot-stuffing.  These follow the same framing as DIR.
 
 ### Simple OK/ERR (No Payload)
 
-Used by **SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**: the
-response is `OK\n.\n` on success or `ERR <code> <message>\n.\n` on
-failure.  No payload lines.  These follow the same framing as DELETE and
-MAKEDIR.
+Used by **SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**,
+**TRACE ENABLE**, **TRACE DISABLE**: the response is `OK\n.\n` on
+success or `ERR <code> <message>\n.\n` on failure.  No payload lines.
+These follow the same framing as DELETE and MAKEDIR.
 
 ### DATA/END Binary Framing
 
@@ -391,7 +394,7 @@ See COMMANDS.md for the specific fields and semantics of each command.
 
 ## ARexx and Streaming Wire Formats
 
-AREXX and TAIL use the following wire format patterns:
+AREXX, TAIL, and TRACE use the following wire format patterns:
 
 **AREXX** uses DATA/END binary framing for the result string, identical
 to EXEC.  The OK status line includes `rc=<N>` where N is the ARexx
@@ -408,6 +411,13 @@ stream of DATA chunks interspersed with arbitrary delays.
 
 If the server encounters an error during the stream (e.g., file
 deleted), it sends `ERR <code> <message>\n.\n`, terminating the stream.
+
+**TRACE** uses the same ongoing DATA/END streaming pattern as TAIL.
+Each DATA chunk contains a single tab-separated event line.  The stream
+is terminated by the client sending `STOP\n`.  If the atrace module is
+unloaded during streaming, the server sends a comment line
+(`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and the sentinel.
+See COMMANDS.md for the full TRACE command specification.
 
 ## Error Codes
 

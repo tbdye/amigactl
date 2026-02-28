@@ -188,7 +188,20 @@ static int do_install(ULONG capacity, int start_disabled)
 
     /* 4. Fill anchor */
     InitSemaphore(&anchor->sem);
-    anchor->sem.ss_Link.ln_Name = (char *)ATRACE_SEM_NAME;
+
+    /* Semaphore name must persist after the loader process exits.
+     * String literals live in the loader's data segment which is
+     * freed when the seglist is unloaded.  Copy to MEMF_PUBLIC. */
+    {
+        ULONG name_len = strlen(ATRACE_SEM_NAME) + 1;
+        char *sem_name = (char *)AllocMem(name_len, MEMF_PUBLIC);
+        if (!sem_name) {
+            printf("Failed to allocate semaphore name\n");
+            return RETURN_FAIL;
+        }
+        CopyMem((APTR)ATRACE_SEM_NAME, (APTR)sem_name, name_len);
+        anchor->sem.ss_Link.ln_Name = sem_name;
+    }
     anchor->sem.ss_Link.ln_Type = NT_SIGNALSEM;
     anchor->sem.ss_Link.ln_Pri = 0;
     anchor->magic = ATRACE_MAGIC;
@@ -299,7 +312,7 @@ static int do_status(struct atrace_anchor *anchor)
 static int do_enable(struct atrace_anchor *anchor)
 {
     anchor->global_enable = 1;
-    printf("atrace tracing ENABLED\n");
+    printf("atrace tracing ACTIVE\n");
     return RETURN_OK;
 }
 

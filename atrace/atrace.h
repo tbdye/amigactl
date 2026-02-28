@@ -19,6 +19,7 @@
 
 /* Library IDs (index into lib_info table) */
 #define LIB_EXEC    0
+#define LIB_DOS     1
 
 /* Event entry size -- must be 64 bytes for shift-based indexing */
 #define ATRACE_EVENT_SIZE   64

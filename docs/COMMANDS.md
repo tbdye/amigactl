@@ -71,6 +71,7 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [SETENV](#setenv)
 - [AREXX](#arexx)
 - [TAIL](#tail)
+- [TRACE](#trace)
 - [STOP](#stop)
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
@@ -3058,8 +3059,9 @@ begins). The connection remains in normal command processing mode.
 
 ### Edge Cases / Notes
 
-- Only one TAIL per client at a time. A client in TAIL mode cannot
-  send other commands until STOP is sent.
+- Only one TAIL or TRACE session per client at a time. A client in
+  TAIL mode cannot send other commands until STOP is sent. Starting
+  TAIL while a TRACE session is active (or vice versa) returns an error.
 - If the client disconnects during an active TAIL stream, the daemon
   cleans up the tracking state silently. No error is logged.
 - TAIL does not lock the file exclusively. Other processes can write
@@ -3155,10 +3157,321 @@ S> .
 
 ---
 
+## TRACE
+
+Controls system-level library call tracing via the atrace kernel module.
+TRACE is a compound command with subcommands: STATUS, START, STOP,
+ENABLE, and DISABLE.
+
+The atrace module must be loaded on the Amiga (`RUN >NIL: atrace_loader`)
+before TRACE commands will work. atrace patches 30 functions across
+exec.library (12) and dos.library (18), capturing call arguments, return
+values, and the calling task for each invocation.
+
+### TRACE STATUS
+
+Queries the current status of the atrace module.
+
+#### Syntax
+
+```
+TRACE STATUS
+```
+
+No additional arguments.
+
+#### Response
+
+```
+OK
+loaded=<0|1>
+enabled=<0|1>
+patches=<n>
+events_produced=<n>
+events_consumed=<n>
+events_dropped=<n>
+buffer_capacity=<n>
+buffer_used=<n>
+patch_0=<lib>.<func> enabled=<0|1>
+patch_1=<lib>.<func> enabled=<0|1>
+...
+.
+```
+
+If atrace is not loaded, only `loaded=0` is returned.
+
+| Field | Description |
+|-------|-------------|
+| `loaded` | 1 if the atrace kernel module is present |
+| `enabled` | 1 if tracing is globally enabled |
+| `patches` | Number of installed function patches |
+| `events_produced` | Total events written to the ring buffer |
+| `events_consumed` | Total events read from the ring buffer |
+| `events_dropped` | Total events lost due to ring buffer overflow |
+| `buffer_capacity` | Ring buffer slot count |
+| `buffer_used` | Slots currently occupied |
+| `patch_N` | Per-patch status: library.function and enabled state |
+
+#### Error Conditions
+
+None. This command always succeeds (returns `loaded=0` when atrace is
+not loaded).
+
+#### Examples
+
+**atrace loaded and enabled:**
+
+```
+C> TRACE STATUS
+S> OK
+S> loaded=1
+S> enabled=1
+S> patches=30
+S> events_produced=12345
+S> events_consumed=12340
+S> events_dropped=0
+S> buffer_capacity=2048
+S> buffer_used=5
+S> patch_0=exec.FindPort enabled=1
+S> patch_1=exec.FindResident enabled=1
+S> ...
+S> .
+```
+
+**atrace not loaded:**
+
+```
+C> TRACE STATUS
+S> OK
+S> loaded=0
+S> .
+```
+
+### TRACE START
+
+Begins streaming trace events. The response is an ongoing DATA/END
+stream (same framing as TAIL) that continues until the client sends
+STOP.
+
+#### Syntax
+
+```
+TRACE START [LIB=<name>] [FUNC=<name>] [PROC=<name>] [ERRORS]
+```
+
+All filter arguments are optional. When multiple filters are specified,
+they are AND-combined (all must match for an event to be sent).
+
+| Filter | Description |
+|--------|-------------|
+| `LIB=<name>` | Only show calls to the named library. Short name without `.library` suffix (e.g. `exec`, `dos`). Case-insensitive. |
+| `FUNC=<name>` | Only show calls to the named function (e.g. `OpenLibrary`, `Open`). Case-insensitive. |
+| `PROC=<name>` | Only show calls from tasks whose name contains `<name>` as a substring. Case-insensitive. |
+| `ERRORS` | Only show calls that returned an error value (NULL, non-zero for OpenDevice, etc.). Void functions are excluded. |
+
+#### Response
+
+```
+OK
+DATA <chunk_len>
+<tab-separated event line>
+DATA <chunk_len>
+<tab-separated event line>
+...
+(client sends STOP)
+END
+.
+```
+
+Each DATA chunk contains one tab-separated event line:
+
+```
+<seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>
+```
+
+| Field | Description |
+|-------|-------------|
+| `seq` | Monotonically increasing sequence number |
+| `time` | Timestamp in `HH:MM:SS.mmm` format (20ms resolution) |
+| `lib.func` | Library and function name (e.g. `dos.Open`, `exec.AllocMem`) |
+| `task` | Name of the calling task/process |
+| `args` | Formatted arguments (strings quoted, constants named) |
+| `retval` | Return value (`NULL`, `(void)`, `-1`, or hex pointer) |
+
+Argument formatting varies by function:
+
+- **String arguments** are quoted: `"dos.library"`, `"RAM:test.txt"`
+- **dos.Open mode**: `MODE_OLDFILE`, `MODE_NEWFILE`, `MODE_READWRITE`
+- **dos.Lock type**: `ACCESS_READ`, `ACCESS_WRITE`
+- **exec.AllocMem flags**: `MEMF_PUBLIC|MEMF_CLEAR`, `MEMF_CHIP`
+- **Void functions** (PutMsg, ObtainSemaphore, ReleaseSemaphore): `(void)`
+- Other arguments are shown as hex or decimal values
+
+Comment lines may appear in the stream, prefixed with `#`:
+
+- `# OVERFLOW N events dropped` -- ring buffer overflow notification
+- `# ATRACE SHUTDOWN` -- atrace module is being unloaded
+
+Comment lines are also delivered via DATA chunks.
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| TRACE session already active | `ERR 500 TRACE session already active` |
+| TAIL session active | `ERR 500 TAIL session active` |
+| atrace is disabled | `ERR 500 atrace is disabled (run: atrace_loader ENABLE)` |
+
+These errors are returned synchronously (before the streaming phase
+begins). The connection remains in normal command processing mode.
+
+#### Edge Cases / Notes
+
+- Only one TRACE or TAIL session per client at a time. A client in
+  TRACE mode cannot send other commands until STOP is sent.
+- If the client disconnects during an active TRACE stream, the daemon
+  cleans up the tracking state silently.
+- Multiple clients can have simultaneous TRACE sessions. Each client
+  has independent filters. All clients receive events from the same
+  shared ring buffer.
+- If atrace is unloaded (QUIT) while a TRACE stream is active, the
+  daemon sends a `# ATRACE SHUTDOWN` comment followed by END and the
+  sentinel.
+- Events are polled from the ring buffer on each daemon event loop
+  iteration. Up to 64 events are processed per poll cycle.
+- The receiver MUST read exactly `chunk_len` bytes by looping on
+  `recv()` before expecting the next DATA, END, or ERR line.
+
+#### Examples
+
+**Start tracing, receive events, then stop:**
+
+```
+C> TRACE START
+S> OK
+S> DATA 72
+S> 1	14:30:01.000	exec.OpenLibrary	Shell Process	"dos.library",0	0x07a3b2c0
+S> DATA 67
+S> 2	14:30:01.000	dos.Lock	Shell Process	"SYS:",ACCESS_READ	0x03c1a0b8
+C> STOP
+S> END
+S> .
+```
+
+**Start tracing with filters:**
+
+```
+C> TRACE START LIB=dos FUNC=Open
+S> OK
+S> DATA 76
+S> 5	14:30:02.020	dos.Open	Shell Process	"RAM:test.txt",MODE_NEWFILE	0x03c1a0b8
+C> STOP
+S> END
+S> .
+```
+
+**Start tracing with error filter:**
+
+```
+C> TRACE START ERRORS
+S> OK
+S> DATA 61
+S> 12	14:30:05.000	dos.Open	myapp	"NoSuchFile",MODE_OLDFILE	NULL
+C> STOP
+S> END
+S> .
+```
+
+**atrace not loaded:**
+
+```
+C> TRACE START
+S> ERR 500 atrace not loaded
+S> .
+```
+
+### TRACE STOP
+
+TRACE STOP is not a separate command. During an active TRACE stream, the
+client sends `STOP` (same as TAIL). See [STOP](#stop).
+
+### TRACE ENABLE
+
+Enables all trace patches globally. This is equivalent to running
+`atrace_loader ENABLE` on the Amiga, but can be done remotely.
+
+#### Syntax
+
+```
+TRACE ENABLE
+```
+
+No additional arguments.
+
+#### Response
+
+```
+OK
+.
+```
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+
+#### Examples
+
+```
+C> TRACE ENABLE
+S> OK
+S> .
+```
+
+### TRACE DISABLE
+
+Disables all trace patches globally. Patches remain installed but stop
+recording events. In-flight calls (stubs currently executing) drain
+within one system timeslice (~20ms). This is equivalent to running
+`atrace_loader DISABLE` on the Amiga, but can be done remotely.
+
+#### Syntax
+
+```
+TRACE DISABLE
+```
+
+No additional arguments.
+
+#### Response
+
+```
+OK
+.
+```
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+
+#### Examples
+
+```
+C> TRACE DISABLE
+S> OK
+S> .
+```
+
+---
+
 ## STOP
 
-Terminates an active TAIL stream. STOP is a contextual command: it is
-only valid during an active TAIL stream.
+Terminates an active TAIL or TRACE stream. STOP is a contextual command:
+it is only valid during an active TAIL or TRACE stream.
 
 ### Syntax
 
@@ -3168,17 +3481,18 @@ STOP
 
 No arguments. Case-insensitive.
 
-### Behavior During TAIL
+### Behavior During TAIL or TRACE
 
 Terminates the active stream. The server sends any remaining DATA
 chunks, then END, then the sentinel. After the sentinel, the
 connection returns to normal command processing. See the
-[TAIL](#tail) command for full details.
+[TAIL](#tail) and [TRACE](#trace) commands for full details.
 
-### Behavior Outside TAIL
+### Behavior Outside a Stream
 
-STOP is not recognized as a command outside of an active TAIL stream.
-Since STOP is not in the normal command dispatch table, it produces:
+STOP is not recognized as a command outside of an active TAIL or TRACE
+stream. Since STOP is not in the normal command dispatch table, it
+produces:
 
 ```
 ERR 100 Unknown command
@@ -3202,7 +3516,19 @@ S> OK
 S> .
 ```
 
-**Outside TAIL:**
+**During TRACE:**
+
+```
+(TRACE is active)
+C> STOP
+S> END
+S> .
+C> PING
+S> OK
+S> .
+```
+
+**Outside a stream:**
 
 ```
 C> STOP

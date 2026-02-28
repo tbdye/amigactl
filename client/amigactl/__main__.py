@@ -323,6 +323,71 @@ def cmd_tail(conn, args):
             pass
 
 
+def cmd_trace(conn, args):
+    """Handle the 'trace' subcommand."""
+    from .colors import ColorWriter, format_trace_event
+
+    sub = args.trace_cmd
+    if sub is None:
+        print("Usage: amigactl trace {start,stop,status,enable,disable}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if sub == "status":
+        status = conn.trace_status()
+        if not status.get("loaded"):
+            print("atrace is not loaded.")
+            return
+        print("loaded=1")
+        print("enabled={}".format(1 if status.get("enabled") else 0))
+        for key in ("patches", "events_produced", "events_consumed",
+                     "events_dropped", "buffer_capacity", "buffer_used"):
+            if key in status:
+                print("{}={}".format(key, status[key]))
+
+    elif sub == "enable":
+        conn.trace_enable()
+        print("atrace tracing enabled.")
+
+    elif sub == "disable":
+        conn.trace_disable()
+        print("atrace tracing disabled.")
+
+    elif sub == "stop":
+        print("trace stop is only valid during an active trace stream.",
+              file=sys.stderr)
+        print("Use Ctrl-C to stop a running trace.", file=sys.stderr)
+        sys.exit(1)
+
+    elif sub == "start":
+        cw = ColorWriter()
+
+        # Column header
+        print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
+            "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+
+        def trace_callback(event):
+            print(format_trace_event(event, cw))
+
+        kwargs = {}
+        if args.lib:
+            kwargs["lib"] = args.lib
+        if args.func:
+            kwargs["func"] = args.func
+        if args.proc:
+            kwargs["proc"] = args.proc
+        if args.errors:
+            kwargs["errors_only"] = True
+
+        try:
+            conn.trace_start(trace_callback, **kwargs)
+        except KeyboardInterrupt:
+            try:
+                conn.stop_trace()
+            except Exception:
+                pass
+
+
 def cmd_cp(conn, args):
     """Handle the 'cp' subcommand."""
     conn.copy(args.source, args.dest,
@@ -696,6 +761,25 @@ def main() -> None:
                                     help="Stream file appends (Ctrl-C to stop)")
     p_tail.add_argument("path", help="Amiga file path to tail")
 
+    p_trace = subparsers.add_parser("trace",
+                                     help="Control library call tracing")
+    trace_sub = p_trace.add_subparsers(dest="trace_cmd")
+
+    p_trace_start = trace_sub.add_parser("start", help="Start tracing")
+    p_trace_start.add_argument("--lib",
+                                help="Filter by library name")
+    p_trace_start.add_argument("--func",
+                                help="Filter by function name")
+    p_trace_start.add_argument("--proc",
+                                help="Filter by process name")
+    p_trace_start.add_argument("--errors", action="store_true",
+                                help="Only show error returns")
+
+    trace_sub.add_parser("stop", help="Stop tracing")
+    trace_sub.add_parser("status", help="Show atrace status")
+    trace_sub.add_parser("enable", help="Enable atrace globally")
+    trace_sub.add_parser("disable", help="Disable atrace globally")
+
     subparsers.add_parser("shell", help="Interactive shell mode")
 
     args = parser.parse_args()
@@ -770,6 +854,7 @@ def main() -> None:
         "sysinfo": cmd_sysinfo,
         "tail": cmd_tail,
         "tasks": cmd_tasks,
+        "trace": cmd_trace,
         "touch": cmd_touch,
         "uptime": cmd_uptime,
         "version": cmd_version,

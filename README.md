@@ -5,12 +5,14 @@ Remote access toolkit for AmigaOS.
 amigactl provides structured, programmatic remote access to AmigaOS over TCP.
 It consists of a lightweight C daemon (amigactld) running on the Amiga and a
 Python client library and CLI tool on the client side. Together they expose
-36 daemon commands spanning file operations (copy, checksum, streaming), CLI
+37 daemon commands spanning file operations (copy, checksum, streaming), CLI
 command execution, ARexx dispatch, environment variables, library version
-queries, and system introspection (assigns, volumes, ports, tasks, devices)
-through a simple text protocol with machine-parseable responses. The interactive
-shell adds 6 client-side search and navigation commands (find, tree, grep, diff,
-du, watch). Designed for trusted LANs and emulator setups.
+queries, system-level library call tracing (30 patched functions across
+exec.library and dos.library), and system introspection (assigns, volumes,
+ports, tasks, devices) through a simple text protocol with machine-parseable
+responses. The interactive shell adds 6 client-side search and navigation
+commands (find, tree, grep, diff, du, watch). Designed for trusted LANs and
+emulator setups.
 
 ## Architecture
 
@@ -25,6 +27,7 @@ Client                            Amiga
 | Python library  |--TCP:6800---->| - ARexx dispatch |
 | (client)        |               | - File streaming |
 +-----------------+               | - System queries |
+                                  | - Library tracing|
                                   +------------------+
 ```
 
@@ -434,6 +437,12 @@ amigactl/
 |   +-- sysinfo.c / sysinfo.h        # System info command handlers
 |   +-- arexx.c / arexx.h            # ARexx dispatch
 |   +-- tail.c / tail.h              # File streaming (TAIL)
+|   +-- trace.c / trace.h            # Library call tracing (TRACE)
++-- atrace/
+|   +-- main.c                       # atrace_loader entry point
+|   +-- atrace.h                     # Shared data structures (anchor, ring, patch)
+|   +-- funcs.c                      # Function table (30 patched functions)
+|   +-- stub_gen.c                   # 68k stub code generator
 +-- client/
 |   +-- amigactl.sh                  # Linux/macOS wrapper script
 |   +-- amigactl.ps1                 # Windows wrapper script

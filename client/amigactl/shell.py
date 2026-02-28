@@ -13,7 +13,7 @@ import time
 from . import (
     AmigaConnection, AmigactlError, NotFoundError, ProtocolError,
 )
-from .colors import ColorWriter
+from .colors import ColorWriter, format_trace_event
 
 
 # ---------------------------------------------------------------------------
@@ -3004,6 +3004,150 @@ class AmigaShell(cmd.Cmd):
             print(self.cw.error("Connection error: {}".format(e)))
             self.conn = None
             self._update_prompt()
+
+    # -- Library call tracing (atrace) -------------------------------------
+
+    def do_trace(self, arg):
+        """Control library call tracing.
+
+    Usage: trace start [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
+           trace stop
+           trace status
+           trace enable
+           trace disable
+
+    Start streaming system library calls. Press Ctrl-C to stop.
+
+    Filters (AND-combined):
+        LIB=<lib>       Only show calls to this library (e.g. dos.library)
+        FUNC=<func>     Only show calls to this function (e.g. Open)
+        PROC=<name>     Only show calls from tasks matching name (substring)
+        ERRORS          Only show calls that returned an error value
+
+    Examples:
+        trace start
+        trace start LIB=dos.library PROC=bbs
+        trace start FUNC=OpenLibrary
+        trace start ERRORS
+        trace status
+        trace enable
+        trace disable"""
+        parts = arg.strip().split(None, 1)
+        if not parts:
+            print("Usage: trace start|stop|status|enable|disable [options]")
+            return
+        if not self._check_connected():
+            return
+
+        sub = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        if sub == "status":
+            try:
+                status = self.conn.trace_status()
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+                return
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+                return
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+                return
+
+            if not status.get("loaded"):
+                print("atrace is not loaded.")
+                return
+
+            print("atrace status:")
+            print("  Enabled:          {}".format(
+                "yes" if status.get("enabled") else "no"))
+            print("  Patches:          {}".format(
+                status.get("patches", 0)))
+            print("  Events produced:  {}".format(
+                status.get("events_produced", 0)))
+            print("  Events consumed:  {}".format(
+                status.get("events_consumed", 0)))
+            print("  Events dropped:   {}".format(
+                status.get("events_dropped", 0)))
+            if "buffer_capacity" in status:
+                print("  Buffer capacity:  {}".format(
+                    status["buffer_capacity"]))
+                print("  Buffer used:      {}".format(
+                    status.get("buffer_used", 0)))
+
+        elif sub == "start":
+            kwargs = {}
+            # Parse filter args from rest
+            for token in rest.split():
+                upper = token.upper()
+                if upper.startswith("LIB="):
+                    kwargs["lib"] = token[4:]
+                elif upper.startswith("FUNC="):
+                    kwargs["func"] = token[5:]
+                elif upper.startswith("PROC="):
+                    kwargs["proc"] = token[5:]
+                elif upper == "ERRORS":
+                    kwargs["errors_only"] = True
+
+            # Column header
+            print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
+                "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+
+            def trace_callback(event):
+                print(format_trace_event(event, self.cw))
+
+            try:
+                self.conn.trace_start(trace_callback, **kwargs)
+            except KeyboardInterrupt:
+                try:
+                    self.conn.stop_trace()
+                except Exception:
+                    pass
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        elif sub == "stop":
+            print("trace stop is only valid during an active trace stream.")
+            print("Use Ctrl-C to stop a running trace.")
+
+        elif sub == "enable":
+            try:
+                self.conn.trace_enable()
+                print("atrace tracing enabled.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        elif sub == "disable":
+            try:
+                self.conn.trace_disable()
+                print("atrace tracing disabled.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        else:
+            print("Unknown trace subcommand: {}".format(sub))
+            print("Usage: trace start|stop|status|enable|disable [options]")
 
     # -- Connection management ---------------------------------------------
 
