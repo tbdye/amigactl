@@ -63,6 +63,13 @@ int cmd_tail(struct client *c, const char *args)
     LONG current_size;
     static char info[32];
 
+    /* Mutual exclusion with TRACE */
+    if (c->trace.active) {
+        send_error(c->fd, ERR_INTERNAL, "TRACE session active");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
     if (args[0] == '\0') {
         send_error(c->fd, ERR_SYNTAX, "Missing path argument");
         send_sentinel(c->fd);

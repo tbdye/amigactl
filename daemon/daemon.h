@@ -57,6 +57,11 @@ struct tail_state {
     LONG last_pos;           /* current read position */
 };
 
+/* TRACE streaming state (per-client) */
+struct trace_state {
+    int active;              /* 1 = TRACE in progress */
+};
+
 /* Per-client state */
 struct client {
     LONG fd;                       /* socket fd, -1 = unused */
@@ -66,6 +71,7 @@ struct client {
     int discarding;                /* overflow discard mode flag */
     int arexx_pending;             /* 1 = waiting for ARexx reply */
     struct tail_state tail;        /* TAIL tracking */
+    struct trace_state trace;      /* TRACE tracking */
 };
 
 /* IP access control list entry */

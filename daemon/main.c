@@ -13,6 +13,7 @@
 #include "sysinfo.h"
 #include "arexx.h"
 #include "tail.h"
+#include "trace.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -250,6 +251,9 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    trace_init();
+    /* trace_init always succeeds -- atrace may not be loaded yet */
+
     /* All initialization complete.  In WB mode, close the startup
      * console after a short delay so the user can read the banner.
      * The daemon continues running headless. */
@@ -276,8 +280,13 @@ int main(int argc, char **argv)
         }
         nfds++;
 
+        /* Reduce timeout when tracing is active */
         tv.tv_secs = 1;
         tv.tv_micro = 0;
+        if (trace_any_active(&daemon)) {
+            tv.tv_secs = 0;
+            tv.tv_micro = 100000;  /* 100ms */
+        }
         sigmask = SIGBREAKF_CTRL_C;
         if (g_proc_sigbit >= 0)
             sigmask |= (1L << g_proc_sigbit);
@@ -320,7 +329,15 @@ int main(int argc, char **argv)
             if (daemon.clients[i].fd < 0)
                 continue;
 
-            if (daemon.clients[i].tail.active) {
+            if (daemon.clients[i].trace.active) {
+                /* TRACE mode: check for STOP */
+                if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                    if (trace_handle_input(&daemon, i) < 0) {
+                        disconnect_client(&daemon, i);
+                        continue;
+                    }
+                }
+            } else if (daemon.clients[i].tail.active) {
                 /* TAIL mode: check for STOP, poll file */
                 if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
                     if (tail_handle_input(&daemon, i) < 0) {
@@ -341,6 +358,10 @@ int main(int argc, char **argv)
                     handle_client(&daemon, i);
             }
         }
+
+        /* Poll trace ring buffer (broadcasts to all tracing clients) */
+        if (trace_any_active(&daemon))
+            trace_poll_events(&daemon);
 
         /* ARexx timeout housekeeping */
         arexx_check_timeouts(&daemon);
@@ -384,6 +405,7 @@ cleanup:
     net_cleanup();
 
     /* Free module resources (reverse order of init) */
+    trace_cleanup();
     tail_cleanup();
     arexx_cleanup();
     exec_cleanup();
@@ -441,6 +463,7 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].discarding = 0;
     d->clients[slot].arexx_pending = 0;
     d->clients[slot].tail.active = 0;
+    d->clients[slot].trace.active = 0;
 
     send_banner(fd);
 }
@@ -736,6 +759,9 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "TAIL") == 0) {
         rc = cmd_tail(c, rest);
 
+    } else if (stricmp(verb, "TRACE") == 0) {
+        rc = cmd_trace(d, idx, rest);
+
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");
         send_sentinel(c->fd);
@@ -753,6 +779,7 @@ static void disconnect_client(struct daemon_state *d, int idx)
 {
     /* Clean up streaming state before closing the connection */
     d->clients[idx].tail.active = 0;
+    d->clients[idx].trace.active = 0;
     arexx_orphan_client(d, idx);
     d->clients[idx].arexx_pending = 0;
 
