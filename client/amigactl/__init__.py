@@ -1234,6 +1234,16 @@ class AmigaConnection:
                     result[key] = int(val)
                 except ValueError:
                     result[key] = 0
+            elif key.startswith("patch_"):
+                # patch_0=exec.FindPort enabled=1
+                if "patch_list" not in result:
+                    result["patch_list"] = []
+                parts = val.split()
+                entry = {"name": parts[0]}
+                for p in parts[1:]:
+                    if p.startswith("enabled="):
+                        entry["enabled"] = p.split("=")[1] == "1"
+                result["patch_list"].append(entry)
 
         return result
 
@@ -1358,18 +1368,34 @@ class AmigaConnection:
         finally:
             self._sock.settimeout(old_timeout)
 
-    def trace_enable(self):
-        # type: () -> None
-        """Enable atrace globally.
+    def trace_enable(self, funcs=None):
+        # type: (Optional[List[str]]) -> None
+        """Enable atrace globally, or enable specific functions.
 
-        Raises AmigactlError if atrace is not loaded.
+        Args:
+            funcs: Optional list of function names to enable.  If None,
+                   toggles global_enable on.
+
+        Raises AmigactlError if atrace is not loaded or a function
+        name is not recognized.
         """
-        self._send_command("TRACE ENABLE")
+        cmd = "TRACE ENABLE"
+        if funcs:
+            cmd += " " + " ".join(funcs)
+        self._send_command(cmd)
 
-    def trace_disable(self):
-        # type: () -> None
-        """Disable atrace globally.
+    def trace_disable(self, funcs=None):
+        # type: (Optional[List[str]]) -> None
+        """Disable atrace globally, or disable specific functions.
 
-        Raises AmigactlError if atrace is not loaded.
+        Args:
+            funcs: Optional list of function names to disable.  If None,
+                   toggles global_enable off and drains buffer.
+
+        Raises AmigactlError if atrace is not loaded or a function
+        name is not recognized.
         """
-        self._send_command("TRACE DISABLE")
+        cmd = "TRACE DISABLE"
+        if funcs:
+            cmd += " " + " ".join(funcs)
+        self._send_command(cmd)

@@ -24,7 +24,7 @@ typedef char assert_ringbuf_hdr[(sizeof(struct atrace_ringbuf) == 16) ? 1 : -1];
 typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 80) ? 1 : -1];
 
 /* ReadArgs template */
-#define TEMPLATE "BUFSZ/K/N,DISABLE/S,STATUS/S,ENABLE/S,QUIT/S"
+#define TEMPLATE "BUFSZ/K/N,DISABLE/S,STATUS/S,ENABLE/S,QUIT/S,FUNCS/M"
 
 enum {
     ARG_BUFSZ,
@@ -32,6 +32,7 @@ enum {
     ARG_STATUS,
     ARG_ENABLE,
     ARG_QUIT,
+    ARG_FUNCS,
     ARG_COUNT
 };
 
@@ -46,10 +47,11 @@ extern int stub_generate_and_install(
     struct atrace_event *entries);
 
 /* Local functions */
-static int do_install(ULONG capacity, int start_disabled);
+static int find_patch_by_name(struct atrace_anchor *anchor, const char *name);
+static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs);
 static int do_status(struct atrace_anchor *anchor);
-static int do_enable(struct atrace_anchor *anchor);
-static int do_disable(struct atrace_anchor *anchor);
+static int do_enable(struct atrace_anchor *anchor, STRPTR *funcs);
+static int do_disable(struct atrace_anchor *anchor, STRPTR *funcs);
 static int do_quit(struct atrace_anchor *anchor);
 static struct atrace_anchor *find_anchor(void);
 
@@ -67,7 +69,7 @@ int main(int argc, char **argv)
 
     rdargs = ReadArgs((STRPTR)TEMPLATE, args, NULL);
     if (!rdargs) {
-        printf("Usage: atrace_loader [BUFSZ <n>] [DISABLE] [STATUS] [ENABLE] [QUIT]\n");
+        printf("Usage: atrace_loader [BUFSZ <n>] [DISABLE] [STATUS] [ENABLE] [QUIT] [func ...]\n");
         return RETURN_FAIL;
     }
 
@@ -82,22 +84,29 @@ int main(int argc, char **argv)
     anchor = find_anchor();
 
     if (anchor) {
-        /* Already loaded -- handle reconfiguration commands */
+        /* Already loaded -- handle reconfiguration commands.
+         * FreeArgs is deferred because FUNCS/M pointers are owned
+         * by ReadArgs and become invalid after FreeArgs. */
+        int rc;
         if (args[ARG_STATUS]) {
+            rc = do_status(anchor);
             FreeArgs(rdargs);
-            return do_status(anchor);
+            return rc;
         }
         if (args[ARG_ENABLE]) {
+            rc = do_enable(anchor, (STRPTR *)args[ARG_FUNCS]);
             FreeArgs(rdargs);
-            return do_enable(anchor);
+            return rc;
         }
         if (args[ARG_DISABLE]) {
+            rc = do_disable(anchor, (STRPTR *)args[ARG_FUNCS]);
             FreeArgs(rdargs);
-            return do_disable(anchor);
+            return rc;
         }
         if (args[ARG_QUIT]) {
+            rc = do_quit(anchor);
             FreeArgs(rdargs);
-            return do_quit(anchor);
+            return rc;
         }
         printf("atrace already loaded. Use STATUS, ENABLE, DISABLE, or QUIT.\n");
         FreeArgs(rdargs);
@@ -111,9 +120,16 @@ int main(int argc, char **argv)
         return RETURN_WARN;
     }
 
-    /* Fresh install */
-    FreeArgs(rdargs);
-    return do_install(capacity, args[ARG_DISABLE] != 0);
+    /* Fresh install -- FreeArgs deferred because FUNCS/M pointers
+     * are owned by ReadArgs. */
+    {
+        int rc;
+        int start_disabled = args[ARG_DISABLE] != 0;
+        rc = do_install(capacity, start_disabled,
+                        (STRPTR *)args[ARG_FUNCS]);
+        FreeArgs(rdargs);
+        return rc;
+    }
 }
 
 /* ---- Find existing atrace installation via named semaphore ---- */
@@ -139,9 +155,37 @@ static struct atrace_anchor *find_anchor(void)
     return (struct atrace_anchor *)sem;
 }
 
+/* ---- Patch name lookup ---- */
+
+/* Search atrace_libs[]/func_info[] for a case-insensitive match on
+ * function name. Returns the global patch index (0-29), or -1 if
+ * not found. The global index is computed sequentially through all
+ * libraries' functions in order, matching the installation order
+ * in do_install(). The anchor parameter is unused but kept for
+ * consistency with the API -- the lookup uses the static func_info
+ * tables from funcs.c. */
+static int find_patch_by_name(struct atrace_anchor *anchor, const char *name)
+{
+    int li, fi;
+    int idx;
+
+    (void)anchor;
+
+    idx = 0;
+    for (li = 0; li < atrace_lib_count; li++) {
+        struct lib_info *lib = &atrace_libs[li];
+        for (fi = 0; fi < (int)lib->func_count; fi++) {
+            if (stricmp(name, lib->funcs[fi].name) == 0)
+                return idx;
+            idx++;
+        }
+    }
+    return -1;
+}
+
 /* ---- Fresh installation ---- */
 
-static int do_install(ULONG capacity, int start_disabled)
+static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
 {
     struct atrace_anchor *anchor;
     struct atrace_ringbuf *ring;
@@ -154,6 +198,17 @@ static int do_install(ULONG capacity, int start_disabled)
     total_patches = 0;
     for (li = 0; li < atrace_lib_count; li++)
         total_patches += atrace_libs[li].func_count;
+
+    /* Validate function names before allocating anything */
+    if (funcs) {
+        STRPTR *fp;
+        for (fp = funcs; *fp; fp++) {
+            if (find_patch_by_name(NULL, (const char *)*fp) < 0) {
+                printf("Unknown function: %s\n", (const char *)*fp);
+                return RETURN_FAIL;
+            }
+        }
+    }
 
     /* 1. Allocate anchor */
     anchor = (struct atrace_anchor *)AllocMem(
@@ -261,7 +316,21 @@ static int do_install(ULONG capacity, int start_disabled)
         }
     }
 
-    /* 6. Register the semaphore -- makes atrace discoverable */
+    /* 6. If FUNCS specified, disable all then enable only named ones.
+     *    Names were already validated before allocation. */
+    if (funcs) {
+        STRPTR *fp;
+        int idx;
+
+        for (fi = 0; fi < total_patches; fi++)
+            patches[fi].enabled = 0;
+        for (fp = funcs; *fp; fp++) {
+            idx = find_patch_by_name(NULL, (const char *)*fp);
+            patches[idx].enabled = 1;
+        }
+    }
+
+    /* 7. Register the semaphore -- makes atrace discoverable */
     AddSemaphore(&anchor->sem);
 
     printf("atrace loaded: %d patches, %lu-entry ring buffer (%luKB)\n",
@@ -304,26 +373,91 @@ static int do_status(struct atrace_anchor *anchor)
         printf("  Ring buffer:      (freed -- QUIT was called)\n");
     }
 
+    /* Per-patch listing */
+    {
+        int li, fi;
+        int idx = 0;
+        printf("\n");
+        for (li = 0; li < atrace_lib_count; li++) {
+            struct lib_info *lib = &atrace_libs[li];
+            for (fi = 0; fi < (int)lib->func_count; fi++) {
+                if (idx < (int)anchor->patch_count) {
+                    printf("  Patch %2d: %s.%-18s %s\n",
+                           idx,
+                           li == LIB_EXEC ? "exec" : "dos",
+                           lib->funcs[fi].name,
+                           anchor->patches[idx].enabled ?
+                               "ENABLED" : "DISABLED");
+                }
+                idx++;
+            }
+        }
+    }
+
     return RETURN_OK;
 }
 
 /* ---- ENABLE: activate tracing ---- */
 
-static int do_enable(struct atrace_anchor *anchor)
+static int do_enable(struct atrace_anchor *anchor, STRPTR *funcs)
 {
-    anchor->global_enable = 1;
-    printf("atrace tracing ACTIVE\n");
+    if (funcs) {
+        STRPTR *fp;
+        int idx;
+
+        /* Validate all names first -- all-or-nothing */
+        for (fp = funcs; *fp; fp++) {
+            idx = find_patch_by_name(anchor, (const char *)*fp);
+            if (idx < 0) {
+                printf("Unknown function: %s\n", (const char *)*fp);
+                return RETURN_FAIL;
+            }
+        }
+        /* Apply: enable named patches only */
+        for (fp = funcs; *fp; fp++) {
+            idx = find_patch_by_name(anchor, (const char *)*fp);
+            anchor->patches[idx].enabled = 1;
+            printf("Enabled %s\n", (const char *)*fp);
+        }
+    } else {
+        anchor->global_enable = 1;
+        printf("atrace tracing ACTIVE\n");
+    }
     return RETURN_OK;
 }
 
 /* ---- DISABLE: deactivate tracing and drain in-flight events ---- */
 
-static int do_disable(struct atrace_anchor *anchor)
+static int do_disable(struct atrace_anchor *anchor, STRPTR *funcs)
 {
     int polls;
     int i;
     int all_drained;
 
+    if (funcs) {
+        STRPTR *fp;
+        int idx;
+
+        /* Validate all names first -- all-or-nothing */
+        for (fp = funcs; *fp; fp++) {
+            idx = find_patch_by_name(anchor, (const char *)*fp);
+            if (idx < 0) {
+                printf("Unknown function: %s\n", (const char *)*fp);
+                return RETURN_FAIL;
+            }
+        }
+        /* Apply: disable named patches only.
+         * No global_enable change, no use_count drain needed --
+         * the stub checks enabled atomically. */
+        for (fp = funcs; *fp; fp++) {
+            idx = find_patch_by_name(anchor, (const char *)*fp);
+            anchor->patches[idx].enabled = 0;
+            printf("Disabled %s\n", (const char *)*fp);
+        }
+        return RETURN_OK;
+    }
+
+    /* Global disable */
     Disable();
     anchor->global_enable = 0;
     Enable();
@@ -357,7 +491,7 @@ static int do_quit(struct atrace_anchor *anchor)
     ULONG ring_size;
 
     /* 1. Disable tracing and drain use counts */
-    do_disable(anchor);
+    do_disable(anchor, NULL);
 
     /* 2. Obtain semaphore exclusively -- blocks until daemon releases */
     ObtainSemaphore(&anchor->sem);

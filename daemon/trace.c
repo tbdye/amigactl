@@ -113,6 +113,21 @@ static char trace_cmd_buf[MAX_CMD_LEN + 1];
 /* Event formatting buffer (static, single-threaded) */
 static char trace_line_buf[512];
 
+/* Look up a patch index by function name (case-insensitive).
+ * Returns the func_table[] index, which IS the global patch index
+ * because func_table[] ordering matches the installation order
+ * in atrace/funcs.c (exec functions first, then dos functions).
+ * Returns -1 if not found. */
+static int find_patch_index_by_name(const char *name)
+{
+    int i;
+    for (i = 0; i < (int)FUNC_TABLE_SIZE; i++) {
+        if (stricmp(name, func_table[i].func_name) == 0)
+            return i;
+    }
+    return -1;
+}
+
 /* ---- Task name cache ---- */
 
 #define TASK_CACHE_SIZE   64
@@ -154,8 +169,8 @@ static int send_trace_data_chunk(LONG fd, const char *line);
 static int trace_cmd_status(struct client *c);
 static int trace_cmd_start(struct daemon_state *d, int idx,
                             const char *args);
-static int trace_cmd_enable(struct client *c);
-static int trace_cmd_disable(struct client *c);
+static int trace_cmd_enable(struct client *c, const char *args);
+static int trace_cmd_disable(struct client *c, const char *args);
 
 /* ---- Initialization / cleanup ---- */
 
@@ -884,11 +899,11 @@ int cmd_trace(struct daemon_state *d, int idx, const char *args)
     }
 
     if (stricmp(sub, "ENABLE") == 0) {
-        return trace_cmd_enable(c);
+        return trace_cmd_enable(c, args);
     }
 
     if (stricmp(sub, "DISABLE") == 0) {
-        return trace_cmd_disable(c);
+        return trace_cmd_disable(c, args);
     }
 
     send_error(c->fd, ERR_SYNTAX, "Unknown TRACE subcommand");
@@ -1025,32 +1040,208 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
 
 /* ---- TRACE ENABLE / TRACE DISABLE ---- */
 
-static int trace_cmd_enable(struct client *c)
+static int trace_cmd_enable(struct client *c, const char *args)
 {
     if (!trace_discover()) {
         send_error(c->fd, ERR_INTERNAL, "atrace not loaded");
         send_sentinel(c->fd);
         return 0;
     }
-    g_anchor->global_enable = 1;
+
+    /* Skip leading whitespace */
+    while (*args == ' ' || *args == '\t')
+        args++;
+
+    if (*args == '\0') {
+        /* No function names -- global enable */
+        g_anchor->global_enable = 1;
+        send_ok(c->fd, NULL);
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Per-function enable: parse and validate all names first */
+    {
+        const char *p;
+        const char *tok_start;
+        char name[32];
+        int len;
+        int idx;
+
+        /* First pass: validate all names */
+        p = args;
+        while (*p) {
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '\0')
+                break;
+            tok_start = p;
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            len = (int)(p - tok_start);
+            if (len >= (int)sizeof(name))
+                len = (int)sizeof(name) - 1;
+            memcpy(name, tok_start, len);
+            name[len] = '\0';
+
+            idx = find_patch_index_by_name(name);
+            if (idx < 0) {
+                static char errbuf[64];
+                snprintf(errbuf, sizeof(errbuf),
+                         "Unknown function: %s", name);
+                send_error(c->fd, ERR_SYNTAX, errbuf);
+                send_sentinel(c->fd);
+                return 0;
+            }
+        }
+
+        /* Second pass: apply enables */
+        p = args;
+        while (*p) {
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '\0')
+                break;
+            tok_start = p;
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            len = (int)(p - tok_start);
+            if (len >= (int)sizeof(name))
+                len = (int)sizeof(name) - 1;
+            memcpy(name, tok_start, len);
+            name[len] = '\0';
+
+            idx = find_patch_index_by_name(name);
+            g_anchor->patches[idx].enabled = 1;
+        }
+    }
+
     send_ok(c->fd, NULL);
     send_sentinel(c->fd);
     return 0;
 }
 
-static int trace_cmd_disable(struct client *c)
+static int trace_cmd_disable(struct client *c, const char *args)
 {
     if (!trace_discover()) {
         send_error(c->fd, ERR_INTERNAL, "atrace not loaded");
         send_sentinel(c->fd);
         return 0;
     }
+
+    /* Skip leading whitespace */
+    while (*args == ' ' || *args == '\t')
+        args++;
+
+    if (*args != '\0') {
+        /* Per-function disable: parse and validate all names first */
+        const char *p;
+        const char *tok_start;
+        char name[32];
+        int len;
+        int idx;
+
+        /* First pass: validate all names */
+        p = args;
+        while (*p) {
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '\0')
+                break;
+            tok_start = p;
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            len = (int)(p - tok_start);
+            if (len >= (int)sizeof(name))
+                len = (int)sizeof(name) - 1;
+            memcpy(name, tok_start, len);
+            name[len] = '\0';
+
+            idx = find_patch_index_by_name(name);
+            if (idx < 0) {
+                static char errbuf[64];
+                snprintf(errbuf, sizeof(errbuf),
+                         "Unknown function: %s", name);
+                send_error(c->fd, ERR_SYNTAX, errbuf);
+                send_sentinel(c->fd);
+                return 0;
+            }
+        }
+
+        /* Second pass: apply disables.
+         * No global_enable change, no buffer drain -- other functions
+         * may still be producing events. */
+        p = args;
+        while (*p) {
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '\0')
+                break;
+            tok_start = p;
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+            len = (int)(p - tok_start);
+            if (len >= (int)sizeof(name))
+                len = (int)sizeof(name) - 1;
+            memcpy(name, tok_start, len);
+            name[len] = '\0';
+
+            idx = find_patch_index_by_name(name);
+            g_anchor->patches[idx].enabled = 0;
+        }
+
+        send_ok(c->fd, NULL);
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Global disable */
     /* Set global_enable = 0 under Disable/Enable for atomicity */
     Disable();
     g_anchor->global_enable = 0;
     Enable();
     /* Do NOT drain use_counts here -- that would block the daemon
      * event loop. The stubs drain within one timeslice (~20ms). */
+
+    /* Drain remaining events from ring buffer.
+     * Without this, the buffer stays full after disable. Re-enabling
+     * would start with a full buffer that immediately overflows.
+     *
+     * Safety: after global_enable = 0, all new stubs take the disabled
+     * fast path. In-flight stubs (already past the global_enable check)
+     * will complete and write to slots behind the new read_pos -- those
+     * writes are silently discarded, which is intended. */
+    if (g_anchor->ring) {
+        struct atrace_ringbuf *ring = g_anchor->ring;
+        ULONG pos;
+        ULONG end;
+        struct atrace_event *entries;
+
+        entries = (struct atrace_event *)
+            ((UBYTE *)ring + sizeof(struct atrace_ringbuf));
+
+        /* Clear valid flags on occupied slots (belt-and-suspenders --
+         * the read_pos advance alone is sufficient) */
+        pos = ring->read_pos;
+        end = ring->write_pos;
+        while (pos != end) {
+            entries[pos].valid = 0;
+            pos = (pos + 1) % ring->capacity;
+        }
+
+        /* Advance read_pos to write_pos (atomic drain) */
+        ring->read_pos = ring->write_pos;
+
+        /* Accumulate overflow counter under Disable/Enable because
+         * in-flight stubs may be incrementing overflow concurrently */
+        if (ring->overflow > 0) {
+            Disable();
+            g_events_dropped += ring->overflow;
+            ring->overflow = 0;
+            Enable();
+        }
+    }
+
     send_ok(c->fd, NULL);
     send_sentinel(c->fd);
     return 0;

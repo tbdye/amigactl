@@ -3398,16 +3398,21 @@ client sends `STOP` (same as TAIL). See [STOP](#stop).
 
 ### TRACE ENABLE
 
-Enables all trace patches globally. This is equivalent to running
-`atrace_loader ENABLE` on the Amiga, but can be done remotely.
+Enables trace patches. When called with no arguments, toggles
+`global_enable` on (equivalent to `atrace_loader ENABLE` on the
+Amiga). When called with function names, enables individual patch
+stubs without changing `global_enable`.
+
+Function names are case-insensitive and match the function name
+without library prefix (e.g., `Open`, not `dos.Open`). If any
+function name is unrecognized, the command fails with an error and
+no patches are changed (all-or-nothing).
 
 #### Syntax
 
 ```
-TRACE ENABLE
+TRACE ENABLE [<func1> [<func2> ...]]
 ```
-
-No additional arguments.
 
 #### Response
 
@@ -3421,8 +3426,11 @@ OK
 | Condition | Response |
 |-----------|----------|
 | atrace not loaded | `ERR 500 atrace not loaded` |
+| Unrecognized function name | `ERR 100 Unknown function: <name>` |
 
 #### Examples
+
+**Global enable:**
 
 ```
 C> TRACE ENABLE
@@ -3430,20 +3438,45 @@ S> OK
 S> .
 ```
 
+**Per-function enable:**
+
+```
+C> TRACE ENABLE Open Lock FindTask
+S> OK
+S> .
+```
+
+**Unrecognized function name:**
+
+```
+C> TRACE ENABLE Open Bogus Lock
+S> ERR 100 Unknown function: Bogus
+S> .
+```
+
 ### TRACE DISABLE
 
-Disables all trace patches globally. Patches remain installed but stop
-recording events. In-flight calls (stubs currently executing) drain
-within one system timeslice (~20ms). This is equivalent to running
-`atrace_loader DISABLE` on the Amiga, but can be done remotely.
+Disables trace patches. When called with no arguments, toggles
+`global_enable` off (equivalent to `atrace_loader DISABLE` on the
+Amiga). Patches remain installed but stop recording events. In-flight
+calls (stubs currently executing) drain within one system timeslice
+(~20ms). The ring buffer is also drained on global disable so that
+subsequent re-enable starts with a clean buffer.
+
+When called with function names, disables individual patch stubs
+without changing `global_enable`. No buffer drain occurs for
+per-function disable (other functions may still be producing events).
+
+Function names are case-insensitive and match the function name
+without library prefix (e.g., `Open`, not `dos.Open`). If any
+function name is unrecognized, the command fails with an error and
+no patches are changed (all-or-nothing).
 
 #### Syntax
 
 ```
-TRACE DISABLE
+TRACE DISABLE [<func1> [<func2> ...]]
 ```
-
-No additional arguments.
 
 #### Response
 
@@ -3457,12 +3490,31 @@ OK
 | Condition | Response |
 |-----------|----------|
 | atrace not loaded | `ERR 500 atrace not loaded` |
+| Unrecognized function name | `ERR 100 Unknown function: <name>` |
 
 #### Examples
+
+**Global disable:**
 
 ```
 C> TRACE DISABLE
 S> OK
+S> .
+```
+
+**Per-function disable:**
+
+```
+C> TRACE DISABLE GetMsg ObtainSemaphore ReleaseSemaphore
+S> OK
+S> .
+```
+
+**Unrecognized function name:**
+
+```
+C> TRACE DISABLE GetMsg Bogus
+S> ERR 100 Unknown function: Bogus
 S> .
 ```
 

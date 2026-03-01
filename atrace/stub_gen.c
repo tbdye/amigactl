@@ -228,7 +228,7 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[24];    /* max variable region: 4 args + argcount + string = 24 words */
+    UWORD var_buf[26];    /* max variable region: 4 args + argcount + string w/ null check = 26 words */
     int var_words;
     int total_bytes;
     int alloc_size;
@@ -274,6 +274,9 @@ int stub_generate_and_install(
         var_buf[var_words++] = (UWORD)str_frame_ofs;  /* source frame offset */
         var_buf[var_words++] = 0x43ED;                /* lea d16(a5), a1 */
         var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+        /* NULL check: if a0 == 0, skip to clr.b (displacement = 8 bytes) */
+        var_buf[var_words++] = 0x4A88;                /* tst.l a0 */
+        var_buf[var_words++] = 0x6708;                /* beq.s +8 (skip to clr.b) */
         var_buf[var_words++] = 0x7016;                /* moveq #22, d0 */
         var_buf[var_words++] = 0x12D8;                /* move.b (a0)+, (a1)+ */
         var_buf[var_words++] = 0x57C8;                /* dbeq d0, .strcopy */

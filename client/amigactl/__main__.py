@@ -346,12 +346,20 @@ def cmd_trace(conn, args):
                 print("{}={}".format(key, status[key]))
 
     elif sub == "enable":
-        conn.trace_enable()
-        print("atrace tracing enabled.")
+        funcs = args.funcs if args.funcs else None
+        conn.trace_enable(funcs=funcs)
+        if funcs:
+            print("Enabled: {}".format(", ".join(funcs)))
+        else:
+            print("atrace tracing enabled.")
 
     elif sub == "disable":
-        conn.trace_disable()
-        print("atrace tracing disabled.")
+        funcs = args.funcs if args.funcs else None
+        conn.trace_disable(funcs=funcs)
+        if funcs:
+            print("Disabled: {}".format(", ".join(funcs)))
+        else:
+            print("atrace tracing disabled.")
 
     elif sub == "stop":
         print("trace stop is only valid during an active trace stream.",
@@ -777,8 +785,18 @@ def main() -> None:
 
     trace_sub.add_parser("stop", help="Stop tracing")
     trace_sub.add_parser("status", help="Show atrace status")
-    trace_sub.add_parser("enable", help="Enable atrace globally")
-    trace_sub.add_parser("disable", help="Disable atrace globally")
+
+    p_trace_enable = trace_sub.add_parser(
+        "enable", help="Enable atrace globally or specific functions")
+    p_trace_enable.add_argument(
+        "funcs", nargs="*",
+        help="Function names to enable (all if omitted)")
+
+    p_trace_disable = trace_sub.add_parser(
+        "disable", help="Disable atrace globally or specific functions")
+    p_trace_disable.add_argument(
+        "funcs", nargs="*",
+        help="Function names to disable (all if omitted)")
 
     subparsers.add_parser("shell", help="Interactive shell mode")
 

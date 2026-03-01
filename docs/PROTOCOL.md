@@ -380,9 +380,13 @@ dot-stuffing.  These follow the same framing as DIR.
 ### Simple OK/ERR (No Payload)
 
 Used by **SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**,
-**TRACE ENABLE**, **TRACE DISABLE**: the response is `OK\n.\n` on
-success or `ERR <code> <message>\n.\n` on failure.  No payload lines.
-These follow the same framing as DELETE and MAKEDIR.
+**TRACE ENABLE [func ...]**, **TRACE DISABLE [func ...]**: the response
+is `OK\n.\n` on success or `ERR <code> <message>\n.\n` on failure (e.g.,
+`ERR 100 Unknown function: <name>` for unrecognized function names).
+No payload lines.  When called with no function arguments, these
+toggle `global_enable`.  When called with function names, they toggle
+individual per-patch enabled flags.  These follow the same framing as
+DELETE and MAKEDIR.
 
 ### DATA/END Binary Framing
 

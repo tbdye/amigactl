@@ -3013,8 +3013,8 @@ class AmigaShell(cmd.Cmd):
     Usage: trace start [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
            trace stop
            trace status
-           trace enable
-           trace disable
+           trace enable [<func1> <func2> ...]
+           trace disable [<func1> <func2> ...]
 
     Start streaming system library calls. Press Ctrl-C to stop.
 
@@ -3077,6 +3077,11 @@ class AmigaShell(cmd.Cmd):
                     status["buffer_capacity"]))
                 print("  Buffer used:      {}".format(
                     status.get("buffer_used", 0)))
+            if "patch_list" in status:
+                print("\n  Patch details:")
+                for entry in status["patch_list"]:
+                    state = "enabled" if entry.get("enabled") else "disabled"
+                    print("    {:<25s} {}".format(entry["name"], state))
 
         elif sub == "start":
             kwargs = {}
@@ -3120,9 +3125,13 @@ class AmigaShell(cmd.Cmd):
             print("Use Ctrl-C to stop a running trace.")
 
         elif sub == "enable":
+            funcs = rest.split() if rest.strip() else None
             try:
-                self.conn.trace_enable()
-                print("atrace tracing enabled.")
+                self.conn.trace_enable(funcs=funcs)
+                if funcs:
+                    print("Enabled: {}".format(", ".join(funcs)))
+                else:
+                    print("atrace tracing enabled.")
             except AmigactlError as e:
                 print(self.cw.error("Error: {}".format(e.message)))
             except ProtocolError as e:
@@ -3133,9 +3142,13 @@ class AmigaShell(cmd.Cmd):
                 self._update_prompt()
 
         elif sub == "disable":
+            funcs = rest.split() if rest.strip() else None
             try:
-                self.conn.trace_disable()
-                print("atrace tracing disabled.")
+                self.conn.trace_disable(funcs=funcs)
+                if funcs:
+                    print("Disabled: {}".format(", ".join(funcs)))
+                else:
+                    print("atrace tracing disabled.")
             except AmigactlError as e:
                 print(self.cw.error("Error: {}".format(e.message)))
             except ProtocolError as e:
