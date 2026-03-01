@@ -184,10 +184,10 @@ until the client sends the next command.
 **Exception: Streaming responses.**  The TAIL and TRACE commands produce
 ongoing streaming responses where DATA chunks may arrive at any time
 after the OK status line, for an indefinite duration.  The sentinel is
-sent only when the stream terminates (via client STOP or server error).
-During a TAIL or TRACE stream, the client MAY send `STOP` to request
-termination.  See the ARexx and Streaming Wire Formats section for
-details.
+sent only when the stream terminates (via client STOP, process exit for
+TRACE RUN, or server error).  During a TAIL or TRACE stream, the client
+MAY send `STOP` to request termination.  See the ARexx and Streaming
+Wire Formats section for details.
 
 ## Dot-Stuffing
 
@@ -416,10 +416,13 @@ stream of DATA chunks interspersed with arbitrary delays.
 If the server encounters an error during the stream (e.g., file
 deleted), it sends `ERR <code> <message>\n.\n`, terminating the stream.
 
-**TRACE** uses the same ongoing DATA/END streaming pattern as TAIL.
-Each DATA chunk contains a single tab-separated event line.  The stream
-is terminated by the client sending `STOP\n`.  If the atrace module is
-unloaded during streaming, the server sends a comment line
+**TRACE** (both START and RUN) uses the same ongoing DATA/END streaming
+pattern as TAIL.  Each DATA chunk contains a single tab-separated event
+line.  The TRACE START stream is terminated by the client sending
+`STOP\n`.  The TRACE RUN stream auto-terminates when the launched
+process exits (a `# PROCESS EXITED rc=<N>` comment is sent before END);
+the client may also send `STOP\n` for early termination.  If the atrace
+module is unloaded during streaming, the server sends a comment line
 (`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and the sentinel.
 See COMMANDS.md for the full TRACE command specification.
 

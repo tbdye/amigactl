@@ -57,6 +57,10 @@ struct tail_state {
     LONG last_pos;           /* current read position */
 };
 
+/* TRACE mode constants */
+#define TRACE_MODE_START  0  /* normal TRACE START */
+#define TRACE_MODE_RUN    1  /* TRACE RUN (auto-terminate on process exit) */
+
 /* TRACE streaming state (per-client) */
 struct trace_state {
     int active;              /* 1 = TRACE in progress */
@@ -66,6 +70,11 @@ struct trace_state {
     WORD filter_lvo;         /* 0 = all functions, or specific LVO */
     int filter_errors_only;  /* 1 = only events where retval indicates error */
     char filter_procname[64]; /* "" = all, or substring match on task name */
+
+    /* TRACE RUN state (only used when mode == TRACE_MODE_RUN) */
+    int mode;                /* TRACE_MODE_START or TRACE_MODE_RUN */
+    int run_proc_slot;       /* index into daemon_state.procs[], -1 if none */
+    APTR run_task_ptr;       /* Task pointer for exact process matching */
 };
 
 /* Per-client state */

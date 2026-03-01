@@ -401,24 +401,66 @@ class TestManual:
 # MAX_CLIENTS enforcement
 # ---------------------------------------------------------------------------
 
+def _wait_for_all_slots_free(host, port, max_slots=8, retries=10, delay=0.5):
+    """Wait until the daemon has all client slots available.
+
+    Attempts to open max_slots connections simultaneously.  If any
+    connection gets EOF instead of a banner (meaning the slot was
+    occupied by a stale connection from a previous test), closes
+    everything, waits briefly, and retries.
+
+    Returns a list of max_slots connected sockets on success, all with
+    banners already read.  The caller owns these sockets.
+
+    Raises RuntimeError if all retries are exhausted.
+    """
+    for attempt in range(retries):
+        sockets = []
+        all_ok = True
+        try:
+            for i in range(max_slots):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((host, port))
+                sockets.append(s)
+                try:
+                    banner = _read_banner(s)
+                    if not banner.startswith("AMIGACTL"):
+                        all_ok = False
+                        break
+                except ConnectionError:
+                    all_ok = False
+                    break
+        except (ConnectionError, OSError):
+            all_ok = False
+
+        if all_ok and len(sockets) == max_slots:
+            return sockets
+
+        # Close everything and retry after a delay
+        for s in sockets:
+            try:
+                s.close()
+            except Exception:
+                pass
+        time.sleep(delay)
+
+    raise RuntimeError(
+        "Daemon did not free all {} slots after {} retries".format(
+            max_slots, retries)
+    )
+
+
 class TestMaxClients:
     """Tests for maximum simultaneous client enforcement."""
 
     def test_max_clients_enforcement(self, amiga_host, amiga_port):
         """Open 8 connections (all get banners), 9th gets EOF."""
-        sockets = []
+        # Wait for all slots to be free before testing.  Stale
+        # connections from prior tests (e.g. trace tests) may not
+        # have fully disconnected on the daemon side yet.
+        sockets = _wait_for_all_slots_free(amiga_host, amiga_port)
         try:
-            # Open 8 connections -- all should succeed
-            for i in range(8):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((amiga_host, amiga_port))
-                banner = _read_banner(s)
-                assert banner.startswith("AMIGACTL"), (
-                    "Connection {} did not get banner: {!r}".format(i, banner)
-                )
-                sockets.append(s)
-
             # 9th connection should be rejected (EOF, no banner)
             rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             rejected.settimeout(5)
@@ -438,15 +480,9 @@ class TestMaxClients:
     def test_max_clients_recovery(self, amiga_host, amiga_port):
         """After hitting the limit, close one connection and verify a new
         one succeeds."""
-        sockets = []
+        # Wait for all slots to be free before testing.
+        sockets = _wait_for_all_slots_free(amiga_host, amiga_port)
         try:
-            # Open 8 connections
-            for i in range(8):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((amiga_host, amiga_port))
-                _read_banner(s)
-                sockets.append(s)
 
             # Verify 9th is rejected
             rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -3011,30 +3011,33 @@ class AmigaShell(cmd.Cmd):
         """Control library call tracing.
 
     Usage: trace start [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
+           trace run [LIB=<lib>] [FUNC=<func>] [ERRORS] [CD=<dir>] -- <command>
            trace stop
            trace status
            trace enable [<func1> <func2> ...]
            trace disable [<func1> <func2> ...]
 
     Start streaming system library calls. Press Ctrl-C to stop.
+    Run launches a command and traces it until it exits.
 
     Filters (AND-combined):
         LIB=<lib>       Only show calls to this library (e.g. dos.library)
         FUNC=<func>     Only show calls to this function (e.g. Open)
-        PROC=<name>     Only show calls from tasks matching name (substring)
+        PROC=<name>     Only show calls from tasks matching name (TRACE START only)
         ERRORS          Only show calls that returned an error value
 
     Examples:
         trace start
         trace start LIB=dos.library PROC=bbs
-        trace start FUNC=OpenLibrary
-        trace start ERRORS
+        trace run -- List SYS:
+        trace run LIB=dos.library -- CNet:bbs
         trace status
         trace enable
         trace disable"""
         parts = arg.strip().split(None, 1)
         if not parts:
-            print("Usage: trace start|stop|status|enable|disable [options]")
+            print("Usage: trace "
+                  "start|run|stop|status|enable|disable [options]")
             return
         if not self._check_connected():
             return
@@ -3120,6 +3123,78 @@ class AmigaShell(cmd.Cmd):
                 self.conn = None
                 self._update_prompt()
 
+        elif sub == "run":
+            # Parse filter args and command from rest
+            # Find "--" separator
+            parts_list = rest.split()
+            sep_idx = None
+            for ri, token in enumerate(parts_list):
+                if token == "--":
+                    sep_idx = ri
+                    break
+
+            if sep_idx is None:
+                print("Usage: trace run [options] -- <command>")
+                print("The -- separator is required.")
+                return
+
+            filter_tokens = parts_list[:sep_idx]
+            cmd_tokens = parts_list[sep_idx + 1:]
+            command = " ".join(cmd_tokens).strip()
+
+            if not command:
+                print("Missing command after --")
+                return
+
+            kwargs = {}
+            for token in filter_tokens:
+                upper = token.upper()
+                if upper.startswith("LIB="):
+                    kwargs["lib"] = token[4:]
+                elif upper.startswith("FUNC="):
+                    kwargs["func"] = token[5:]
+                elif upper == "ERRORS":
+                    kwargs["errors_only"] = True
+                elif upper.startswith("CD="):
+                    # Resolve relative CD= paths against the shell's CWD
+                    cd_path = self._resolve_path(token[3:])
+                    if cd_path is None:
+                        return  # _resolve_path already printed the error
+                    kwargs["cd"] = cd_path
+
+            # If no CD= specified, inherit the shell's CWD
+            if "cd" not in kwargs and self.cwd:
+                kwargs["cd"] = self.cwd
+
+            # Column header
+            print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
+                "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+
+            def trace_callback(event):
+                print(format_trace_event(event, self.cw))
+
+            try:
+                result = self.conn.trace_run(command, trace_callback,
+                                             **kwargs)
+                if result.get("rc") is not None:
+                    proc_id = result.get("proc_id", "?")
+                    print("Process {} exited with rc={}".format(
+                        proc_id, result["rc"]))
+            except KeyboardInterrupt:
+                try:
+                    self.conn.stop_trace()
+                except Exception:
+                    pass
+                print("Tracing stopped. Process continues running.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
         elif sub == "stop":
             print("trace stop is only valid during an active trace stream.")
             print("Use Ctrl-C to stop a running trace.")
@@ -3160,7 +3235,8 @@ class AmigaShell(cmd.Cmd):
 
         else:
             print("Unknown trace subcommand: {}".format(sub))
-            print("Usage: trace start|stop|status|enable|disable [options]")
+            print("Usage: trace "
+                  "start|run|stop|status|enable|disable [options]")
 
     # -- Connection management ---------------------------------------------
 

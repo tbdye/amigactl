@@ -309,6 +309,9 @@ int main(int argc, char **argv)
             exec_scan_completed(&daemon);
         }
 
+        /* Check for TRACE RUN process completion */
+        trace_check_run_completed(&daemon);
+
         /* Check for ARexx reply */
         if (g_arexx_sigbit >= 0 &&
             (sigmask & (1L << g_arexx_sigbit))) {
@@ -464,6 +467,9 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].arexx_pending = 0;
     d->clients[slot].tail.active = 0;
     d->clients[slot].trace.active = 0;
+    d->clients[slot].trace.mode = TRACE_MODE_START;
+    d->clients[slot].trace.run_proc_slot = -1;
+    d->clients[slot].trace.run_task_ptr = NULL;
 
     send_banner(fd);
 }
@@ -780,6 +786,9 @@ static void disconnect_client(struct daemon_state *d, int idx)
     /* Clean up streaming state before closing the connection */
     d->clients[idx].tail.active = 0;
     d->clients[idx].trace.active = 0;
+    d->clients[idx].trace.mode = TRACE_MODE_START;
+    d->clients[idx].trace.run_proc_slot = -1;
+    d->clients[idx].trace.run_task_ptr = NULL;
     arexx_orphan_client(d, idx);
     d->clients[idx].arexx_pending = 0;
 

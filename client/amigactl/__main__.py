@@ -329,11 +329,61 @@ def cmd_trace(conn, args):
 
     sub = args.trace_cmd
     if sub is None:
-        print("Usage: amigactl trace {start,stop,status,enable,disable}",
+        print("Usage: amigactl trace "
+              "{start,run,stop,status,enable,disable}",
               file=sys.stderr)
         sys.exit(1)
 
-    if sub == "status":
+    if sub == "run":
+        # Join the command parts (argparse splits on spaces)
+        cmd_parts = args.command
+        # Strip leading "--" if present (argparse may include it)
+        if cmd_parts and cmd_parts[0] == "--":
+            cmd_parts = cmd_parts[1:]
+        command = " ".join(cmd_parts).strip()
+        if not command:
+            print("Usage: amigactl trace run [--lib LIB] [--func FUNC] "
+                  "[--errors] [--cd DIR] -- <command>",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        cw = ColorWriter()
+
+        kwargs = {}
+        if args.lib:
+            kwargs["lib"] = args.lib
+        if args.func:
+            kwargs["func"] = args.func
+        if args.errors:
+            kwargs["errors_only"] = True
+        if args.cd:
+            kwargs["cd"] = args.cd
+
+        # Column header
+        print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
+            "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+
+        def trace_callback(event):
+            print(format_trace_event(event, cw))
+
+        try:
+            result = conn.trace_run(command, trace_callback, **kwargs)
+            if result.get("rc") is not None:
+                rc = result["rc"]
+                if rc != 0:
+                    proc_id = result.get("proc_id", "?")
+                    print("Process {} exited with rc={}".format(proc_id, rc),
+                          file=sys.stderr)
+                    sys.exit(min(rc, 255))
+        except KeyboardInterrupt:
+            try:
+                conn.stop_trace()
+            except Exception:
+                pass
+            print("\nTracing stopped. Process continues running.",
+                  file=sys.stderr)
+
+    elif sub == "status":
         status = conn.trace_status()
         if not status.get("loaded"):
             print("atrace is not loaded.")
@@ -791,6 +841,19 @@ def main() -> None:
     p_trace_enable.add_argument(
         "funcs", nargs="*",
         help="Function names to enable (all if omitted)")
+
+    p_trace_run = trace_sub.add_parser("run",
+        help="Launch a program and trace its calls")
+    p_trace_run.add_argument("--lib",
+        help="Filter by library name")
+    p_trace_run.add_argument("--func",
+        help="Filter by function name")
+    p_trace_run.add_argument("--errors", action="store_true",
+        help="Only show error returns")
+    p_trace_run.add_argument("--cd",
+        help="Working directory for the command")
+    p_trace_run.add_argument("command", nargs=argparse.REMAINDER,
+        help="Command to execute (after --)")
 
     p_trace_disable = trace_sub.add_parser(
         "disable", help="Disable atrace globally or specific functions")

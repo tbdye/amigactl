@@ -13,11 +13,14 @@
 #include "trace.h"
 #include "daemon.h"
 #include "net.h"
+#include "exec.h"
 #include "../atrace/atrace.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <exec/execbase.h>
+#include <dos/dostags.h>
+#include <dos/dosextens.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -169,6 +172,8 @@ static int send_trace_data_chunk(LONG fd, const char *line);
 static int trace_cmd_status(struct client *c);
 static int trace_cmd_start(struct daemon_state *d, int idx,
                             const char *args);
+static int trace_cmd_run(struct daemon_state *d, int idx,
+                          const char *args);
 static int trace_cmd_enable(struct client *c, const char *args);
 static int trace_cmd_disable(struct client *c, const char *args);
 
@@ -758,6 +763,9 @@ void trace_poll_events(struct daemon_state *d)
                     send_end(c->fd);
                     send_sentinel(c->fd);
                     c->trace.active = 0;
+                    c->trace.mode = TRACE_MODE_START;
+                    c->trace.run_proc_slot = -1;
+                    c->trace.run_task_ptr = NULL;
                 }
             }
             g_anchor = NULL;
@@ -783,6 +791,9 @@ void trace_poll_events(struct daemon_state *d)
                     send_end(c->fd);
                     send_sentinel(c->fd);
                     c->trace.active = 0;
+                    c->trace.mode = TRACE_MODE_START;
+                    c->trace.run_proc_slot = -1;
+                    c->trace.run_task_ptr = NULL;
                 }
             }
             g_anchor = NULL;
@@ -828,11 +839,19 @@ void trace_poll_events(struct daemon_state *d)
             c = &d->clients[i];
             if (c->fd < 0 || !c->trace.active)
                 continue;
+            /* TRACE RUN: exact Task pointer match */
+            if (c->trace.mode == TRACE_MODE_RUN) {
+                if (ev->caller_task != c->trace.run_task_ptr)
+                    continue;
+            }
             if (!trace_filter_match(&c->trace, ev, task_name))
                 continue;
             if (send_trace_data_chunk(c->fd, trace_line_buf) < 0) {
                 /* Mark for disconnect; main loop handles it */
                 c->trace.active = 0;
+                c->trace.mode = TRACE_MODE_START;
+                c->trace.run_proc_slot = -1;
+                c->trace.run_task_ptr = NULL;
             }
         }
 
@@ -896,6 +915,10 @@ int cmd_trace(struct daemon_state *d, int idx, const char *args)
 
     if (stricmp(sub, "START") == 0) {
         return trace_cmd_start(d, idx, args);
+    }
+
+    if (stricmp(sub, "RUN") == 0) {
+        return trace_cmd_run(d, idx, args);
     }
 
     if (stricmp(sub, "ENABLE") == 0) {
@@ -1036,6 +1059,255 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Send OK -- no sentinel (streaming response) */
     send_ok(c->fd, NULL);
     return 0;
+}
+
+/* ---- TRACE RUN ---- */
+
+static int trace_cmd_run(struct daemon_state *d, int idx,
+                          const char *args)
+{
+    struct client *c = &d->clients[idx];
+    const char *p;
+    const char *command;
+    char filter_buf[256];
+    int filter_len;
+    BPTR cd_lock;
+    int slot;
+    int i;
+    int oldest_slot;
+    int oldest_id;
+    struct Process *proc;
+    char info[16];
+
+    /* Mutual exclusion with TAIL */
+    if (c->tail.active) {
+        send_error(c->fd, ERR_INTERNAL, "TAIL session active");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Mutual exclusion: reject if already tracing */
+    if (c->trace.active) {
+        send_error(c->fd, ERR_INTERNAL, "TRACE session already active");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Check for atrace */
+    if (!trace_discover()) {
+        send_error(c->fd, ERR_INTERNAL, "atrace not loaded");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Check atrace is enabled */
+    if (!g_anchor->global_enable) {
+        send_error(c->fd, ERR_INTERNAL,
+                   "atrace is disabled (run: atrace_loader ENABLE)");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Check async exec is available */
+    if (g_proc_sigbit < 0) {
+        send_error(c->fd, ERR_INTERNAL, "Async exec unavailable");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Find the "--" separator */
+    p = args;
+    command = NULL;
+    while (*p) {
+        if (p[0] == '-' && p[1] == '-' &&
+            (p == args || p[-1] == ' ' || p[-1] == '\t') &&
+            (p[2] == ' ' || p[2] == '\t' || p[2] == '\0')) {
+            command = p + 2;
+            while (*command == ' ' || *command == '\t')
+                command++;
+            break;
+        }
+        p++;
+    }
+
+    if (!command) {
+        send_error(c->fd, ERR_SYNTAX, "Missing -- separator");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    if (*command == '\0') {
+        send_error(c->fd, ERR_SYNTAX, "Missing command");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Extract filter portion (everything before "--") */
+    filter_len = (int)(p - args);
+    if (filter_len >= (int)sizeof(filter_buf))
+        filter_len = (int)sizeof(filter_buf) - 1;
+    memcpy(filter_buf, args, filter_len);
+    filter_buf[filter_len] = '\0';
+
+    /* Reject PROC= filter (process filtering is automatic) */
+    if (stristr(filter_buf, "PROC=") != NULL) {
+        send_error(c->fd, ERR_SYNTAX,
+                   "PROC filter not valid for TRACE RUN");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Parse CD= from filter portion */
+    cd_lock = 0;
+    {
+        char *scan = filter_buf;
+        while (*scan) {
+            char *tok_start;
+            while (*scan == ' ' || *scan == '\t')
+                scan++;
+            if (*scan == '\0')
+                break;
+            tok_start = scan;
+            while (*scan && *scan != ' ' && *scan != '\t')
+                scan++;
+            if (strnicmp(tok_start, "CD=", 3) == 0) {
+                char cd_path[512];
+                int ci = 0;
+                const char *cp = tok_start + 3;
+                while (cp < scan && ci < (int)sizeof(cd_path) - 1)
+                    cd_path[ci++] = *cp++;
+                cd_path[ci] = '\0';
+
+                if (ci > 0) {
+                    cd_lock = Lock((STRPTR)cd_path, ACCESS_READ);
+                    if (!cd_lock) {
+                        send_error(c->fd, ERR_NOT_FOUND,
+                                   "Directory not found");
+                        send_sentinel(c->fd);
+                        return 0;
+                    }
+                }
+
+                /* Blank out the CD= token so parse_filters()
+                 * does not see it as an unknown keyword. */
+                while (tok_start < scan)
+                    *tok_start++ = ' ';
+                break;
+            }
+        }
+    }
+
+    /* Find a proc_slot (same logic as exec_async) */
+    slot = -1;
+    oldest_slot = -1;
+    oldest_id = 0x7FFFFFFF;
+
+    for (i = 0; i < MAX_TRACKED_PROCS; i++) {
+        if (g_daemon_state->procs[i].id == 0) {
+            slot = i;
+            break;
+        }
+        if (g_daemon_state->procs[i].status != PROC_RUNNING) {
+            if (g_daemon_state->procs[i].id < oldest_id) {
+                oldest_id = g_daemon_state->procs[i].id;
+                oldest_slot = i;
+            }
+        }
+    }
+
+    if (slot < 0)
+        slot = oldest_slot;
+
+    if (slot < 0) {
+        if (cd_lock)
+            UnLock(cd_lock);
+        send_error(c->fd, ERR_INTERNAL, "Process table full");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Populate the proc_slot and launch */
+    strncpy(g_daemon_state->procs[slot].command, command, 255);
+    g_daemon_state->procs[slot].command[255] = '\0';
+    g_daemon_state->procs[slot].status = PROC_RUNNING;
+    g_daemon_state->procs[slot].completed = 0;
+    g_daemon_state->procs[slot].rc = 0;
+    g_daemon_state->procs[slot].id = g_daemon_state->next_proc_id++;
+    g_daemon_state->procs[slot].cd_lock = cd_lock;
+
+    Forbid();
+    proc = CreateNewProcTags(
+        NP_Entry, (ULONG)async_wrapper,
+        NP_Name, (ULONG)"amigactld-exec",
+        NP_StackSize, 16384,
+        NP_Cli, TRUE,
+        TAG_DONE);
+    if (proc)
+        g_daemon_state->procs[slot].task = (struct Task *)proc;
+    Permit();
+
+    if (!proc) {
+        g_daemon_state->procs[slot].id = 0;
+        g_daemon_state->procs[slot].status = PROC_EXITED;
+        g_daemon_state->procs[slot].task = NULL;
+        if (cd_lock) {
+            UnLock(cd_lock);
+            g_daemon_state->procs[slot].cd_lock = 0;
+        }
+        send_error(c->fd, ERR_INTERNAL, "Failed to create process");
+        send_sentinel(c->fd);
+        return 0;
+    }
+
+    /* Parse trace filters (after successful process creation) */
+    parse_filters(filter_buf, &c->trace);
+
+    /* Enter TRACE RUN streaming mode */
+    c->trace.mode = TRACE_MODE_RUN;
+    c->trace.run_proc_slot = slot;
+    c->trace.run_task_ptr = (APTR)g_daemon_state->procs[slot].task;
+    c->trace.active = 1;
+
+    sprintf(info, "%d", g_daemon_state->procs[slot].id);
+    send_ok(c->fd, info);
+    return 0;
+}
+
+/* ---- TRACE RUN completion check ---- */
+
+void trace_check_run_completed(struct daemon_state *d)
+{
+    int i;
+    struct client *c;
+    struct tracked_proc *slot;
+    static char comment[64];
+
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        c = &d->clients[i];
+        if (c->fd < 0 || !c->trace.active)
+            continue;
+        if (c->trace.mode != TRACE_MODE_RUN)
+            continue;
+        if (c->trace.run_proc_slot < 0)
+            continue;
+
+        slot = &d->procs[c->trace.run_proc_slot];
+
+        if (slot->status != PROC_EXITED)
+            continue;
+
+        /* Send exit notification */
+        sprintf(comment, "# PROCESS EXITED rc=%d", slot->rc);
+        send_trace_data_chunk(c->fd, comment);
+        send_end(c->fd);
+        send_sentinel(c->fd);
+
+        /* Clear trace state */
+        c->trace.active = 0;
+        c->trace.mode = TRACE_MODE_START;
+        c->trace.run_proc_slot = -1;
+        c->trace.run_task_ptr = NULL;
+    }
 }
 
 /* ---- TRACE ENABLE / TRACE DISABLE ---- */
@@ -1258,6 +1530,9 @@ int trace_handle_input(struct daemon_state *d, int idx)
     n = recv_into_buf(c);
     if (n <= 0) {
         c->trace.active = 0;
+        c->trace.mode = TRACE_MODE_START;
+        c->trace.run_proc_slot = -1;
+        c->trace.run_task_ptr = NULL;
         return -1;
     }
 
@@ -1274,6 +1549,9 @@ int trace_handle_input(struct daemon_state *d, int idx)
             send_end(c->fd);
             send_sentinel(c->fd);
             c->trace.active = 0;
+            c->trace.mode = TRACE_MODE_START;
+            c->trace.run_proc_slot = -1;
+            c->trace.run_task_ptr = NULL;
             return 0;
         }
         /* Silently discard other input during trace */

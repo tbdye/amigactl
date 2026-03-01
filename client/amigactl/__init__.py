@@ -1368,6 +1368,114 @@ class AmigaConnection:
         finally:
             self._sock.settimeout(old_timeout)
 
+    def trace_run(self, command, callback, lib=None, func=None,
+                  errors_only=False, cd=None):
+        # type: (str, Callable, Optional[str], Optional[str], bool, Optional[str]) -> dict
+        """Launch a program and trace its library calls.
+
+        callback(event_dict) is called for each trace event.
+        event_dict has the same format as trace_start().
+
+        The stream auto-terminates when the process exits.  The final
+        callback receives a comment event with text "PROCESS EXITED rc=N".
+
+        Returns a dict with keys:
+            proc_id (int) -- daemon-assigned process ID
+            rc (int or None) -- process exit code (from the exit comment)
+
+        Does NOT catch KeyboardInterrupt -- the caller should catch it
+        and call stop_trace() to terminate cleanly.
+
+        Args:
+            command: AmigaOS command string to execute.
+            callback: Function called with each event dict.
+            lib: Optional library filter (e.g. "dos").
+            func: Optional function filter (e.g. "Open").
+            errors_only: If True, only show error returns.
+            cd: Optional working directory for the command.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE RUN"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if errors_only:
+            cmd += " ERRORS"
+        if cd:
+            cmd += " CD={}".format(cd)
+        cmd += " -- {}".format(command)
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        # Parse proc_id from OK line
+        proc_id = None
+        info = status_line[3:].strip()
+        if info:
+            try:
+                proc_id = int(info)
+            except ValueError:
+                pass
+
+        # Stream events (same loop as trace_start)
+        rc = None
+        old_timeout = self._sock.gettimeout()
+        try:
+            self._sock.settimeout(None)
+
+            while True:
+                line = read_line(self._sock)
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    chunk = recv_exact(self._sock, chunk_len)
+                    text = chunk.decode(ENCODING)
+                    if text.startswith("#"):
+                        comment_text = text[2:] if len(text) > 2 else ""
+                        # Parse exit code from PROCESS EXITED comment
+                        if comment_text.startswith("PROCESS EXITED rc="):
+                            try:
+                                rc = int(comment_text[18:])
+                            except ValueError:
+                                pass
+                        callback({
+                            "type": "comment",
+                            "text": comment_text,
+                        })
+                    else:
+                        event = _parse_trace_event(text)
+                        callback(event)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return {"proc_id": proc_id, "rc": rc}
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    _raise_for_error(line[4:])
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TRACE RUN: {!r}".format(
+                            line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
     def trace_enable(self, funcs=None):
         # type: (Optional[List[str]]) -> None
         """Enable atrace globally, or enable specific functions.

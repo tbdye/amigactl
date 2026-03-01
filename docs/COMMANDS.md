@@ -3160,8 +3160,8 @@ S> .
 ## TRACE
 
 Controls system-level library call tracing via the atrace kernel module.
-TRACE is a compound command with subcommands: STATUS, START, STOP,
-ENABLE, and DISABLE.
+TRACE is a compound command with subcommands: STATUS, START, RUN,
+STOP, ENABLE, and DISABLE.
 
 The atrace module must be loaded on the Amiga (`RUN >NIL: atrace_loader`)
 before TRACE commands will work. atrace patches 30 functions across
@@ -3388,6 +3388,174 @@ S> .
 ```
 C> TRACE START
 S> ERR 500 atrace not loaded
+S> .
+```
+
+### TRACE RUN
+
+Launches a program and traces its library calls. The trace stream
+auto-terminates when the process exits. This combines EXEC ASYNC with
+TRACE START in a single command, automatically filtering events to
+only those from the launched process.
+
+#### Syntax
+
+```
+TRACE RUN [LIB=<name>] [FUNC=<name>] [ERRORS] [CD=<dir>] -- <command>
+```
+
+The `--` separator is required. Everything before it is filter options;
+everything after it is the command to execute.
+
+All filter arguments are optional. When multiple filters are specified,
+they are AND-combined (all must match for an event to be sent).
+
+| Option | Description |
+|--------|-------------|
+| `LIB=<name>` | Filter by library (same as TRACE START) |
+| `FUNC=<name>` | Filter by function (same as TRACE START) |
+| `ERRORS` | Only show calls that returned an error value |
+| `CD=<dir>` | Working directory for the command |
+
+`PROC=` is **not accepted**. Process filtering is automatic -- the
+daemon filters events by the launched process's Task pointer, so only
+calls made by that process are streamed to the client.
+
+**Note**: The launched process's task name is `amigactld-exec` (the
+same name used by EXEC ASYNC). When observing a TRACE RUN'd process
+from a separate TRACE START session on another connection, use
+`PROC=amigactld-exec`.
+
+#### Response
+
+```
+OK <proc_id>
+DATA <chunk_len>
+<tab-separated event line>
+DATA <chunk_len>
+<tab-separated event line>
+...
+DATA <chunk_len>
+# PROCESS EXITED rc=<N>
+END
+.
+```
+
+The response uses the same streaming DATA/END format as TRACE START.
+Each DATA chunk contains one trace event line (tab-separated fields,
+same format as TRACE START events).
+
+The `<proc_id>` in the OK line is the daemon-assigned process ID
+(same namespace as EXEC ASYNC). This ID can be used with PROCSTAT,
+SIGNAL, or KILL to manage the process independently.
+
+When the process exits, a comment line `# PROCESS EXITED rc=<N>` is
+sent as a DATA chunk (where N is the process's return code), followed
+by END and the sentinel. The stream terminates automatically -- the
+client does not need to send STOP.
+
+#### STOP During TRACE RUN
+
+The client may send `STOP` at any time during an active TRACE RUN
+stream. The daemon stops streaming events and sends END + sentinel.
+The launched process **continues running** and can be managed via
+PROCSTAT, SIGNAL, or KILL using the proc_id from the OK line.
+
+After STOP, the connection returns to normal command processing mode.
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing `--` separator | `ERR 100 Missing -- separator` |
+| Missing command after `--` | `ERR 100 Missing command` |
+| `PROC=` filter specified | `ERR 100 PROC filter not valid for TRACE RUN` |
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| atrace is disabled | `ERR 500 atrace is disabled (run: atrace_loader ENABLE)` |
+| TRACE session already active | `ERR 500 TRACE session already active` |
+| TAIL session active | `ERR 500 TAIL session active` |
+| `CD=` directory not found | `ERR 200 Directory not found` |
+| Async exec unavailable | `ERR 500 Async exec unavailable` |
+| Process table full | `ERR 500 Process table full` |
+| Failed to create process | `ERR 500 Failed to create process` |
+
+These errors are returned synchronously (before the streaming phase
+begins). The connection remains in normal command processing mode.
+
+#### Examples
+
+**Trace a command until it exits:**
+
+```
+C> TRACE RUN -- List SYS:
+S> OK 5
+S> DATA 78
+S> 1001	14:30:01.000	dos.Lock	amigactld-exec	"SYS:",ACCESS_READ	0x03c1a0b8
+S> DATA 72
+S> 1002	14:30:01.020	dos.Open	amigactld-exec	"*",MODE_OLDFILE	0x1a3c0040
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Trace with library filter:**
+
+```
+C> TRACE RUN LIB=exec -- CNet:bbs
+S> OK 6
+S> DATA 82
+S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",0	0x0e2a1000
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Trace with working directory:**
+
+```
+C> TRACE RUN CD=Work:projects -- myprog
+S> OK 7
+S> DATA 65
+S> 3001	14:32:00.000	dos.Open	amigactld-exec	"data.txt",MODE_OLDFILE	0x03c1a0b8
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Stop tracing early (process continues):**
+
+```
+C> TRACE RUN -- CNet:bbs
+S> OK 8
+S> DATA 82
+S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",0	0x0e2a1000
+C> STOP
+S> END
+S> .
+```
+
+**Command not found (process exits with rc=-1):**
+
+```
+C> TRACE RUN -- NoSuchProgram
+S> OK 9
+S> DATA 26
+S> # PROCESS EXITED rc=-1
+S> END
+S> .
+```
+
+**PROC= filter rejected:**
+
+```
+C> TRACE RUN PROC=test -- Echo hello
+S> ERR 100 PROC filter not valid for TRACE RUN
 S> .
 ```
 

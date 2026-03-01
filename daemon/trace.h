@@ -41,4 +41,9 @@ void trace_poll_events(struct daemon_state *d);
 /* Returns 1 if any client has an active trace session. */
 int trace_any_active(struct daemon_state *d);
 
+/* Check if any TRACE RUN process has completed.
+ * If so, sends PROCESS EXITED comment, END, sentinel, and clears
+ * trace state.  Must be called AFTER exec_scan_completed(). */
+void trace_check_run_completed(struct daemon_state *d);
+
 #endif /* AMIGACTLD_TRACE_H */

@@ -384,3 +384,209 @@ class TestTraceStreaming:
             assert payload == []
         finally:
             trace_sock.close()
+
+
+# ---------------------------------------------------------------------------
+# TestTraceRun -- TRACE RUN command (launch + trace)
+# ---------------------------------------------------------------------------
+
+class TestTraceRun:
+    """Tests for TRACE RUN against a live daemon with atrace loaded."""
+
+    def test_trace_run_basic(self, amiga_host, amiga_port):
+        """TRACE RUN -- Echo >NIL: hello produces events and exits cleanly."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(sock, "TRACE RUN -- Echo >NIL: hello")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            # Parse proc_id
+            proc_id = int(status_line[3:].strip())
+            assert proc_id > 0
+
+            # Collect events until END
+            events = []
+            exit_comment = None
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    text = data.decode("iso-8859-1")
+                    if text.startswith("# PROCESS EXITED"):
+                        exit_comment = text
+                    else:
+                        events.append(text)
+                elif line == "END":
+                    sentinel = _read_line(sock)
+                    assert sentinel == "."
+                    break
+
+            # Verify exit comment
+            assert exit_comment is not None, (
+                "Expected PROCESS EXITED comment")
+            assert "rc=0" in exit_comment
+
+            # Verify connection returns to normal
+            send_command(sock, "PING")
+            status, payload = read_response(sock)
+            assert status == "OK"
+        finally:
+            sock.close()
+
+    def test_trace_run_with_stop(self, amiga_host, amiga_port):
+        """STOP during TRACE RUN returns connection to normal.
+        Process continues running."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            # Launch a long-running command
+            send_command(sock, "TRACE RUN -- Wait 2")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+            proc_id = int(status_line[3:].strip())
+
+            # Immediately stop tracing
+            _send_stop_and_drain(sock)
+
+            # Verify connection is back to normal
+            send_command(sock, "PING")
+            status, payload = read_response(sock)
+            assert status == "OK"
+
+            # Clean up: signal the process to stop
+            send_command(sock, "SIGNAL {}".format(proc_id))
+            read_response(sock)
+        finally:
+            sock.close()
+
+    def test_trace_run_command_not_found(self, amiga_host, amiga_port):
+        """Running a nonexistent command produces PROCESS EXITED with
+        a non-zero rc."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(
+                sock,
+                "TRACE RUN -- NoSuchProgramThatDefinitelyDoesNotExist_xyz")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            # Collect until END -- expect exit comment with non-zero rc
+            exit_comment = None
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    text = data.decode("iso-8859-1")
+                    if text.startswith("# PROCESS EXITED"):
+                        exit_comment = text
+                elif line == "END":
+                    sentinel = _read_line(sock)
+                    assert sentinel == "."
+                    break
+
+            assert exit_comment is not None, (
+                "Expected PROCESS EXITED comment")
+            # Command not found typically returns rc=-1 or rc=20
+            assert "rc=" in exit_comment
+            # Parse the rc value -- it should not be 0
+            rc_str = exit_comment.split("rc=")[1].strip()
+            rc = int(rc_str)
+            assert rc != 0, (
+                "Expected non-zero rc for command not found, got {}".format(rc)
+            )
+        finally:
+            sock.close()
+
+    def test_trace_run_with_filters(self, amiga_host, amiga_port):
+        """TRACE RUN LIB=dos shows only dos.* events."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(sock, "TRACE RUN LIB=dos -- Echo >NIL: hello")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            events = []
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    text = data.decode("iso-8859-1")
+                    if not text.startswith("#"):
+                        events.append(text)
+                elif line == "END":
+                    _read_line(sock)  # sentinel
+                    break
+
+            # All events should be dos.* (not exec.*)
+            for ev in events:
+                parts = ev.split("\t")
+                if len(parts) >= 3:
+                    assert parts[2].startswith("dos."), (
+                        "Expected dos.* event, got: {}".format(parts[2]))
+        finally:
+            sock.close()
+
+    def test_trace_run_proc_filter_rejected(self, raw_connection):
+        """TRACE RUN with PROC= returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "TRACE RUN PROC=test -- Echo hello")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_trace_run_missing_separator(self, raw_connection):
+        """TRACE RUN without -- returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "TRACE RUN Echo hello")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_trace_run_missing_command(self, raw_connection):
+        """TRACE RUN -- (no command) returns ERR 100."""
+        sock, _banner = raw_connection
+        send_command(sock, "TRACE RUN --")
+        status, payload = read_response(sock)
+        assert status.startswith("ERR 100")
+
+    def test_trace_run_client_api(self, conn):
+        """trace_run() via the Python client API works end-to-end."""
+        events = []
+
+        def cb(event):
+            events.append(event)
+
+        result = conn.trace_run("Echo >NIL: hello", cb)
+
+        assert result["proc_id"] is not None
+        assert result["proc_id"] > 0
+        assert result["rc"] == 0
+
+        # Should have at least one event (process exit comment)
+        assert len(events) >= 1
+        # Last event should be the exit comment
+        exit_events = [e for e in events
+                       if e.get("type") == "comment"
+                       and "PROCESS EXITED" in e.get("text", "")]
+        assert len(exit_events) == 1

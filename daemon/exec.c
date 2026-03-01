@@ -39,7 +39,6 @@ static char read_buf[4096];
 
 static int exec_sync(struct client *c, const char *args);
 static int exec_async(struct client *c, const char *args);
-static void async_wrapper(void);
 static const char *parse_cd_prefix(const char *args, BPTR *cd_lock,
                                    struct client *c);
 static BPTR find_command_segment(const char *cmdname, int *is_resident);
@@ -519,7 +518,7 @@ static int exec_async(struct client *c, const char *args)
 /* __saveds is not needed: the large data model (-noixemul) uses absolute
  * addressing for globals, so the a4 small-data base register setup that
  * __saveds provides is redundant and the compiler warns about it. */
-static void async_wrapper(void)
+void async_wrapper(void)
 {
     struct Task *me;
     struct tracked_proc *slot;

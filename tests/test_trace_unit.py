@@ -488,3 +488,224 @@ class TestShellDoTrace:
         shell.do_trace("")
         out = capsys.readouterr().out
         assert "Usage:" in out
+
+
+# ---------------------------------------------------------------------------
+# TestTraceRunCommandBuilding
+# ---------------------------------------------------------------------------
+
+class TestTraceRunCommandBuilding:
+    """Tests verifying the client library builds correct TRACE RUN
+    command strings and parses responses."""
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_builds_command(self, mock_send, mock_readline):
+        """trace_run() sends TRACE RUN -- <command> with no filters."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 1", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("Echo hello", callback)
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN -- Echo hello")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_with_lib(self, mock_send, mock_readline):
+        """LIB= filter is placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 2", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("List SYS:", callback, lib="dos")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN LIB=dos -- List SYS:")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_with_func(self, mock_send, mock_readline):
+        """FUNC= filter is placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 3", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("test", callback, func="Open")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN FUNC=Open -- test")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_with_errors(self, mock_send, mock_readline):
+        """ERRORS flag is placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 4", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("test", callback, errors_only=True)
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN ERRORS -- test")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_cd_option(self, mock_send, mock_readline):
+        """CD= option is placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 5", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("myprog", callback, cd="Work:")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN CD=Work: -- myprog")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_combined(self, mock_send, mock_readline):
+        """All filters are placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 6", "END", "."]
+        callback = mock.MagicMock()
+
+        conn.trace_run("CNet:bbs", callback,
+                        lib="dos", func="Open", errors_only=True)
+
+        mock_send.assert_called_once_with(
+            conn._sock,
+            "TRACE RUN LIB=dos FUNC=Open ERRORS -- CNet:bbs")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_parses_proc_id(self, mock_send, mock_readline):
+        """OK line proc_id is parsed correctly."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["OK 42", "END", "."]
+        callback = mock.MagicMock()
+
+        result = conn.trace_run("test", callback)
+
+        assert result["proc_id"] == 42
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.recv_exact")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_parses_exit_code(self, mock_send,
+                                         mock_recv, mock_readline):
+        """trace_run extracts rc from PROCESS EXITED comment."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = [
+            "OK 1",
+            "DATA 25",
+            "END",
+            ".",
+        ]
+        mock_recv.return_value = b"# PROCESS EXITED rc=5"
+        callback = mock.MagicMock()
+
+        result = conn.trace_run("test", callback)
+
+        assert result["proc_id"] == 1
+        assert result["rc"] == 5
+        callback.assert_called_once()
+        assert callback.call_args[0][0]["type"] == "comment"
+        assert "PROCESS EXITED rc=5" in callback.call_args[0][0]["text"]
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_handles_error(self, mock_send, mock_readline):
+        """trace_run raises on ERR response."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = [
+            "ERR 500 atrace not loaded", "."]
+        with pytest.raises(InternalError, match="atrace not loaded"):
+            conn.trace_run("test", callback=mock.MagicMock())
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.recv_exact")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_callback(self, mock_send, mock_recv,
+                                 mock_readline):
+        """Callback receives event dicts for trace events."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        event_line = (
+            b"1\t14:30:01.000\tdos.Open\tamigactld-exec"
+            b'\t"test.txt",MODE_OLDFILE\t0x03c1a0b8'
+        )
+        mock_readline.side_effect = [
+            "OK 1",
+            "DATA {}".format(len(event_line)),
+            "DATA 25",
+            "END",
+            ".",
+        ]
+        mock_recv.side_effect = [event_line, b"# PROCESS EXITED rc=0"]
+        events = []
+        callback = mock.MagicMock(side_effect=lambda e: events.append(e))
+
+        result = conn.trace_run("test", callback)
+
+        assert len(events) == 2
+        assert events[0]["type"] == "event"
+        assert events[0]["func"] == "Open"
+        assert events[0]["lib"] == "dos"
+        assert events[1]["type"] == "comment"
+        assert "PROCESS EXITED rc=0" in events[1]["text"]
+        assert result["rc"] == 0
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_no_exit_code(self, mock_send, mock_readline):
+        """rc is None when no PROCESS EXITED comment is seen (e.g., STOP)."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        # Simulate immediate END (as after STOP) with no exit comment
+        mock_readline.side_effect = ["OK 1", "END", "."]
+        callback = mock.MagicMock()
+
+        result = conn.trace_run("test", callback)
+
+        assert result["proc_id"] == 1
+        assert result["rc"] is None
+
+
+# ---------------------------------------------------------------------------
+# TestShellDoTraceRun
+# ---------------------------------------------------------------------------
+
+class TestShellDoTraceRun:
+    """Tests for trace run in the shell."""
+
+    def test_trace_run_no_separator(self, capsys):
+        shell = _make_shell()
+        shell.do_trace("run Echo hello")
+        out = capsys.readouterr().out
+        assert "-- separator" in out or "--" in out
+
+    def test_trace_run_no_command(self, capsys):
+        shell = _make_shell()
+        shell.do_trace("run --")
+        out = capsys.readouterr().out
+        assert "Missing command" in out or "command" in out.lower()
+
+    def test_trace_run_basic(self):
+        shell = _make_shell()
+        shell.conn.trace_run = mock.MagicMock(
+            return_value={"proc_id": 1, "rc": 0})
+        shell.do_trace("run -- Echo hello")
+        shell.conn.trace_run.assert_called_once()
+        call_args = shell.conn.trace_run.call_args
+        assert call_args[0][0] == "Echo hello"
