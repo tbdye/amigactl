@@ -13,7 +13,7 @@ import time
 from . import (
     AmigaConnection, AmigactlError, NotFoundError, ProtocolError,
 )
-from .colors import ColorWriter, format_trace_event
+from .colors import ColorWriter, TRACE_HEADER, format_trace_event
 
 
 # ---------------------------------------------------------------------------
@@ -3080,6 +3080,13 @@ class AmigaShell(cmd.Cmd):
                     status["buffer_capacity"]))
                 print("  Buffer used:      {}".format(
                     status.get("buffer_used", 0)))
+            if "noise_disabled" in status:
+                print("  Noise disabled:   {}".format(
+                    status["noise_disabled"]))
+            if "filter_task" in status:
+                ft = status["filter_task"]
+                if ft != "0x00000000":
+                    print("  Filter task:      {}".format(ft))
             if "patch_list" in status:
                 print("\n  Patch details:")
                 for entry in status["patch_list"]:
@@ -3101,8 +3108,7 @@ class AmigaShell(cmd.Cmd):
                     kwargs["errors_only"] = True
 
             # Column header
-            print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
-                "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+            print(TRACE_HEADER)
 
             def trace_callback(event):
                 print(format_trace_event(event, self.cw))
@@ -3167,8 +3173,7 @@ class AmigaShell(cmd.Cmd):
                 kwargs["cd"] = self.cwd
 
             # Column header
-            print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
-                "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+            print(TRACE_HEADER)
 
             def trace_callback(event):
                 print(format_trace_event(event, self.cw))

@@ -318,47 +318,50 @@ int main(int argc, char **argv)
             arexx_handle_replies(&daemon);
         }
 
-        if (rc < 0) {
-            /* WaitSelect error -- could be spurious, continue */
-            continue;
+        /* Only process fd_sets when WaitSelect returned ready descriptors */
+        if (rc > 0) {
+            /* Check listener for new connections */
+            if (FD_ISSET(daemon.listener_fd, &rfds))
+                handle_accept(&daemon);
+
+            /* Process each client based on its current mode */
+            for (i = 0; i < MAX_CLIENTS; i++) {
+                if (daemon.clients[i].fd < 0)
+                    continue;
+
+                if (daemon.clients[i].trace.active) {
+                    /* TRACE mode: check for STOP */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                        if (trace_handle_input(&daemon, i) < 0) {
+                            disconnect_client(&daemon, i);
+                            continue;
+                        }
+                    }
+                } else if (daemon.clients[i].tail.active) {
+                    /* TAIL mode: check for STOP */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                        if (tail_handle_input(&daemon, i) < 0) {
+                            disconnect_client(&daemon, i);
+                            continue;
+                        }
+                    }
+                } else if (daemon.clients[i].arexx_pending) {
+                    /* Waiting for ARexx reply -- skip command processing */
+                } else {
+                    /* Normal command processing */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds))
+                        handle_client(&daemon, i);
+                }
+            }
         }
 
-        /* Check listener for new connections */
-        if (FD_ISSET(daemon.listener_fd, &rfds))
-            handle_accept(&daemon);
-
-        /* Process each client based on its current mode */
+        /* Poll TAIL files unconditionally -- file polling is independent
+         * of socket activity and must run every iteration */
         for (i = 0; i < MAX_CLIENTS; i++) {
-            if (daemon.clients[i].fd < 0)
-                continue;
-
-            if (daemon.clients[i].trace.active) {
-                /* TRACE mode: check for STOP */
-                if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
-                    if (trace_handle_input(&daemon, i) < 0) {
-                        disconnect_client(&daemon, i);
-                        continue;
-                    }
+            if (daemon.clients[i].tail.active) {
+                if (tail_poll_file(&daemon, i) < 0) {
+                    disconnect_client(&daemon, i);
                 }
-            } else if (daemon.clients[i].tail.active) {
-                /* TAIL mode: check for STOP, poll file */
-                if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
-                    if (tail_handle_input(&daemon, i) < 0) {
-                        disconnect_client(&daemon, i);
-                        continue;
-                    }
-                }
-                if (daemon.clients[i].tail.active)
-                    if (tail_poll_file(&daemon, i) < 0) {
-                        disconnect_client(&daemon, i);
-                        continue;
-                    }
-            } else if (daemon.clients[i].arexx_pending) {
-                /* Waiting for ARexx reply -- skip command processing */
-            } else {
-                /* Normal command processing */
-                if (FD_ISSET(daemon.clients[i].fd, &rfds))
-                    handle_client(&daemon, i);
             }
         }
 
@@ -389,6 +392,12 @@ cleanup:
 
     /* Safely terminate tracked async processes */
     exec_shutdown_procs(&daemon);
+
+    /* Clean up TRACE RUN filter_task/noise before closing sockets */
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        if (daemon.clients[i].fd >= 0)
+            trace_run_disconnect_cleanup(&daemon, i);
+    }
 
     /* Close all client sockets */
     for (i = 0; i < MAX_CLIENTS; i++) {
@@ -470,6 +479,7 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].trace.mode = TRACE_MODE_START;
     d->clients[slot].trace.run_proc_slot = -1;
     d->clients[slot].trace.run_task_ptr = NULL;
+    d->clients[slot].trace.noise_saved = 0;
 
     send_banner(fd);
 }
@@ -783,6 +793,11 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
 static void disconnect_client(struct daemon_state *d, int idx)
 {
+    /* Restore filter_task and noise states if this client had an
+     * active TRACE RUN with stub-level filtering. Must come before
+     * the inline state clearing below. */
+    trace_run_disconnect_cleanup(d, idx);
+
     /* Clean up streaming state before closing the connection */
     d->clients[idx].tail.active = 0;
     d->clients[idx].trace.active = 0;

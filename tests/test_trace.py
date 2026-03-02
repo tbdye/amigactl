@@ -56,10 +56,9 @@ def require_atrace(request):
 def restore_trace_state(conn):
     """Restore atrace to default state after test.
 
-    Teardown unconditionally restores: globally enabled, all 30
-    functions enabled.  This matches the expected default state of
-    a freshly loaded atrace and is simpler than saving/restoring
-    the exact pre-test state.
+    Teardown restores: globally enabled, all non-noise functions
+    enabled, noise functions disabled.  This matches the expected
+    default state of a freshly loaded atrace (Phase 4+).
     """
     yield
     # Restore global enable
@@ -71,6 +70,11 @@ def restore_trace_state(conn):
                       if not e.get("enabled")]
     if disabled_funcs:
         conn.trace_enable(funcs=disabled_funcs)
+    # Re-disable noise functions to match post-install defaults
+    noise_funcs = ["FindPort", "FindSemaphore", "FindTask",
+                   "GetMsg", "PutMsg", "ObtainSemaphore",
+                   "ReleaseSemaphore", "AllocMem"]
+    conn.trace_disable(funcs=noise_funcs)
 
 
 # ---------------------------------------------------------------------------
@@ -590,3 +594,300 @@ class TestTraceRun:
                        if e.get("type") == "comment"
                        and "PROCESS EXITED" in e.get("text", "")]
         assert len(exit_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# TestNoiseDefaults -- Phase 4: noise function auto-disable
+# ---------------------------------------------------------------------------
+
+class TestNoiseDefaults:
+    """Tests for noise function auto-disable defaults (Phase 4).
+
+    After loading atrace, 8 high-frequency exec functions should be
+    disabled by default.  These tests verify the default state and
+    user override behavior.
+    """
+
+    def test_noise_funcs_default_disabled(self, conn):
+        """Noise functions should be disabled by default after loading."""
+        status = conn.trace_status()
+        assert status.get("noise_disabled", 0) >= 8
+
+        # Check specific functions are disabled
+        patches = status.get("patch_list", [])
+        noise_names = {
+            "exec.FindPort", "exec.FindSemaphore", "exec.FindTask",
+            "exec.GetMsg", "exec.PutMsg", "exec.ObtainSemaphore",
+            "exec.ReleaseSemaphore", "exec.AllocMem",
+        }
+        for patch in patches:
+            if patch["name"] in noise_names:
+                assert not patch["enabled"], \
+                    "{} should be disabled by default".format(patch["name"])
+
+        # Cross-check: noise_disabled count matches actual disabled noise funcs
+        actual_disabled = sum(
+            1 for p in patches
+            if p["name"] in noise_names and not p["enabled"]
+        )
+        assert status["noise_disabled"] == actual_disabled, \
+            "noise_disabled {} != actual disabled noise funcs {}".format(
+                status["noise_disabled"], actual_disabled)
+
+    def test_noise_func_explicit_enable(self, conn, restore_trace_state):
+        """User can explicitly enable noise functions."""
+        conn.trace_enable(funcs=["ObtainSemaphore"])
+        status = conn.trace_status()
+        patches = status.get("patch_list", [])
+        for patch in patches:
+            if patch["name"] == "exec.ObtainSemaphore":
+                assert patch["enabled"], \
+                    "ObtainSemaphore should be enabled after explicit enable"
+                break
+
+
+# ---------------------------------------------------------------------------
+# TestTraceRunPhase4 -- Phase 4: task filter, noise auto-enable, process name
+# ---------------------------------------------------------------------------
+
+class TestTraceRunPhase4:
+    """Tests for Phase 4 TRACE RUN enhancements: task filter, noise
+    auto-enable/restore, and process name fix."""
+
+    def test_trace_run_auto_enables_noise(self, amiga_host, amiga_port):
+        """TRACE RUN should auto-enable noise functions for the target task."""
+        conn = AmigaConnection(amiga_host, amiga_port)
+        conn.connect()
+        try:
+            # Check noise functions are disabled before
+            status = conn.trace_status()
+            pre_noise = status.get("noise_disabled", 0)
+            assert pre_noise >= 8
+
+            # Start TRACE RUN
+            events = []
+
+            def collect(ev):
+                events.append(ev)
+
+            conn.trace_run("List SYS:", collect)
+
+            # After trace_run returns, check noise functions restored
+            status = conn.trace_status()
+            post_noise = status.get("noise_disabled", 0)
+            assert post_noise >= 8, \
+                "Noise functions should be restored after TRACE RUN"
+        finally:
+            conn.close()
+
+    def test_trace_run_no_overflow(self, amiga_host, amiga_port):
+        """TRACE RUN with task filter should not overflow the ring buffer."""
+        conn = AmigaConnection(amiga_host, amiga_port)
+        conn.connect()
+        try:
+            # Record overflow count before
+            status_before = conn.trace_status()
+            overflow_before = status_before.get("events_dropped", 0)
+
+            events = []
+
+            def collect(ev):
+                events.append(ev)
+
+            conn.trace_run("List SYS:", collect)
+
+            # Check overflow did not increase
+            status_after = conn.trace_status()
+            overflow_after = status_after.get("events_dropped", 0)
+            assert overflow_after == overflow_before, \
+                "Ring buffer overflowed during filtered TRACE RUN"
+        finally:
+            conn.close()
+
+    def test_trace_run_process_name(self, amiga_host, amiga_port):
+        """TRACE RUN should show command basename, not 'amigactld-exec'."""
+        conn = AmigaConnection(amiga_host, amiga_port)
+        conn.connect()
+        try:
+            events = []
+
+            def collect(ev):
+                if ev.get("type") == "event":
+                    events.append(ev)
+
+            conn.trace_run("C:List SYS:", collect)
+
+            # At least some events should show "List" as the task name
+            # Phase 4b adds CLI number prefix: "[N] List"
+            assert len(events) > 0, "No events received"
+            task_names = {ev.get("task", "") for ev in events}
+            assert any(t.endswith("List") for t in task_names), \
+                "Expected task name ending with 'List', got: {}".format(task_names)
+        finally:
+            conn.close()
+
+    def test_trace_run_filter_only_target(self, amiga_host, amiga_port):
+        """TRACE RUN should only show events from the target process."""
+        conn = AmigaConnection(amiga_host, amiga_port)
+        conn.connect()
+        try:
+            events = []
+
+            def collect(ev):
+                if ev.get("type") == "event":
+                    events.append(ev)
+
+            conn.trace_run("C:List SYS:", collect)
+
+            # All events should be from "List" (the traced process)
+            # Phase 4b adds CLI number prefix: "[N] List"
+            assert len(events) > 0, "No events received"
+            for ev in events:
+                task = ev.get("task", "")
+                assert task.endswith("List"), \
+                    "Event from non-target task: {}".format(task)
+        finally:
+            conn.close()
+
+    def test_trace_status_filter_task_during_run(self, amiga_host,
+                                                  amiga_port):
+        """TRACE STATUS should show filter_task during TRACE RUN."""
+        import threading
+
+        conn1 = AmigaConnection(amiga_host, amiga_port)
+        conn1.connect()
+        conn2 = AmigaConnection(amiga_host, amiga_port)
+        conn2.connect()
+        try:
+            # Start a long-running TRACE RUN on conn1
+            events = []
+            run_done = threading.Event()
+
+            def collect(ev):
+                events.append(ev)
+
+            def run_trace():
+                try:
+                    conn1.trace_run("C:Wait 2", collect)
+                except Exception:
+                    pass
+                run_done.set()
+
+            t = threading.Thread(target=run_trace)
+            t.start()
+
+            # Poll for filter_task to become non-zero (up to 3 seconds)
+            filter_task = "0x00000000"
+            for _ in range(30):
+                time.sleep(0.1)
+                status = conn2.trace_status()
+                filter_task = status.get("filter_task", "0x00000000")
+                if filter_task != "0x00000000":
+                    break
+            assert filter_task != "0x00000000", \
+                "filter_task should be non-zero during TRACE RUN"
+
+            run_done.wait(timeout=10)
+            t.join(timeout=5)
+        finally:
+            conn1.close()
+            conn2.close()
+
+
+# ---------------------------------------------------------------------------
+# TestPhase4bFilters -- Phase 4b filter feature tests
+# ---------------------------------------------------------------------------
+
+class TestPhase4bFilters:
+    """Tests for Phase 4b filter enhancements: LIB= suffix stripping
+    and FUNC= unknown sentinel matching.
+
+    These require direct protocol interaction with TRACE RUN to verify
+    daemon-side filter parsing.
+    """
+
+    def test_lib_suffix_stripping(self, amiga_host, amiga_port):
+        """LIB=dos.library filter works after stripping the .library suffix.
+
+        The daemon should accept "LIB=dos.library" and strip the suffix
+        to match against "dos".  All received events should have lib="dos".
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(
+                sock, "TRACE RUN LIB=dos.library -- C:Echo >NIL: test")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            events = []
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    text = data.decode("iso-8859-1")
+                    if not text.startswith("#"):
+                        events.append(text)
+                elif line == "END":
+                    _read_line(sock)  # sentinel
+                    break
+
+            # Must have received at least one event (Echo does dos.Open etc.)
+            assert len(events) >= 1, (
+                "No events received with LIB=dos.library filter")
+
+            # All events should be dos.* (suffix was stripped correctly)
+            for ev_text in events:
+                parts = ev_text.split("\t")
+                if len(parts) >= 3:
+                    assert parts[2].startswith("dos."), (
+                        "Expected dos.* event with LIB=dos.library filter, "
+                        "got: {}".format(parts[2]))
+        finally:
+            sock.close()
+
+    def test_func_unknown_sentinel(self, amiga_host, amiga_port):
+        """FUNC=BogusFunction filter matches nothing, producing zero events.
+
+        The daemon installs the unknown function name as a filter
+        sentinel.  Since no traced function matches "BogusFunction",
+        no events should be produced.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(
+                sock,
+                "TRACE RUN FUNC=BogusFunction -- C:Echo >NIL: test")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            events = []
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    text = data.decode("iso-8859-1")
+                    if not text.startswith("#"):
+                        events.append(text)
+                elif line == "END":
+                    _read_line(sock)  # sentinel
+                    break
+
+            assert len(events) == 0, (
+                "Expected zero non-comment events with FUNC=BogusFunction "
+                "filter, got {}: {}".format(
+                    len(events),
+                    [e[:80] for e in events]))
+        finally:
+            sock.close()

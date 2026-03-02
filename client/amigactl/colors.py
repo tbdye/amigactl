@@ -107,6 +107,10 @@ class ColorWriter:
         return text
 
 
+TRACE_HEADER = "{:<10s} {:>13s}  {:<28s} {:<20s} {:<40s} {}".format(
+    "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT")
+
+
 def format_trace_event(event, cw):
     """Format a trace event dict for columnar terminal output.
 
@@ -120,9 +124,15 @@ def format_trace_event(event, cw):
         return cw.warning("# {}".format(event.get("text", "")))
 
     retval = event.get("retval", "")
-    retval_formatted = retval
-    if retval in ("NULL", "-1", "0"):
+    status = event.get("status", "-")
+
+    # Color retval based on daemon-provided status classification
+    if status == "E":
         retval_formatted = cw.error(retval)
+    elif status == "O":
+        retval_formatted = cw.success(retval)
+    else:
+        retval_formatted = retval  # neutral: no color
 
     seq_str = cw.dim(str(event.get("seq", "")))
     lib_str = event.get("lib", "")
@@ -141,8 +151,8 @@ def format_trace_event(event, cw):
         " " * max(0, 10 - seq_vis),
         event.get("time", ""),
         lib_func,
-        " " * max(0, 22 - lib_func_vis),
+        " " * max(0, 28 - lib_func_vis),
         task_str,
-        " " * max(0, 16 - task_vis),
+        " " * max(0, 20 - task_vis),
         event.get("args", ""),
         retval_formatted)

@@ -13,7 +13,7 @@
 /* ---- Constants ---- */
 
 #define ATRACE_MAGIC        0x41545243  /* 'ATRC' */
-#define ATRACE_VERSION      1
+#define ATRACE_VERSION      2
 #define ATRACE_SEM_NAME     "atrace_patches"
 #define ATRACE_DEFAULT_BUFSZ 8192
 
@@ -43,7 +43,8 @@
  *   patches:          offset  68,   4 bytes (APTR)
  *   event_sequence:   offset  72,   4 bytes (ULONG)
  *   events_consumed:  offset  76,   4 bytes (ULONG)
- *   Total: 80 bytes
+ *   filter_task:      offset  80,   4 bytes (volatile APTR)
+ *   Total: 84 bytes
  */
 struct atrace_anchor {
     struct SignalSemaphore sem;
@@ -58,6 +59,12 @@ struct atrace_anchor {
     struct atrace_patch *patches;
     volatile ULONG event_sequence;
     volatile ULONG events_consumed;
+
+    /* Phase 4: stub-level task filter.
+     * NULL = trace all tasks, non-NULL = trace only matching task.
+     * Set by daemon during TRACE RUN; stubs compare SysBase->ThisTask
+     * against this value before writing to the ring buffer. */
+    volatile APTR filter_task;
 };
 
 /* ---- struct atrace_ringbuf ----

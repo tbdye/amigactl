@@ -14,7 +14,7 @@ import pytest
 from amigactl import (
     AmigaConnection, CommandSyntaxError, InternalError, _parse_trace_event,
 )
-from amigactl.colors import ColorWriter, format_trace_event
+from amigactl.colors import ColorWriter, TRACE_HEADER, format_trace_event
 from amigactl.shell import AmigaShell, _DirCache
 
 
@@ -60,7 +60,7 @@ class TestParseTraceEvent:
     """Tests for _parse_trace_event() in client/amigactl/__init__.py."""
 
     def test_full_event(self):
-        text = '42\t14:30:01.000\texec.OpenLibrary\tShell Process\t"dos.library",0\t0x07a3b2c0'
+        text = '42\t14:30:01.000\texec.OpenLibrary\tShell Process\t"dos.library",0\t0x07a3b2c0\tO'
         event = _parse_trace_event(text)
         assert event["seq"] == 42
         assert event["time"] == "14:30:01.000"
@@ -69,7 +69,20 @@ class TestParseTraceEvent:
         assert event["task"] == "Shell Process"
         assert event["args"] == '"dos.library",0'
         assert event["retval"] == "0x07a3b2c0"
+        assert event["status"] == "O"
         assert event["type"] == "event"
+
+    def test_full_event_error_status(self):
+        text = '43\t14:30:02.000\texec.OpenLibrary\tShell Process\t"bogus.library",0\tNULL\tE'
+        event = _parse_trace_event(text)
+        assert event["retval"] == "NULL"
+        assert event["status"] == "E"
+
+    def test_full_event_neutral_status(self):
+        text = '44\t14:30:03.000\texec.PutMsg\tShell Process\t0x1234,0x5678\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["retval"] == "(void)"
+        assert event["status"] == "-"
 
     def test_minimal_event(self):
         event = _parse_trace_event("1\t12:00:00.000")
@@ -80,6 +93,7 @@ class TestParseTraceEvent:
         assert event["task"] == ""
         assert event["args"] == ""
         assert event["retval"] == ""
+        assert event["status"] == "-"
 
     def test_empty_string(self):
         event = _parse_trace_event("")
@@ -90,19 +104,21 @@ class TestParseTraceEvent:
         assert event["task"] == ""
         assert event["args"] == ""
         assert event["retval"] == ""
+        assert event["status"] == "-"
 
     def test_lib_func_split(self):
-        event = _parse_trace_event("1\t00:00\tdos.Open\ttask\targs\tret")
+        event = _parse_trace_event("1\t00:00\tdos.Open\ttask\targs\tret\tO")
         assert event["lib"] == "dos"
         assert event["func"] == "Open"
+        assert event["status"] == "O"
 
     def test_no_dot_in_func(self):
-        event = _parse_trace_event("1\t00:00\tSomeName\ttask\targs\tret")
+        event = _parse_trace_event("1\t00:00\tSomeName\ttask\targs\tret\t-")
         assert event["lib"] == ""
         assert event["func"] == "SomeName"
 
     def test_invalid_seq(self):
-        event = _parse_trace_event("abc\t00:00\texec.Open\ttask\targs\tret")
+        event = _parse_trace_event("abc\t00:00\texec.Open\ttask\targs\tret\tE")
         assert event["seq"] == 0
 
     def test_comment_not_parsed(self):
@@ -112,6 +128,13 @@ class TestParseTraceEvent:
         # seq=0 (the "#" is not numeric).
         event = _parse_trace_event("# OVERFLOW 5 events dropped")
         assert event["seq"] == 0
+
+    def test_six_field_backward_compat(self):
+        """Old 6-field format (no status) defaults status to '-'."""
+        text = '42\t14:30:01.000\texec.OpenLibrary\tShell Process\t"dos.library",0\t0x07a3b2c0'
+        event = _parse_trace_event(text)
+        assert event["retval"] == "0x07a3b2c0"
+        assert event["status"] == "-"
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +150,7 @@ class TestFormatTraceEvent:
             "seq": 42, "time": "14:30:01.000", "lib": "exec",
             "func": "OpenLibrary", "task": "Shell Process",
             "args": '"dos.library",0', "retval": "0x07a3b2c0",
-            "type": "event",
+            "status": "O", "type": "event",
         }
         base.update(overrides)
         return base
@@ -144,33 +167,67 @@ class TestFormatTraceEvent:
         assert '"dos.library",0' in result
         assert "0x07a3b2c0" in result
 
-    def test_error_retval_null(self):
+    def test_error_status_null(self):
         cw = ColorWriter(force_color=True)
-        event = self._event(retval="NULL")
+        event = self._event(retval="NULL", status="E")
         result = format_trace_event(event, cw)
         assert "\033[31m" in result
         assert "NULL" in result
 
-    def test_error_retval_minus1(self):
+    def test_error_status_fail(self):
         cw = ColorWriter(force_color=True)
-        event = self._event(retval="-1")
+        event = self._event(retval="FAIL", status="E")
+        result = format_trace_event(event, cw)
+        assert "\033[31m" in result
+        assert "FAIL" in result
+
+    def test_error_status_minus1(self):
+        cw = ColorWriter(force_color=True)
+        event = self._event(retval="-1", status="E")
         result = format_trace_event(event, cw)
         assert "\033[31m" in result
         assert "-1" in result
 
-    def test_error_retval_zero(self):
+    def test_success_status_pointer(self):
         cw = ColorWriter(force_color=True)
-        event = self._event(retval="0")
+        event = self._event(retval="0x07a3b2c0", status="O")
         result = format_trace_event(event, cw)
-        assert "\033[31m" in result
-        assert "0" in result
-
-    def test_success_retval(self):
-        cw = ColorWriter(force_color=True)
-        event = self._event(retval="0x07a3b2c0")
-        result = format_trace_event(event, cw)
+        # GREEN should wrap a successful return value
+        assert "\033[32m" in result
         # RED should not wrap a successful return value
         assert "\033[31m" not in result
+        assert "0x07a3b2c0" in result
+
+    def test_success_status_ok(self):
+        cw = ColorWriter(force_color=True)
+        event = self._event(retval="OK", status="O")
+        result = format_trace_event(event, cw)
+        assert "\033[32m" in result
+        assert "\033[31m" not in result
+
+    def test_neutral_status_void(self):
+        cw = ColorWriter(force_color=True)
+        event = self._event(retval="(void)", status="-")
+        result = format_trace_event(event, cw)
+        # RED and GREEN should not wrap the retval itself
+        assert "\033[31m(void)" not in result
+        assert "\033[32m(void)" not in result
+        # The retval text should still appear
+        assert "(void)" in result
+
+    def test_neutral_status_no_color(self):
+        """Neutral status produces plain text (no color wrapping)."""
+        cw = ColorWriter(force_color=True)
+        event = self._event(retval="(empty)", status="-")
+        result = format_trace_event(event, cw)
+        # The retval itself should appear but not be wrapped in color
+        assert "(empty)" in result
+        # Check that retval is NOT wrapped in red or green
+        # (other parts of the line have colors for seq, lib, func, task)
+        parts = result.rsplit("(empty)", 1)
+        # The retval is the last field, so anything after it is empty
+        assert "\033[31m(empty)" not in result
+        assert "\033[32m(empty)" not in result
 
     def test_comment_event(self):
         cw = ColorWriter(force_color=False)
@@ -183,6 +240,39 @@ class TestFormatTraceEvent:
         event = self._event()
         result = format_trace_event(event, cw)
         assert "\033[" not in result
+
+    def test_backward_compat_no_status(self):
+        """Events without status field (old daemon) get no retval color."""
+        cw = ColorWriter(force_color=True)
+        event = self._event()
+        del event["status"]  # simulate old daemon
+        result = format_trace_event(event, cw)
+        # Default status is '-' (neutral), so no color on retval
+        assert "\033[31m" not in result or "0x07a3b2c0" not in result.split("\033[31m")[-1]
+        # The retval should appear in the output
+        assert "0x07a3b2c0" in result
+
+
+# ---------------------------------------------------------------------------
+# TestTraceHeader
+# ---------------------------------------------------------------------------
+
+class TestTraceHeader:
+    """Tests for the TRACE_HEADER constant in client/amigactl/colors.py."""
+
+    def test_header_contains_column_names(self):
+        assert "SEQ" in TRACE_HEADER
+        assert "TIME" in TRACE_HEADER
+        assert "FUNCTION" in TRACE_HEADER
+        assert "TASK" in TRACE_HEADER
+        assert "ARGS" in TRACE_HEADER
+        assert "RESULT" in TRACE_HEADER
+
+    def test_header_column_widths(self):
+        """Verify the header matches the widened column format."""
+        expected = "{:<10s} {:>13s}  {:<28s} {:<20s} {:<40s} {}".format(
+            "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT")
+        assert TRACE_HEADER == expected
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +475,101 @@ class TestTraceStatusParsing:
         assert "patches" not in result
         assert "patch_list" not in result
 
+    def test_noise_disabled_field(self):
+        """trace_status() should return noise_disabled field."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "enabled=1",
+            "patches=30",
+            "noise_disabled=8",
+        ])
+        status = conn.trace_status()
+        assert status["noise_disabled"] == 8
+
+    def test_noise_disabled_invalid(self):
+        """noise_disabled with non-integer value defaults to 0."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "noise_disabled=bogus",
+        ])
+        status = conn.trace_status()
+        assert status["noise_disabled"] == 0
+
+    def test_filter_task_field(self):
+        """trace_status() should return filter_task field."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "filter_task=0x0e300200",
+        ])
+        status = conn.trace_status()
+        assert status["filter_task"] == "0x0e300200"
+
+    def test_filter_task_null(self):
+        """filter_task 0x00000000 is returned as-is (not converted)."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "filter_task=0x00000000",
+        ])
+        status = conn.trace_status()
+        assert status["filter_task"] == "0x00000000"
+
+    def test_filter_task_absent(self):
+        """filter_task is absent when not in response (version < 2)."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "enabled=1",
+        ])
+        status = conn.trace_status()
+        assert "filter_task" not in status
+
+    def test_noise_disabled_absent(self):
+        """noise_disabled is absent when not in response."""
+        conn = _make_mock_conn()
+        conn._send_command.return_value = ("", [
+            "loaded=1",
+            "enabled=1",
+        ])
+        status = conn.trace_status()
+        assert "noise_disabled" not in status
+
+
+# ---------------------------------------------------------------------------
+# TestProcessNameExtraction
+# ---------------------------------------------------------------------------
+
+class TestProcessNameExtraction:
+    """Tests for command basename extraction logic.
+
+    The actual extraction happens daemon-side in C. These tests
+    document the expected behavior as specifications. Actual
+    verification is via integration tests (test_trace.py).
+    """
+
+    def test_basename_volume_path(self):
+        """CNet:control -> control"""
+        # Tested via integration test (test_trace_run_process_name)
+
+    def test_basename_dir_path(self):
+        """SYS:Utilities/MultiView -> MultiView"""
+        # Tested via integration test (test_trace_run_process_name)
+
+    def test_basename_simple(self):
+        """List -> List"""
+        # Tested via integration test (test_trace_run_process_name)
+
+    def test_basename_with_args(self):
+        """C:Dir SYS: -> Dir (first word only)"""
+        # Tested via integration test (test_trace_run_process_name)
+
+    def test_basename_leading_spaces(self):
+        """  List   -> List"""
+        # Tested via integration test (test_trace_run_process_name)
+
 
 # ---------------------------------------------------------------------------
 # TestShellDoTrace
@@ -400,6 +585,8 @@ class TestShellDoTrace:
             "events_produced": 100, "events_consumed": 95,
             "events_dropped": 5, "buffer_capacity": 8192,
             "buffer_used": 10,
+            "noise_disabled": 8,
+            "filter_task": "0x00000000",
         }
         shell.do_trace("status")
         out = capsys.readouterr().out
@@ -410,6 +597,10 @@ class TestShellDoTrace:
         assert "30" in out
         assert "Events produced:" in out
         assert "100" in out
+        assert "Noise disabled:" in out
+        assert "8" in out
+        # filter_task 0x00000000 should be hidden
+        assert "Filter task:" not in out
 
     def test_trace_status_not_loaded(self, capsys):
         shell = _make_shell()
@@ -425,6 +616,8 @@ class TestShellDoTrace:
             "events_produced": 0, "events_consumed": 0,
             "events_dropped": 0, "buffer_capacity": 8192,
             "buffer_used": 0,
+            "noise_disabled": 1,
+            "filter_task": "0x00000000",
             "patch_list": [
                 {"name": "exec.FindPort", "enabled": True},
                 {"name": "exec.GetMsg", "enabled": False},
@@ -437,6 +630,22 @@ class TestShellDoTrace:
         assert "enabled" in out
         assert "exec.GetMsg" in out
         assert "disabled" in out
+
+    def test_trace_status_filter_task_shown(self, capsys):
+        """filter_task should display when non-zero."""
+        shell = _make_shell()
+        shell.conn.trace_status.return_value = {
+            "loaded": True, "enabled": True, "patches": 30,
+            "events_produced": 50, "events_consumed": 50,
+            "events_dropped": 0, "buffer_capacity": 8192,
+            "buffer_used": 0,
+            "noise_disabled": 0,
+            "filter_task": "0x0e300200",
+        }
+        shell.do_trace("status")
+        out = capsys.readouterr().out
+        assert "Filter task:" in out
+        assert "0x0e300200" in out
 
     def test_trace_enable_global(self, capsys):
         shell = _make_shell()
@@ -643,7 +852,7 @@ class TestTraceRunCommandBuilding:
         conn._sock.gettimeout.return_value = 10
         event_line = (
             b"1\t14:30:01.000\tdos.Open\tamigactld-exec"
-            b'\t"test.txt",MODE_OLDFILE\t0x03c1a0b8'
+            b'\t"test.txt",MODE_OLDFILE\t0x03c1a0b8\tO'
         )
         mock_readline.side_effect = [
             "OK 1",
@@ -662,6 +871,7 @@ class TestTraceRunCommandBuilding:
         assert events[0]["type"] == "event"
         assert events[0]["func"] == "Open"
         assert events[0]["lib"] == "dos"
+        assert events[0]["status"] == "O"
         assert events[1]["type"] == "comment"
         assert "PROCESS EXITED rc=0" in events[1]["text"]
         assert result["rc"] == 0

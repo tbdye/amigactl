@@ -325,7 +325,7 @@ def cmd_tail(conn, args):
 
 def cmd_trace(conn, args):
     """Handle the 'trace' subcommand."""
-    from .colors import ColorWriter, format_trace_event
+    from .colors import ColorWriter, TRACE_HEADER, format_trace_event
 
     sub = args.trace_cmd
     if sub is None:
@@ -360,8 +360,7 @@ def cmd_trace(conn, args):
             kwargs["cd"] = args.cd
 
         # Column header
-        print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
-            "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+        print(TRACE_HEADER)
 
         def trace_callback(event):
             print(format_trace_event(event, cw))
@@ -421,8 +420,7 @@ def cmd_trace(conn, args):
         cw = ColorWriter()
 
         # Column header
-        print("{:<10s} {:>13s}  {:<22s} {:<16s} {:<40s} {}".format(
-            "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT"))
+        print(TRACE_HEADER)
 
         def trace_callback(event):
             print(format_trace_event(event, cw))

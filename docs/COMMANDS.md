@@ -3264,10 +3264,14 @@ they are AND-combined (all must match for an event to be sent).
 
 | Filter | Description |
 |--------|-------------|
-| `LIB=<name>` | Only show calls to the named library. Short name without `.library` suffix (e.g. `exec`, `dos`). Case-insensitive. |
-| `FUNC=<name>` | Only show calls to the named function (e.g. `OpenLibrary`, `Open`). Case-insensitive. |
-| `PROC=<name>` | Only show calls from tasks whose name contains `<name>` as a substring. Case-insensitive. |
-| `ERRORS` | Only show calls that returned an error value (NULL, non-zero for OpenDevice, etc.). Void functions are excluded. |
+| `LIB=<name>` | Only show calls to the named library. Accepts short names (`exec`, `dos`) or full names with suffix (`exec.library`, `dos.library`). The `.library`, `.device`, and `.resource` suffixes are stripped automatically before matching. Case-insensitive. An unrecognized library name produces an empty trace. |
+| `FUNC=<name>` | Only show calls to the named function (e.g. `OpenLibrary`, `Open`). Case-insensitive. Also sets the library filter to the function's library. An unrecognized function name produces an empty trace. |
+| `PROC=<name>` | Only show calls from tasks whose name contains `<name>` as a substring. Matches against the base process name only, not the `[N]` CLI number prefix. Case-insensitive. |
+| `ERRORS` | Only show calls that returned an error. Error classification is per-function: NULL for pointer-returning functions, non-zero for OpenDevice, rc != 0 for RunCommand/SystemTagList, (LONG)retval < 0 for GetVar. Void functions and GetMsg (where NULL is normal) are excluded. |
+
+**Note**: When both `LIB=` and `FUNC=` are specified, `FUNC=` takes precedence for library
+selection. For example, `LIB=exec FUNC=Open` filters to `dos.Open` (not exec), because
+`FUNC=` unambiguously identifies both the function and its owning library.
 
 #### Response
 
@@ -3286,7 +3290,7 @@ END
 Each DATA chunk contains one tab-separated event line:
 
 ```
-<seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>
+<seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>\t<status>
 ```
 
 | Field | Description |
@@ -3294,15 +3298,16 @@ Each DATA chunk contains one tab-separated event line:
 | `seq` | Monotonically increasing sequence number |
 | `time` | Timestamp in `HH:MM:SS.mmm` format (20ms resolution) |
 | `lib.func` | Library and function name (e.g. `dos.Open`, `exec.AllocMem`) |
-| `task` | Name of the calling task/process |
+| `task` | Name of the calling task/process (with CLI number if applicable) |
 | `args` | Formatted arguments (strings quoted, constants named) |
-| `retval` | Return value (`NULL`, `(void)`, `-1`, or hex pointer) |
+| `retval` | Return value (function-specific formatting) |
+| `status` | `O`=success, `E`=error, `-`=neutral |
 
 Argument formatting varies by function:
 
 - **String arguments** are quoted: `"dos.library"`, `"RAM:test.txt"`
-- **dos.Open mode**: `MODE_OLDFILE`, `MODE_NEWFILE`, `MODE_READWRITE`
-- **dos.Lock type**: `ACCESS_READ`, `ACCESS_WRITE`
+- **dos.Open mode**: `Read`, `Write`, `Read/Write`
+- **dos.Lock type**: `Shared`, `Exclusive`
 - **exec.AllocMem flags**: `MEMF_PUBLIC|MEMF_CLEAR`, `MEMF_CHIP`
 - **Void functions** (PutMsg, ObtainSemaphore, ReleaseSemaphore): `(void)`
 - Other arguments are shown as hex or decimal values
@@ -3350,10 +3355,10 @@ begins). The connection remains in normal command processing mode.
 ```
 C> TRACE START
 S> OK
-S> DATA 72
-S> 1	14:30:01.000	exec.OpenLibrary	Shell Process	"dos.library",0	0x07a3b2c0
-S> DATA 67
-S> 2	14:30:01.000	dos.Lock	Shell Process	"SYS:",ACCESS_READ	0x03c1a0b8
+S> DATA 75
+S> 1	14:30:01.000	exec.OpenLibrary	Shell Process	"dos.library",v0	0x07a3b2c0	O
+S> DATA 64
+S> 2	14:30:01.000	dos.Lock	Shell Process	"SYS:",Shared	0x03c1a0b8	O
 C> STOP
 S> END
 S> .
@@ -3364,8 +3369,8 @@ S> .
 ```
 C> TRACE START LIB=dos FUNC=Open
 S> OK
-S> DATA 76
-S> 5	14:30:02.020	dos.Open	Shell Process	"RAM:test.txt",MODE_NEWFILE	0x03c1a0b8
+S> DATA 71
+S> 5	14:30:02.020	dos.Open	Shell Process	"RAM:test.txt",Write	0x03c1a0b8	O
 C> STOP
 S> END
 S> .
@@ -3376,8 +3381,8 @@ S> .
 ```
 C> TRACE START ERRORS
 S> OK
-S> DATA 61
-S> 12	14:30:05.000	dos.Open	myapp	"NoSuchFile",MODE_OLDFILE	NULL
+S> DATA 55
+S> 12	14:30:05.000	dos.Open	myapp	"NoSuchFile",Read	NULL	E
 C> STOP
 S> END
 S> .
@@ -3414,7 +3419,7 @@ they are AND-combined (all must match for an event to be sent).
 |--------|-------------|
 | `LIB=<name>` | Filter by library (same as TRACE START) |
 | `FUNC=<name>` | Filter by function (same as TRACE START) |
-| `ERRORS` | Only show calls that returned an error value |
+| `ERRORS` | Only show calls that returned an error (same classification as TRACE START) |
 | `CD=<dir>` | Working directory for the command |
 
 `PROC=` is **not accepted**. Process filtering is automatic -- the
@@ -3489,10 +3494,10 @@ begins). The connection remains in normal command processing mode.
 ```
 C> TRACE RUN -- List SYS:
 S> OK 5
-S> DATA 78
-S> 1001	14:30:01.000	dos.Lock	amigactld-exec	"SYS:",ACCESS_READ	0x03c1a0b8
-S> DATA 72
-S> 1002	14:30:01.020	dos.Open	amigactld-exec	"*",MODE_OLDFILE	0x1a3c0040
+S> DATA 68
+S> 1001	14:30:01.000	dos.Lock	amigactld-exec	"SYS:",Shared	0x03c1a0b8	O
+S> DATA 63
+S> 1002	14:30:01.020	dos.Open	amigactld-exec	"*",Read	0x1a3c0040	O
 S> ...
 S> DATA 25
 S> # PROCESS EXITED rc=0
@@ -3505,8 +3510,8 @@ S> .
 ```
 C> TRACE RUN LIB=exec -- CNet:bbs
 S> OK 6
-S> DATA 82
-S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",0	0x0e2a1000
+S> DATA 80
+S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",v0	0x0e2a1000	O
 S> ...
 S> DATA 25
 S> # PROCESS EXITED rc=0
@@ -3519,8 +3524,8 @@ S> .
 ```
 C> TRACE RUN CD=Work:projects -- myprog
 S> OK 7
-S> DATA 65
-S> 3001	14:32:00.000	dos.Open	amigactld-exec	"data.txt",MODE_OLDFILE	0x03c1a0b8
+S> DATA 70
+S> 3001	14:32:00.000	dos.Open	amigactld-exec	"data.txt",Read	0x03c1a0b8	O
 S> ...
 S> DATA 25
 S> # PROCESS EXITED rc=0
@@ -3533,8 +3538,8 @@ S> .
 ```
 C> TRACE RUN -- CNet:bbs
 S> OK 8
-S> DATA 82
-S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",0	0x0e2a1000
+S> DATA 80
+S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",v0	0x0e2a1000	O
 C> STOP
 S> END
 S> .

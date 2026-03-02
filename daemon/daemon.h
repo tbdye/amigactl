@@ -75,6 +75,16 @@ struct trace_state {
     int mode;                /* TRACE_MODE_START or TRACE_MODE_RUN */
     int run_proc_slot;       /* index into daemon_state.procs[], -1 if none */
     APTR run_task_ptr;       /* Task pointer for exact process matching */
+    ULONG run_start_seq;     /* event_sequence at TRACE RUN start; skip older */
+
+    /* Phase 4: noise function save/restore during TRACE RUN.
+     * noise_saved is the order-independent trigger for cleanup --
+     * set only when we took ownership of filter_task, cleared only
+     * by trace_run_cleanup(). */
+    int noise_saved;                    /* 1 = save state is valid */
+    int noise_saved_count;              /* number of entries in saved arrays */
+    int noise_patch_indices[16];        /* patch indices of noise functions */
+    ULONG noise_saved_enabled[16];     /* saved enabled state per noise func */
 };
 
 /* Per-client state */
@@ -112,6 +122,7 @@ struct tracked_proc {
     int rc;                      /* return code (valid when EXITED) */
     int completed;               /* set by wrapper under Forbid */
     BPTR cd_lock;                /* optional CD lock for async */
+    char proc_name[32];          /* NP_Name buffer (per-slot, outlives process) */
 };
 
 /* Top-level daemon state */

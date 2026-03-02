@@ -21,7 +21,7 @@ unsigned long __stack = 8192;
 typedef char assert_event_size [(sizeof(struct atrace_event) == 64) ? 1 : -1];
 typedef char assert_patch_size [(sizeof(struct atrace_patch) == 40) ? 1 : -1];
 typedef char assert_ringbuf_hdr[(sizeof(struct atrace_ringbuf) == 16) ? 1 : -1];
-typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 80) ? 1 : -1];
+typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 84) ? 1 : -1];
 
 /* ReadArgs template */
 #define TEMPLATE "BUFSZ/K/N,DISABLE/S,STATUS/S,ENABLE/S,QUIT/S,FUNCS/M"
@@ -45,6 +45,24 @@ extern int stub_generate_and_install(
     struct atrace_patch *patch,
     struct Library *libbase,
     struct atrace_event *entries);
+
+/* Functions that are auto-disabled by default due to high frequency.
+ * These are enabled automatically when filter_task is set (TRACE RUN),
+ * because per-task volume is manageable. The user can also manually
+ * enable them via "atrace_loader ENABLE <funcname>".
+ *
+ * MUST match the noise_func_names table in daemon/trace.c exactly. */
+static const char *noise_func_names[] = {
+    "FindPort",
+    "FindSemaphore",
+    "FindTask",
+    "GetMsg",
+    "PutMsg",
+    "ObtainSemaphore",
+    "ReleaseSemaphore",
+    "AllocMem",
+    NULL  /* sentinel */
+};
 
 /* Local functions */
 static int find_patch_by_name(struct atrace_anchor *anchor, const char *name);
@@ -268,6 +286,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     anchor->patches = patches;
     anchor->event_sequence = 0;
     anchor->events_consumed = 0;
+    anchor->filter_task = NULL;
 
     /* Compute entries base address */
     entries = (struct atrace_event *)
@@ -328,6 +347,21 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             idx = find_patch_by_name(NULL, (const char *)*fp);
             patches[idx].enabled = 1;
         }
+    } else {
+        /* Auto-disable noise functions for system-wide usability.
+         * These are auto-enabled when filter_task is set (TRACE RUN). */
+        const char **np;
+        int noise_count = 0;
+        for (np = noise_func_names; *np; np++) {
+            int idx = find_patch_by_name(NULL, *np);
+            if (idx >= 0 && idx < total_patches) {
+                patches[idx].enabled = 0;
+                noise_count++;
+            }
+        }
+        if (noise_count > 0)
+            printf("Auto-disabled %d noise functions "
+                   "(use ENABLE to override)\n", noise_count);
     }
 
     /* 7. Register the semaphore -- makes atrace discoverable */

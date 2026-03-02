@@ -32,9 +32,14 @@ ATRACE_SRCS = \
 ATRACE_OBJS = $(ATRACE_SRCS:atrace/%.c=$(OBJDIR)/atrace_%.o)
 ATRACE_TARGET = atrace_loader
 
+# atrace test execution app (validation tool)
+TESTAPP_SRCS = testapp/atrace_test.c
+TESTAPP_OBJS = $(TESTAPP_SRCS:testapp/%.c=$(OBJDIR)/testapp_%.o)
+TESTAPP_TARGET = atrace_test
+
 .PHONY: all clean
 
-all: $(TARGET) $(ATRACE_TARGET)
+all: $(TARGET) $(ATRACE_TARGET) $(TESTAPP_TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
@@ -48,10 +53,16 @@ $(OBJDIR)/%.o: daemon/%.c | $(OBJDIR)
 $(OBJDIR)/atrace_%.o: atrace/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(TESTAPP_TARGET): $(TESTAPP_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+$(OBJDIR)/testapp_%.o: testapp/%.c | $(OBJDIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 clean:
-	rm -rf $(OBJDIR) $(TARGET) $(ATRACE_TARGET)
+	rm -rf $(OBJDIR) $(TARGET) $(ATRACE_TARGET) $(TESTAPP_TARGET)
 
 -include $(wildcard $(OBJDIR)/*.d)

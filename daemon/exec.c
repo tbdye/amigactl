@@ -483,10 +483,51 @@ static int exec_async(struct client *c, const char *args)
     g_daemon_state->procs[slot].id = g_daemon_state->next_proc_id++;
     g_daemon_state->procs[slot].cd_lock = cd_lock;
 
+    /* Extract command basename for process name.
+     * Written into the per-slot proc_name buffer so each concurrent
+     * async process has its own stable NP_Name storage.  AmigaOS
+     * stores the NP_Name pointer, not a copy, so the buffer must
+     * outlive the process -- daemon_state slots persist for the
+     * daemon's lifetime. */
+    {
+        const char *cmd_start = command;
+        const char *basename;
+        int word_len = 0;
+        int name_len;
+        char *namebuf = g_daemon_state->procs[slot].proc_name;
+
+        /* Skip leading spaces */
+        while (*cmd_start == ' ') cmd_start++;
+
+        /* Find end of first word */
+        while (cmd_start[word_len] && cmd_start[word_len] != ' ')
+            word_len++;
+
+        /* Find basename: last '/' or ':' in first word */
+        basename = cmd_start;
+        {
+            int bi;
+            for (bi = 0; bi < word_len; bi++) {
+                if (cmd_start[bi] == '/' || cmd_start[bi] == ':')
+                    basename = &cmd_start[bi + 1];
+            }
+        }
+
+        /* Copy basename, truncate to 31 chars */
+        name_len = word_len - (int)(basename - cmd_start);
+        if (name_len > 31) name_len = 31;
+        memcpy(namebuf, basename, name_len);
+        namebuf[name_len] = '\0';
+
+        /* Fallback for empty basename (path ends with ':' or '/') */
+        if (namebuf[0] == '\0')
+            strcpy(namebuf, "amigactld-exec");
+    }
+
     Forbid();
     proc = CreateNewProcTags(
         NP_Entry, (ULONG)async_wrapper,
-        NP_Name, (ULONG)"amigactld-exec",
+        NP_Name, (ULONG)g_daemon_state->procs[slot].proc_name,
         NP_StackSize, 16384,
         NP_Cli, TRUE,
         TAG_DONE);

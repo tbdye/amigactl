@@ -6,8 +6,9 @@
  * from the patch descriptor.
  *
  * The stub consists of three regions:
- *   1. Prefix (142 bytes): fast-path checks, register save, ring buffer
- *      slot reservation, event header fields. Identical for all functions.
+ *   1. Prefix (168 bytes): fast-path checks, task filter, register save,
+ *      ring buffer slot reservation, event header fields. Identical for
+ *      all functions.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      and optional string capture. Size varies by function.
  *   3. Suffix (86 bytes): MOVEM restore, trampoline, post-call handler,
@@ -23,14 +24,18 @@
 #include <stddef.h>  /* offsetof */
 
 /*
- * Prefix template -- bytes 0-141 from the Phase 1 monolithic template.
- * 71 UWORD values. Identical for all patched functions.
+ * Prefix template -- bytes 0-167, 84 UWORD values.
+ * Identical for all patched functions.
+ *
+ * Phase 4: 26-byte task filter check inserted at bytes 30-55,
+ * shifting the MOVEM and all subsequent instructions by +26 bytes
+ * relative to the Phase 3 prefix (142 -> 168 bytes).
  *
  * Contains placeholder 0x0000 values at PATCH_ADDR, ANCHOR_ADDR,
  * RING_ENTRIES_ADDR, struct displacement, and branch displacement slots.
  */
 static const UWORD stub_prefix[] = {
-    /* === PHASE 1: Fast path checks === */
+    /* === Fast path checks === */
     /*  0: */ 0x2F0D,                   /* move.l a5, -(sp)                     */
     /*  2: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a5   [1]       */
     /*  8: */ 0x4AAD, 0x0000,           /* tst.l OFS_ENABLED(a5)               */
@@ -39,44 +44,55 @@ static const UWORD stub_prefix[] = {
     /* 22: */ 0x4AAD, 0x0000,           /* tst.l OFS_GLOBAL_ENABLE(a5)         */
     /* 26: */ 0x6700, 0x0000,           /* beq.w .disabled                      */
 
-    /* === PHASE 2: Save all volatile registers === */
-    /* 30: */ 0x48E7, 0xFFFA,           /* movem.l d0-d7/a0-a4/a6, -(sp)       */
+    /* === Phase 4: Task filter check === */
+    /* 30: */ 0x4AAD, 0x0000,           /* tst.l OFS_FILTER_TASK(a5)           */
+    /* 34: */ 0x6714,                   /* beq.s .no_filter (+20)               */
+    /* 36: */ 0x2F0E,                   /* move.l a6, -(sp)                     */
+    /* 38: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
+    /* 42: */ 0x2C6E, 0x0114,           /* movea.l 276(a6), a6 (ThisTask)      */
+    /* 46: */ 0xBDED, 0x0000,           /* cmpa.l OFS_FILTER_TASK(a5), a6      */
+    /* 50: */ 0x2C5F,                   /* movea.l (sp)+, a6  (restore)        */
+    /* 52: */ 0x6600, 0x0000,           /* bne.w .disabled  (mismatch)         */
+    /* .no_filter: */
 
-    /* === PHASE 3: Reserve ring buffer slot === */
-    /* 34: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
-    /* 38: */ 0x4EAE, 0xFF88,           /* jsr _LVODisable(a6)  = -120         */
-    /* 42: */ 0x206D, 0x0000,           /* movea.l OFS_RING(a5), a0            */
-    /* 46: */ 0x2028, 0x0000,           /* move.l OFS_WRITE_POS(a0), d0        */
-    /* 50: */ 0x2200,                   /* move.l d0, d1                        */
-    /* 52: */ 0x5281,                   /* addq.l #1, d1                        */
-    /* 54: */ 0xB2A8, 0x0000,           /* cmp.l OFS_CAPACITY(a0), d1          */
-    /* 58: */ 0x6502,                   /* bcs.s .nowrap (+2)                   */
-    /* 60: */ 0x7200,                   /* moveq #0, d1                         */
+    /* === Save all volatile registers === */
+    /* 56: */ 0x48E7, 0xFFFA,           /* movem.l d0-d7/a0-a4/a6, -(sp)       */
+
+    /* === Ring buffer slot reservation === */
+    /* 60: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
+    /* 64: */ 0x4EAE, 0xFF88,           /* jsr _LVODisable(a6)  = -120         */
+    /* 68: */ 0x206D, 0x0000,           /* movea.l OFS_RING(a5), a0            */
+    /* 72: */ 0x2028, 0x0000,           /* move.l OFS_WRITE_POS(a0), d0        */
+    /* 76: */ 0x2200,                   /* move.l d0, d1                        */
+    /* 78: */ 0x5281,                   /* addq.l #1, d1                        */
+    /* 80: */ 0xB2A8, 0x0000,           /* cmp.l OFS_CAPACITY(a0), d1          */
+    /* 84: */ 0x6502,                   /* bcs.s .nowrap (+2)                   */
+    /* 86: */ 0x7200,                   /* moveq #0, d1                         */
     /* .nowrap: */
-    /* 62: */ 0xB2A8, 0x0000,           /* cmp.l OFS_READ_POS(a0), d1          */
-    /* 66: */ 0x6700, 0x0000,           /* beq.w .overflow                      */
-    /* 70: */ 0x2141, 0x0000,           /* move.l d1, OFS_WRITE_POS(a0)        */
-    /* 74: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [2]       */
-    /* 80: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_USE_COUNT(a0)        */
-    /* 84: */ 0x222D, 0x0000,           /* move.l OFS_EVENT_SEQ(a5), d1        */
-    /* 88: */ 0x52AD, 0x0000,           /* addq.l #1, OFS_EVENT_SEQ(a5)        */
-    /* 92: */ 0x2400,                   /* move.l d0, d2                        */
-    /* 94: */ 0x2601,                   /* move.l d1, d3                        */
-    /* 96: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)  = -126          */
+    /* 88: */ 0xB2A8, 0x0000,           /* cmp.l OFS_READ_POS(a0), d1          */
+    /* 92: */ 0x6700, 0x0000,           /* beq.w .overflow                      */
+    /* 96: */ 0x2141, 0x0000,           /* move.l d1, OFS_WRITE_POS(a0)        */
+    /*100: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [2]       */
+    /*106: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_USE_COUNT(a0)        */
+    /*110: */ 0x222D, 0x0000,           /* move.l OFS_EVENT_SEQ(a5), d1        */
+    /*114: */ 0x52AD, 0x0000,           /* addq.l #1, OFS_EVENT_SEQ(a5)        */
+    /*118: */ 0x2400,                   /* move.l d0, d2                        */
+    /*120: */ 0x2601,                   /* move.l d1, d3                        */
+    /*122: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)  = -126          */
 
-    /* === PHASE 4: Fill event entry === */
-    /*100: */ 0xED82,                   /* asl.l #6, d2                         */
-    /*102: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #RING_ENTRIES_ADDR, a5      */
-    /*108: */ 0xDBC2,                   /* adda.l d2, a5                        */
-    /*110: */ 0x2B43, 0x0004,           /* move.l d3, 4(a5)  entry->sequence   */
-    /*114: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [3]       */
-    /*120: */ 0x1B68, 0x0000, 0x0001,   /* move.b 0(a0), 1(a5)  lib_id        */
-    /*126: */ 0x3B68, 0x0002, 0x0002,   /* move.w 2(a0), 2(a5)  lvo_offset    */
-    /*132: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
-    /*136: */ 0x2B6E, 0x0114, 0x0008,   /* move.l 276(a6), 8(a5) caller_task  */
+    /* === Fill event entry === */
+    /*126: */ 0xED82,                   /* asl.l #6, d2                         */
+    /*128: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #RING_ENTRIES_ADDR, a5      */
+    /*134: */ 0xDBC2,                   /* adda.l d2, a5                        */
+    /*136: */ 0x2B43, 0x0004,           /* move.l d3, 4(a5)  entry->sequence   */
+    /*140: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [3]       */
+    /*146: */ 0x1B68, 0x0000, 0x0001,   /* move.b 0(a0), 1(a5)  lib_id        */
+    /*152: */ 0x3B68, 0x0002, 0x0002,   /* move.w 2(a0), 2(a5)  lvo_offset    */
+    /*158: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
+    /*162: */ 0x2B6E, 0x0114, 0x0008,   /* move.l 276(a6), 8(a5) caller_task  */
 };
 
-#define STUB_PREFIX_BYTES  142  /* 71 words */
+#define STUB_PREFIX_BYTES  168  /* 84 words */
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
@@ -155,39 +171,42 @@ static const UWORD stub_suffix[] = {
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
 /* PATCH_ADDR -- 3 occurrences in prefix */
-#define PATCH_OFF_1     4    /* Phase 1: per-patch enable check        */
-#define PATCH_OFF_2    76    /* Phase 3: use_count increment           */
-#define PATCH_OFF_3   116    /* Phase 4: lib_id/lvo_offset copy        */
+#define PATCH_OFF_1     4    /* per-patch enable check                  */
+#define PATCH_OFF_2   102    /* use_count increment                     */
+#define PATCH_OFF_3   142    /* lib_id/lvo_offset copy                  */
 
 /* ANCHOR_ADDR -- 1 occurrence in prefix */
-#define ANCHOR_OFF_1   18    /* Phase 1: global enable check           */
+#define ANCHOR_OFF_1   18    /* global enable check                     */
 
 /* RING_ENTRIES_ADDR -- 1 occurrence in prefix */
-#define ENTRIES_OFF_1  104   /* Phase 4: entry base address            */
+#define ENTRIES_OFF_1  130   /* entry base address                      */
 
 /* ---- Prefix struct field displacement patches ---- */
 
 /* atrace_patch field displacements */
-#define DISP_ENABLED       10   /* tst.l OFS_ENABLED(a5): word at byte 10 */
-#define DISP_USE_COUNT_INC 82   /* addq.l #1, OFS_USE_COUNT(a0): byte 82  */
+#define DISP_ENABLED       10   /* tst.l OFS_ENABLED(a5): word at byte 10  */
+#define DISP_USE_COUNT_INC 108  /* addq.l #1, OFS_USE_COUNT(a0): byte 108  */
 
 /* atrace_anchor field displacements */
-#define DISP_GLOBAL_ENABLE 24   /* tst.l OFS_GLOBAL_ENABLE(a5): byte 24   */
-#define DISP_RING          44   /* movea.l OFS_RING(a5), a0: byte 44      */
-#define DISP_EVENT_SEQ_RD  86   /* move.l OFS_EVENT_SEQ(a5), d1: byte 86  */
-#define DISP_EVENT_SEQ_WR  90   /* addq.l #1, OFS_EVENT_SEQ(a5): byte 90  */
+#define DISP_GLOBAL_ENABLE 24   /* tst.l OFS_GLOBAL_ENABLE(a5): byte 24    */
+#define DISP_FILTER_TASK_1 32   /* tst.l OFS_FILTER_TASK(a5): byte 32      */
+#define DISP_FILTER_TASK_2 48   /* cmpa.l OFS_FILTER_TASK(a5), a6: byte 48 */
+#define DISP_RING          70   /* movea.l OFS_RING(a5), a0: byte 70       */
+#define DISP_EVENT_SEQ_RD 112   /* move.l OFS_EVENT_SEQ(a5), d1: byte 112  */
+#define DISP_EVENT_SEQ_WR 116   /* addq.l #1, OFS_EVENT_SEQ(a5): byte 116  */
 
 /* atrace_ringbuf field displacements */
-#define DISP_WRITE_POS_RD  48   /* move.l OFS_WRITE_POS(a0), d0: byte 48  */
-#define DISP_CAPACITY      56   /* cmp.l OFS_CAPACITY(a0), d1: byte 56    */
-#define DISP_READ_POS      64   /* cmp.l OFS_READ_POS(a0), d1: byte 64    */
-#define DISP_WRITE_POS_WR  72   /* move.l d1, OFS_WRITE_POS(a0): byte 72  */
+#define DISP_WRITE_POS_RD  74   /* move.l OFS_WRITE_POS(a0), d0: byte 74   */
+#define DISP_CAPACITY      82   /* cmp.l OFS_CAPACITY(a0), d1: byte 82     */
+#define DISP_READ_POS      90   /* cmp.l OFS_READ_POS(a0), d1: byte 90     */
+#define DISP_WRITE_POS_WR  98   /* move.l d1, OFS_WRITE_POS(a0): byte 98   */
 
 /* ---- Branch displacement byte offsets (word containing displacement) ---- */
 
 #define BEQ_DISABLED_1     14   /* beq.w .disabled at prefix byte 12 */
 #define BEQ_DISABLED_2     28   /* beq.w .disabled at prefix byte 26 */
-#define BEQ_OVERFLOW       68   /* beq.w .overflow at prefix byte 66 */
+#define BNE_DISABLED_3     54   /* bne.w .disabled at prefix byte 52 */
+#define BEQ_OVERFLOW       94   /* beq.w .overflow at prefix byte 92 */
 
 /* ---- Helper: patch a 32-bit address into the stub ---- */
 
@@ -202,7 +221,7 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
 /* Generate and install a stub for one patched function.
  *
  * The stub is assembled from three pieces:
- *   1. Fixed prefix (142 bytes) - register save, ring buffer, event header
+ *   1. Fixed prefix (168 bytes) - task filter, register save, ring buffer, event header
  *   2. Variable region - argument copy + string capture, built from metadata
  *   3. Fixed suffix (86 bytes) - post-call, disabled path, overflow path
  *
@@ -228,7 +247,7 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[26];    /* max variable region: 4 args + argcount + string w/ null check = 26 words */
+    UWORD var_buf[28];    /* max variable region: 4 args + argcount + string w/ null check + valid = 28 words */
     int var_words;
     int total_bytes;
     int alloc_size;
@@ -284,6 +303,14 @@ int stub_generate_and_install(
         var_buf[var_words++] = 0x4211;                /* clr.b (a1) */
     }
 
+    /* Set valid=1 BEFORE the suffix's trampoline calls the original function.
+     * This must happen pre-call because blocking functions (e.g. dos.RunCommand)
+     * can block indefinitely.  With valid=0 during the block, the consumer
+     * cannot advance past this slot, freezing ALL event consumption system-wide.
+     * The suffix post-call handler also writes valid=1 (now redundant but harmless). */
+    var_buf[var_words++] = 0x1ABC;    /* move.b #1, (a5)  entry->valid = 1 */
+    var_buf[var_words++] = 0x0001;    /* immediate byte 1, word-aligned    */
+
     /* ---- 2. Calculate total size and allocate ---- */
 
     total_bytes = STUB_PREFIX_BYTES + (var_words * 2) + STUB_SUFFIX_BYTES;
@@ -328,6 +355,8 @@ int stub_generate_and_install(
     p[DISP_ENABLED / 2]       = (UWORD)offsetof(struct atrace_patch, enabled);
     p[DISP_USE_COUNT_INC / 2] = (UWORD)offsetof(struct atrace_patch, use_count);
     p[DISP_GLOBAL_ENABLE / 2] = (UWORD)offsetof(struct atrace_anchor, global_enable);
+    p[DISP_FILTER_TASK_1 / 2] = (UWORD)offsetof(struct atrace_anchor, filter_task);
+    p[DISP_FILTER_TASK_2 / 2] = (UWORD)offsetof(struct atrace_anchor, filter_task);
     p[DISP_RING / 2]          = (UWORD)offsetof(struct atrace_anchor, ring);
     p[DISP_EVENT_SEQ_RD / 2]  = (UWORD)offsetof(struct atrace_anchor, event_sequence);
     p[DISP_EVENT_SEQ_WR / 2]  = (UWORD)offsetof(struct atrace_anchor, event_sequence);
@@ -354,8 +383,10 @@ int stub_generate_and_install(
         p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
         /* beq.w .disabled at byte 26: displacement word at byte 28 */
         p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
-        /* beq.w .overflow at byte 66: displacement word at byte 68 */
-        p[BEQ_OVERFLOW / 2]   = (UWORD)(overflow_byte - (66 + 2));
+        /* bne.w .disabled at byte 52: displacement word at byte 54 */
+        p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
+        /* beq.w .overflow at byte 92: displacement word at byte 94 */
+        p[BEQ_OVERFLOW / 2]   = (UWORD)(overflow_byte - (92 + 2));
     }
 
     /* ---- 5. Flush and install ---- */

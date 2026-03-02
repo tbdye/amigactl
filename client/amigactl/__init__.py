@@ -153,13 +153,13 @@ def _parse_trace_event(text):
     without checking for existence, even if the event line is malformed.
 
     Returns a dict with keys: type, raw, seq, time, lib, func, task,
-    args, retval.
+    args, retval, status.
     """
     parts = text.split("\t")
     event = {
         "raw": text, "type": "event",
         "seq": 0, "time": "", "lib": "", "func": "",
-        "task": "", "args": "", "retval": "",
+        "task": "", "args": "", "retval": "", "status": "-",
     }
     if len(parts) >= 1:
         try:
@@ -183,6 +183,8 @@ def _parse_trace_event(text):
         event["args"] = parts[4]
     if len(parts) >= 6:
         event["retval"] = parts[5]
+    if len(parts) >= 7:
+        event["status"] = parts[6]
     return event
 
 
@@ -1210,7 +1212,15 @@ class AmigaConnection:
             loaded (bool), enabled (bool), patches (int),
             events_produced (int), events_consumed (int),
             events_dropped (int), buffer_capacity (int),
-            buffer_used (int).
+            buffer_used (int), filter_task (str or absent),
+            noise_disabled (int or absent).
+
+        filter_task is a hex string like "0x0e300200" when a task
+        filter is active (during TRACE RUN), or "0x00000000" when
+        no filter is set.  Only present when atrace version >= 2.
+
+        noise_disabled is the count of noise functions currently
+        disabled.  Only present when atrace is loaded.
 
         Integer fields are only present when atrace is loaded.
         """
@@ -1234,6 +1244,13 @@ class AmigaConnection:
                     result[key] = int(val)
                 except ValueError:
                     result[key] = 0
+            elif key == "filter_task":
+                result["filter_task"] = val  # hex string like "0x0e300200"
+            elif key == "noise_disabled":
+                try:
+                    result["noise_disabled"] = int(val)
+                except ValueError:
+                    result["noise_disabled"] = 0
             elif key.startswith("patch_"):
                 # patch_0=exec.FindPort enabled=1
                 if "patch_list" not in result:
@@ -1254,7 +1271,7 @@ class AmigaConnection:
 
         callback(event_dict) is called for each trace event.
         event_dict has keys: type, raw, seq, time, lib, func, task,
-        args, retval.
+        args, retval, status.
 
         Comment lines produce: type="comment", text=<text>.
 

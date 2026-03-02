@@ -418,13 +418,16 @@ deleted), it sends `ERR <code> <message>\n.\n`, terminating the stream.
 
 **TRACE** (both START and RUN) uses the same ongoing DATA/END streaming
 pattern as TAIL.  Each DATA chunk contains a single tab-separated event
-line.  The TRACE START stream is terminated by the client sending
-`STOP\n`.  The TRACE RUN stream auto-terminates when the launched
-process exits (a `# PROCESS EXITED rc=<N>` comment is sent before END);
-the client may also send `STOP\n` for early termination.  If the atrace
-module is unloaded during streaming, the server sends a comment line
-(`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and the sentinel.
-See COMMANDS.md for the full TRACE command specification.
+line with 7 fields:
+`<seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>\t<status>`.
+The `<status>` field is a single character: `O` (success), `E` (error),
+or `-` (neutral/void).  The TRACE START stream is terminated by the
+client sending `STOP\n`.  The TRACE RUN stream auto-terminates when the
+launched process exits (a `# PROCESS EXITED rc=<N>` comment is sent
+before END); the client may also send `STOP\n` for early termination.
+If the atrace module is unloaded during streaming, the server sends a
+comment line (`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and
+the sentinel.  See COMMANDS.md for the full TRACE command specification.
 
 ## Error Codes
 

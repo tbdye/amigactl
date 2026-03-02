@@ -1,5 +1,7 @@
 # Build artifacts
 amigactld
+atrace_loader
+atrace_test
 obj/
 
 # Python
