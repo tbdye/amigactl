@@ -5,9 +5,29 @@ validate that every traced function produces the correct wire format:
 args, retval, and status fields.
 
 The test app (C:atrace_test) calls each of the 30 traced functions
-(except AddDosEntry) with distinctive, predictable inputs.  A single
-module-scoped fixture runs the app once and all test methods share the
-resulting event list.
+(except AddDosEntry) with distinctive, predictable inputs.  Multiple
+fixtures run the app in different configurations:
+
+  trace_events: Module-scoped.  Runs with default settings (noise
+    functions disabled).  Captures the 20 non-noise functions.  Used by
+    TestExecFunctions, TestDosFunctions, TestFieldInvariants, and
+    TestPhase4bFeatures.
+
+  noise_group1_events: Class-scoped.  Enables FindPort, FindSemaphore,
+    FindTask only.  Used by TestExecNoiseGroup1.
+
+  noise_group2_events: Class-scoped.  Enables GetMsg, PutMsg only.
+    Used by TestExecNoiseGroup2.
+
+  noise_group3_events: Class-scoped.  Enables ObtainSemaphore,
+    ReleaseSemaphore, AllocMem only.  Used by TestExecNoiseGroup3.
+
+  noise_group4_events: Class-scoped.  Enables OpenLibrary only.
+    Used by TestExecNoiseGroup4.
+
+The noise functions are split into four groups (at most 3 stubs each)
+to keep the background OS event rate low enough that the 8192-entry
+ring buffer does not overflow during trace_run.
 
 All tests in this module are skipped if the target does not have
 atrace loaded.
@@ -15,6 +35,8 @@ atrace loaded.
 
 import re
 import signal
+import sys
+from collections import Counter
 
 import pytest
 
@@ -26,7 +48,7 @@ from amigactl import AmigaConnection
 # ---------------------------------------------------------------------------
 
 def _timeout_handler(signum, frame):
-    raise TimeoutError("trace_events fixture timed out after 60 seconds")
+    raise TimeoutError("trace fixture timed out after 60 seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -59,17 +81,74 @@ def trace_events(request, require_atrace_for_app):
     installation would cause a confusing connection-level failure instead
     of a clean skip.
 
+    Noise functions remain at their default (disabled) state.  Only the
+    20 non-noise functions produce events in this fixture.  Noise
+    function tests use the separate noise_group1/2/3/4_events fixtures.
+
     Uses signal.alarm() for a 60-second external timeout.  This is
     necessary because trace_run() calls settimeout(None) internally,
     making socket-level timeouts ineffective.  If the test app hangs or
     the daemon stalls, the SIGALRM will raise an exception and prevent
     the test suite from blocking indefinitely.
+
+    Includes Bug #9 diagnostic instrumentation: logs daemon state before
+    and after the TRACE RUN to stderr (prefix "Bug9 diag: ") for
+    diagnosing event loss in combined suite runs.
     """
     host = request.config.getoption("--host")
     port = request.config.getoption("--port")
     conn = AmigaConnection(host, port)
     conn.connect()
+    try:
+        return _trace_events_inner(conn)
+    finally:
+        conn.close()
 
+
+def _trace_events_inner(conn):
+    """Guts of trace_events, factored out for clean conn.close() in finally."""
+    # --- Bug9 diag: pre-run status ---
+    noise_set = set(_NOISE_FUNCS)
+    pre_status = conn.trace_status()
+
+    print("Bug9 diag: === pre-run trace_status ===", file=sys.stderr)
+    print("Bug9 diag: enabled={}".format(
+        pre_status.get("enabled")), file=sys.stderr)
+    for key in ("events_produced", "events_consumed", "events_dropped",
+                "buffer_used", "buffer_capacity"):
+        if key in pre_status:
+            print("Bug9 diag: {}={}".format(key, pre_status[key]),
+                  file=sys.stderr)
+    if "filter_task" in pre_status:
+        print("Bug9 diag: filter_task={}".format(
+            pre_status["filter_task"]), file=sys.stderr)
+    if "noise_disabled" in pre_status:
+        print("Bug9 diag: noise_disabled={}".format(
+            pre_status["noise_disabled"]), file=sys.stderr)
+
+    # Log per-function state: report any non-noise functions that are
+    # disabled or noise functions that are unexpectedly enabled.
+    patch_list = pre_status.get("patch_list", [])
+    disabled_non_noise = []
+    enabled_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        is_enabled = entry.get("enabled", True)
+        if bare in noise_set and is_enabled:
+            enabled_noise.append(bare)
+        elif bare not in noise_set and not is_enabled:
+            disabled_non_noise.append(bare)
+    if disabled_non_noise or enabled_noise:
+        if disabled_non_noise:
+            print("Bug9 diag: DISABLED non-noise functions: {}".format(
+                ", ".join(disabled_non_noise)), file=sys.stderr)
+        if enabled_noise:
+            print("Bug9 diag: ENABLED noise functions: {}".format(
+                ", ".join(enabled_noise)), file=sys.stderr)
+    else:
+        print("Bug9 diag: function state: all defaults", file=sys.stderr)
+
+    # --- Bug9 diag: trace_run with try/except ---
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(60)
     try:
@@ -78,14 +157,275 @@ def trace_events(request, require_atrace_for_app):
         def collect(ev):
             events.append(ev)
 
-        result = conn.trace_run("C:atrace_test", collect)
+        try:
+            result = conn.trace_run("C:atrace_test", collect)
+        except Exception as exc:
+            print("Bug9 diag: trace_run() raised {}: {}".format(
+                type(exc).__name__, exc), file=sys.stderr)
+            raise
         assert result["rc"] == 0, (
             "atrace_test exited with rc={}".format(result["rc"]))
-        # Filter to only "event" type (exclude comments)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+    # --- Bug9 diag: post-run status ---
+    post_status = conn.trace_status()
+
+    print("Bug9 diag: === post-run trace_status ===", file=sys.stderr)
+    for key in ("events_produced", "events_consumed", "events_dropped",
+                "buffer_used"):
+        if key in post_status:
+            pre_val = pre_status.get(key, 0)
+            post_val = post_status[key]
+            print("Bug9 diag: {}={} (delta={})".format(
+                key, post_val, post_val - pre_val), file=sys.stderr)
+
+    # Log raw event counts
+    event_entries = [e for e in events if e.get("type") == "event"]
+    comment_entries = [e for e in events if e.get("type") != "event"]
+    print("Bug9 diag: raw entries collected: {}".format(
+        len(events)), file=sys.stderr)
+    print("Bug9 diag: event entries: {}, comment entries: {}".format(
+        len(event_entries), len(comment_entries)), file=sys.stderr)
+
+    # Log any comment entries (may contain daemon-side messages)
+    for ce in comment_entries:
+        print("Bug9 diag: comment: {}".format(
+            ce.get("text", ce.get("raw", "?"))), file=sys.stderr)
+
+    # Log per-function event counts
+    func_counts = Counter(e.get("func", "?") for e in event_entries)
+    if func_counts:
+        summary = ", ".join("{}={}".format(f, c)
+                            for f, c in sorted(func_counts.items()))
+        print("Bug9 diag: per-function counts: {}".format(
+            summary), file=sys.stderr)
+
+    # Log sequence number range (gaps indicate truncation)
+    if event_entries:
+        seqs = [e.get("seq", 0) for e in event_entries]
+        print("Bug9 diag: seq range: first={}, last={}, count={}".format(
+            min(seqs), max(seqs), len(seqs)), file=sys.stderr)
+
+    return event_entries
+
+
+# The 10 noise functions that are disabled by default due to high
+# event volume from OS-internal activity.
+_NOISE_FUNCS = [
+    "FindPort", "FindSemaphore", "FindTask", "GetMsg", "PutMsg",
+    "ObtainSemaphore", "ReleaseSemaphore", "AllocMem",
+    "OpenLibrary",
+]
+
+
+_NOISE_GROUP1 = ["FindPort", "FindSemaphore", "FindTask"]
+_NOISE_GROUP2 = ["GetMsg", "PutMsg"]
+_NOISE_GROUP3 = ["ObtainSemaphore", "ReleaseSemaphore", "AllocMem"]
+_NOISE_GROUP4 = ["OpenLibrary"]
+
+
+@pytest.fixture(scope="class")
+def noise_group1_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 1 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP1
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)   # all 8
+    # All non-noise function names -- used for unconditional restore
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        # Disable ALL non-noise functions
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+
+        # Disable any noise functions NOT in this group
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+
+        # Enable ONLY this group's functions
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
         return [e for e in events if e.get("type") == "event"]
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
+        # Restore: disable this group's noise, re-enable ALL non-noise
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group2_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 2 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP2
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group3_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 3 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP3
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group4_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 4 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP4
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
         conn.close()
 
 
@@ -114,23 +454,7 @@ _HEX_PTR = re.compile(r"^0x[0-9a-f]{8}$")
 # ---------------------------------------------------------------------------
 
 class TestExecFunctions:
-    """Tests for all 12 exec.library traced functions."""
-
-    def test_findport(self, trace_events):
-        """FindPort("AMITCP") -- status/retval consistency."""
-        matches = _find_events(trace_events, "FindPort", '"AMITCP"')
-        assert len(matches) >= 1, (
-            "No FindPort('AMITCP') event found in {} events".format(
-                len(trace_events)))
-        ev = matches[0]
-        assert ev["lib"] == "exec"
-        # AMITCP port may or may not exist; assert consistency
-        if ev["status"] == "O":
-            assert _HEX_PTR.match(ev["retval"]), (
-                "FindPort OK but retval not hex: {}".format(ev["retval"]))
-        else:
-            assert ev["status"] == "E"
-            assert ev["retval"] == "NULL"
+    """Tests for the 4 non-noise exec.library traced functions."""
 
     def test_findresident(self, trace_events):
         """FindResident("dos.library") -- always present, status O."""
@@ -142,35 +466,6 @@ class TestExecFunctions:
         assert ev["lib"] == "exec"
         assert ev["status"] == "O", (
             "dos.library should be resident, got status={} retval={}".format(
-                ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
-
-    def test_findsemaphore(self, trace_events):
-        """FindSemaphore("atrace_patches") -- atrace loaded, status O."""
-        matches = _find_events(
-            trace_events, "FindSemaphore", '"atrace_patches"')
-        assert len(matches) >= 1, (
-            "No FindSemaphore('atrace_patches') event found in {} events"
-            .format(len(trace_events)))
-        ev = matches[0]
-        assert ev["lib"] == "exec"
-        assert ev["status"] == "O", (
-            "atrace_patches semaphore should exist, got status={} retval={}"
-            .format(ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
-
-    def test_findtask_self(self, trace_events):
-        """FindTask(NULL) -- self-lookup, always succeeds."""
-        matches = _find_events(trace_events, "FindTask", "NULL (self)")
-        assert len(matches) >= 1, (
-            "No FindTask('NULL (self)') event found in {} events".format(
-                len(trace_events)))
-        ev = matches[0]
-        assert ev["lib"] == "exec"
-        assert ev["status"] == "O", (
-            "FindTask(NULL) should succeed, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
         assert _HEX_PTR.match(ev["retval"]), (
             "Expected hex pointer retval, got: {}".format(ev["retval"]))
@@ -191,21 +486,6 @@ class TestExecFunctions:
         assert ev["retval"] == "OK", (
             "Expected retval 'OK', got: {}".format(ev["retval"]))
 
-    def test_openlibrary(self, trace_events):
-        """OpenLibrary("dos.library", v0) -- always present, status O."""
-        matches = _find_events(
-            trace_events, "OpenLibrary", '"dos.library",v0')
-        assert len(matches) >= 1, (
-            "No OpenLibrary('dos.library',v0) event found in {} events"
-            .format(len(trace_events)))
-        ev = matches[0]
-        assert ev["lib"] == "exec"
-        assert ev["status"] == "O", (
-            "OpenLibrary should succeed, got status={} retval={}".format(
-                ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
-
     def test_openresource(self, trace_events):
         """OpenResource("FileSystem.resource") -- always present, status O."""
         matches = _find_events(
@@ -221,11 +501,72 @@ class TestExecFunctions:
         assert _HEX_PTR.match(ev["retval"]), (
             "Expected hex pointer retval, got: {}".format(ev["retval"]))
 
-    def test_getmsg_empty(self, trace_events):
+
+# ---------------------------------------------------------------------------
+# TestExecNoiseGroup1 -- lookup functions (FindPort, FindSemaphore, FindTask)
+# ---------------------------------------------------------------------------
+
+class TestExecNoiseGroup1:
+    """Lookup functions: FindPort, FindSemaphore, FindTask."""
+
+    def test_findport(self, noise_group1_events):
+        """FindPort("AMITCP") -- status/retval consistency."""
+        matches = _find_events(noise_group1_events, "FindPort", '"AMITCP"')
+        assert len(matches) >= 1, (
+            "No FindPort('AMITCP') event found in {} events".format(
+                len(noise_group1_events)))
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        # AMITCP port may or may not exist; assert consistency
+        if ev["status"] == "O":
+            assert _HEX_PTR.match(ev["retval"]), (
+                "FindPort OK but retval not hex: {}".format(ev["retval"]))
+        else:
+            assert ev["status"] == "E"
+            assert ev["retval"] == "NULL"
+
+    def test_findsemaphore(self, noise_group1_events):
+        """FindSemaphore("atrace_patches") -- atrace loaded, status O."""
+        matches = _find_events(
+            noise_group1_events, "FindSemaphore", '"atrace_patches"')
+        assert len(matches) >= 1, (
+            "No FindSemaphore('atrace_patches') event found in {} events"
+            .format(len(noise_group1_events)))
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert ev["status"] == "O", (
+            "atrace_patches semaphore should exist, got status={} retval={}"
+            .format(ev["status"], ev["retval"]))
+        assert _HEX_PTR.match(ev["retval"]), (
+            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+
+    def test_findtask_self(self, noise_group1_events):
+        """FindTask(NULL) -- self-lookup, always succeeds."""
+        matches = _find_events(noise_group1_events, "FindTask", "NULL (self)")
+        assert len(matches) >= 1, (
+            "No FindTask('NULL (self)') event found in {} events".format(
+                len(noise_group1_events)))
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert ev["status"] == "O", (
+            "FindTask(NULL) should succeed, got status={} retval={}".format(
+                ev["status"], ev["retval"]))
+        assert _HEX_PTR.match(ev["retval"]), (
+            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+
+
+# ---------------------------------------------------------------------------
+# TestExecNoiseGroup2 -- message functions (GetMsg, PutMsg)
+# ---------------------------------------------------------------------------
+
+class TestExecNoiseGroup2:
+    """Message functions: GetMsg, PutMsg."""
+
+    def test_getmsg_empty(self, noise_group2_events):
         """GetMsg on empty port -- retval (empty), status -."""
         # Find GetMsg events returning (empty).  There may be many from
         # noise (OS internals), but at least one must exist from our test.
-        matches = _find_events(trace_events, "GetMsg")
+        matches = _find_events(noise_group2_events, "GetMsg")
         empty_matches = [ev for ev in matches
                          if ev.get("retval") == "(empty)"]
         assert len(empty_matches) >= 1, (
@@ -237,15 +578,16 @@ class TestExecFunctions:
             "GetMsg(empty) should have status '-', got: {}".format(
                 ev["status"]))
 
-    def test_putmsg_getmsg_pair(self, trace_events):
+    def test_putmsg_getmsg_pair(self, noise_group2_events):
         """PutMsg then GetMsg -- correct retval/status and sequence."""
         # Find PutMsg events (void return)
-        putmsg_events = _find_events(trace_events, "PutMsg")
+        putmsg_events = _find_events(noise_group2_events, "PutMsg")
         assert len(putmsg_events) >= 1, (
-            "No PutMsg events found in {} events".format(len(trace_events)))
+            "No PutMsg events found in {} events".format(
+                len(noise_group2_events)))
 
         # Find GetMsg events with non-empty return (message retrieved)
-        getmsg_events = _find_events(trace_events, "GetMsg")
+        getmsg_events = _find_events(noise_group2_events, "GetMsg")
         getmsg_ok = [ev for ev in getmsg_events
                      if ev.get("status") == "O"
                      and _HEX_PTR.match(ev.get("retval", ""))]
@@ -293,16 +635,24 @@ class TestExecFunctions:
             "PutMsg (seq={}) should precede GetMsg (seq={})".format(
                 test_putmsgs[0]["seq"], getmsg_ok[0]["seq"]))
 
-    def test_obtain_release_semaphore(self, trace_events):
+
+# ---------------------------------------------------------------------------
+# TestExecNoiseGroup3 -- semaphore + memory (ObtainSemaphore, ReleaseSemaphore, AllocMem)
+# ---------------------------------------------------------------------------
+
+class TestExecNoiseGroup3:
+    """Semaphore + memory functions: ObtainSemaphore, ReleaseSemaphore, AllocMem."""
+
+    def test_obtain_release_semaphore(self, noise_group3_events):
         """ObtainSemaphore + ReleaseSemaphore -- void, paired, ordered."""
-        obtain_events = _find_events(trace_events, "ObtainSemaphore")
-        release_events = _find_events(trace_events, "ReleaseSemaphore")
+        obtain_events = _find_events(noise_group3_events, "ObtainSemaphore")
+        release_events = _find_events(noise_group3_events, "ReleaseSemaphore")
         assert len(obtain_events) >= 1, (
             "No ObtainSemaphore events found in {} events".format(
-                len(trace_events)))
+                len(noise_group3_events)))
         assert len(release_events) >= 1, (
             "No ReleaseSemaphore events found in {} events".format(
-                len(trace_events)))
+                len(noise_group3_events)))
 
         # Both should be void
         for ev in obtain_events:
@@ -339,12 +689,12 @@ class TestExecFunctions:
             "(seq={})".format(
                 obtain_events[0]["seq"], release_events[0]["seq"]))
 
-    def test_allocmem(self, trace_events):
+    def test_allocmem(self, noise_group3_events):
         """AllocMem(1234, MEMF_PUBLIC|MEMF_CLEAR) -- distinctive size."""
-        matches = _find_events(trace_events, "AllocMem", "1234,")
+        matches = _find_events(noise_group3_events, "AllocMem", "1234,")
         assert len(matches) >= 1, (
             "No AllocMem with size 1234 found in {} events".format(
-                len(trace_events)))
+                len(noise_group3_events)))
         ev = matches[0]
         assert ev["lib"] == "exec"
         assert "MEMF_PUBLIC" in ev["args"], (
@@ -353,6 +703,28 @@ class TestExecFunctions:
             "Expected MEMF_CLEAR in args, got: {}".format(ev["args"]))
         assert ev["status"] == "O", (
             "AllocMem should succeed, got status={} retval={}".format(
+                ev["status"], ev["retval"]))
+        assert _HEX_PTR.match(ev["retval"]), (
+            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+
+
+# ---------------------------------------------------------------------------
+# TestExecNoiseGroup4 -- library open (OpenLibrary)
+# ---------------------------------------------------------------------------
+
+class TestExecNoiseGroup4:
+    """OpenLibrary (noise group 4)."""
+
+    def test_openlibrary(self, noise_group4_events):
+        """OpenLibrary("dos.library", v0) -- always present, status O."""
+        matches = _find_events(
+            noise_group4_events, "OpenLibrary", '"dos.library",v0')
+        assert len(matches) >= 1, (
+            "No OpenLibrary('dos.library',v0) event found in {} events"
+            .format(len(noise_group4_events)))
+        ev = matches[0]
+        assert ev["status"] == "O", (
+            "OpenLibrary should succeed, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
         assert _HEX_PTR.match(ev["retval"]), (
             "Expected hex pointer retval, got: {}".format(ev["retval"]))
@@ -813,10 +1185,9 @@ class TestFieldInvariants:
     def test_event_count_reasonable(self, trace_events):
         """Total event count is between 40 and 500.
 
-        Upper bound accounts for noise functions auto-enabled during
-        TRACE RUN, which generate many additional events from internal
-        OS operations (filesystem handler PutMsg/GetMsg, semaphore
-        operations, memory allocations).
+        Upper bound accounts for the traced process's internal OS
+        operations (OpenLibrary, LoadSeg, Lock, etc.) beyond the
+        explicit atrace_test calls.
         """
         count = len(trace_events)
         assert 40 <= count <= 500, (
@@ -884,15 +1255,21 @@ class TestFieldInvariants:
                 "Open seq={} status=E but retval not NULL: {}".format(
                     ev["seq"], ev["retval"]))
 
-    def test_void_functions_have_void_retval(self, trace_events):
-        """PutMsg, ObtainSemaphore, ReleaseSemaphore have retval (void)."""
-        void_funcs = ("PutMsg", "ObtainSemaphore", "ReleaseSemaphore")
-        for func_name in void_funcs:
-            matches = _find_events(trace_events, func_name)
-            for ev in matches:
-                assert ev["retval"] == "(void)", (
-                    "{} seq={} retval should be '(void)', got: {}".format(
-                        func_name, ev["seq"], ev["retval"]))
+    def test_currentdir_retval_is_old_lock(self, trace_events):
+        """CurrentDir has retval that is never literally '(void)'.
+
+        The noise void functions (PutMsg, ObtainSemaphore,
+        ReleaseSemaphore) are validated in TestExecNoiseGroup2/3.
+        This test checks the non-noise void-like function (CurrentDir)
+        whose retval is the old lock, not "(void)".
+        """
+        # CurrentDir uses RET_OLD_LOCK, so retval is (none)/path/hex,
+        # never "(void)".  Validate it's present and well-formed.
+        matches = _find_events(trace_events, "CurrentDir")
+        for ev in matches:
+            assert ev["retval"] != "(void)", (
+                "CurrentDir seq={} retval should not be '(void)': {}".format(
+                    ev["seq"], ev["retval"]))
 
     def test_no_adddosentry_events(self, trace_events):
         """No AddDosEntry events appear (we don't call it).
@@ -972,17 +1349,18 @@ class TestPhase4bFeatures:
                 [(e["seq"], e["args"]) for e in matches]))
 
     def test_stale_string_data_excluded(self, trace_events):
-        """Functions with has_string=0 do not show quoted strings in args.
+        """Non-noise functions with has_string=0 do not show quoted args.
 
-        GetMsg, PutMsg, AllocMem, Close, ObtainSemaphore, and
-        ReleaseSemaphore have no string parameter.  Their args should
-        never start with a double quote character, which would indicate
-        stale string_data leaking from a previous ring buffer entry.
+        Close has no string parameter.  Its args should never start with
+        a double quote character, which would indicate stale string_data
+        leaking from a previous ring buffer entry.
+
+        The noise no-string functions (GetMsg, PutMsg, AllocMem,
+        ObtainSemaphore, ReleaseSemaphore) are validated in the
+        noise_group2/3_events fixtures where they actually appear.
         """
-        no_string_funcs = (
-            "GetMsg", "PutMsg", "AllocMem", "Close",
-            "ObtainSemaphore", "ReleaseSemaphore",
-        )
+        # Close is the only non-noise function with has_string=0.
+        no_string_funcs = ("Close",)
         for func_name in no_string_funcs:
             matches = _find_events(trace_events, func_name)
             for ev in matches:

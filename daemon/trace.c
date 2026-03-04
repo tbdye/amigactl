@@ -117,6 +117,42 @@ static char trace_cmd_buf[MAX_CMD_LEN + 1];
 /* Event formatting buffer (static, single-threaded) */
 static char trace_line_buf[512];
 
+/* Drain stale events from ring buffer and clear valid flags.
+ * Must be called under Forbid(). */
+static void drain_stale_events(void)
+{
+    struct atrace_ringbuf *ring;
+    ULONG stale;
+    ULONG ci;
+
+    if (!g_anchor || !g_anchor->ring || !g_ring_entries)
+        return;
+
+    ring = g_anchor->ring;
+
+    stale = (ring->write_pos - ring->read_pos
+             + ring->capacity) % ring->capacity;
+    if (stale > 0) {
+        g_anchor->events_consumed += stale;
+        ring->read_pos = ring->write_pos;
+    }
+    if (ring->overflow > 0) {
+        g_events_dropped += ring->overflow;
+        ring->overflow = 0;
+    }
+
+    /* Clear valid flags and retval to prevent trace_poll_events() from
+     * consuming stale entries.  Clearing retval prevents the pre-call
+     * valid=1 race: stubs set valid=1 before calling the original
+     * function (needed for blocking calls), so the daemon may read the
+     * entry while the function is executing.  Without clearing, the
+     * retval field retains stale data from prior ring buffer usage. */
+    for (ci = 0; ci < ring->capacity; ci++) {
+        g_ring_entries[ci].valid = 0;
+        g_ring_entries[ci].retval = 0;
+    }
+}
+
 /* Look up a patch index by function name (case-insensitive).
  * Returns the func_table[] index, which IS the global patch index
  * because func_table[] ordering matches the installation order
@@ -134,12 +170,12 @@ static int find_patch_index_by_name(const char *name)
 
 /* ---- Noise function table ---- */
 
-/* Noise function names -- auto-enabled when filter_task is set,
- * restored when filter_task is cleared.
+/* Noise function names -- high-frequency functions that are disabled
+ * by default to avoid overwhelming the ring buffer.
  *
  * MUST match the noise_func_names table in atrace/main.c exactly.
- * If a name is misspelled here, it will silently fail to match
- * and that function will not be auto-enabled during TRACE RUN. */
+ * Used by trace_discover() to validate names at startup and by
+ * trace_cmd_status() to report the noise_disabled count. */
 static const char *noise_func_names[] = {
     "FindPort",
     "FindSemaphore",
@@ -149,10 +185,9 @@ static const char *noise_func_names[] = {
     "ObtainSemaphore",
     "ReleaseSemaphore",
     "AllocMem",
+    "OpenLibrary",
     NULL
 };
-
-#define MAX_NOISE_FUNCS 16  /* room for growth in future phases */
 
 /* ---- Task name cache ---- */
 
@@ -177,6 +212,7 @@ static const char *resolve_task_name(APTR task_ptr);
 static const struct trace_func_entry *lookup_func(UBYTE lib_id, WORD lvo);
 static const char *stristr(const char *haystack, const char *needle);
 static int parse_filters(const char *args, struct trace_state *ts);
+static void parse_extended_filter(const char *args, struct trace_state *ts);
 static int trace_filter_match(struct trace_state *ts,
                                struct atrace_event *ev,
                                const char *task_name);
@@ -545,6 +581,11 @@ static int parse_filters(const char *args, struct trace_state *ts)
     ts->filter_errors_only = 0;
     ts->filter_procname[0] = '\0';
 
+    /* Clear extended filter state (safe even before Wave 5 adds
+     * parse_extended_filter, because trace_filter_match checks
+     * use_extended_filter before accessing these fields) */
+    ts->use_extended_filter = 0;
+
     while (*args) {
         while (*args == ' ' || *args == '\t')
             args++;
@@ -641,6 +682,257 @@ static int parse_filters(const char *args, struct trace_state *ts)
     return 0;
 }
 
+/* ---- Extended filter parsing (Wave 5) ---- */
+
+/* Advance past the current token to the next whitespace.
+ * Returns pointer to the first space/tab, or end of string. */
+static const char *skip_to_space(const char *p)
+{
+    while (*p && *p != ' ' && *p != '\t')
+        p++;
+    return p;
+}
+
+/* Parse a comma-separated list of library names into output arrays.
+ *
+ * Strips ".library"/".device"/".resource" suffixes, looks up lib_id
+ * in func_table. Populates out_ids[].
+ *
+ * Unknown names are silently skipped (robust against typos).
+ * Parsing stops at space, tab, or NUL. */
+static void parse_name_list_lib(const char *csv,
+                                 int *out_ids, int *count, int max)
+{
+    char name[32];
+    int nlen;
+    *count = 0;
+
+    while (*csv && *csv != ' ' && *csv != '\t' && *count < max) {
+        nlen = 0;
+        while (*csv && *csv != ',' && *csv != ' ' && *csv != '\t'
+               && nlen < (int)sizeof(name) - 1)
+            name[nlen++] = *csv++;
+        name[nlen] = '\0';
+
+        if (*csv == ',')
+            csv++;
+
+        /* Strip .library/.device/.resource suffix */
+        {
+            static const char *suffixes[] = {
+                ".library", ".device", ".resource", NULL
+            };
+            const char **sfx;
+            for (sfx = suffixes; *sfx; sfx++) {
+                int slen = strlen(*sfx);
+                if (nlen > slen &&
+                    stricmp(&name[nlen - slen], *sfx) == 0) {
+                    name[nlen - slen] = '\0';
+                    nlen -= slen;
+                    break;
+                }
+            }
+        }
+
+        /* Look up lib_id (first match in func_table) */
+        {
+            int idx;
+            for (idx = 0; idx < (int)FUNC_TABLE_SIZE; idx++) {
+                if (stricmp(name, func_table[idx].lib_name) == 0) {
+                    /* Deduplicate: skip if lib_id already present */
+                    int dup = 0, j;
+                    for (j = 0; j < *count; j++) {
+                        if (out_ids[j] == func_table[idx].lib_id) {
+                            dup = 1;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        out_ids[*count] = func_table[idx].lib_id;
+                        (*count)++;
+                    }
+                    break;
+                }
+            }
+            /* Unknown library: silently skip */
+        }
+    }
+}
+
+/* Parse a comma-separated list of function names into output arrays.
+ *
+ * Looks up (lib_id, lvo) pairs in func_table. Populates
+ * out_lib_ids[] and out_lvos[].
+ *
+ * Unknown names are silently skipped (robust against typos).
+ * Parsing stops at space, tab, or NUL. */
+static void parse_name_list_func(const char *csv,
+                                  int *out_lib_ids,
+                                  WORD *out_lvos,
+                                  int *count, int max)
+{
+    char name[32];
+    int nlen;
+    *count = 0;
+
+    while (*csv && *csv != ' ' && *csv != '\t' && *count < max) {
+        nlen = 0;
+        while (*csv && *csv != ',' && *csv != ' ' && *csv != '\t'
+               && nlen < (int)sizeof(name) - 1)
+            name[nlen++] = *csv++;
+        name[nlen] = '\0';
+
+        if (*csv == ',')
+            csv++;
+
+        /* Look up (lib_id, lvo) pair from func_table */
+        {
+            int idx;
+            for (idx = 0; idx < (int)FUNC_TABLE_SIZE; idx++) {
+                if (stricmp(name, func_table[idx].func_name) == 0) {
+                    /* Deduplicate: skip if (lib_id, lvo) already present */
+                    int dup = 0, j;
+                    for (j = 0; j < *count; j++) {
+                        if (out_lib_ids[j] == func_table[idx].lib_id &&
+                            out_lvos[j] == func_table[idx].lvo_offset) {
+                            dup = 1;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        out_lib_ids[*count] = func_table[idx].lib_id;
+                        out_lvos[*count] = func_table[idx].lvo_offset;
+                        (*count)++;
+                    }
+                    break;
+                }
+            }
+            /* Unknown function: silently skip */
+        }
+    }
+}
+
+/* Parse extended FILTER with comma-separated lists and blacklists.
+ * Examples:
+ *   FILTER LIB=dos,exec
+ *   FILTER -FUNC=AllocMem,GetMsg
+ *   FILTER LIB=dos -FUNC=Close ERRORS
+ *   FILTER             (empty = clear all)
+ *
+ * Handles both simple and extended filter syntax. When arguments
+ * contain no commas or blacklist prefixes, delegates to parse_filters()
+ * for exact backward compatibility. */
+static void parse_extended_filter(const char *args,
+                                   struct trace_state *ts)
+{
+    /* Reset all filter state (both simple and extended) */
+    ts->use_extended_filter = 0;
+    ts->filter_lib_id = -1;
+    ts->filter_lvo = 0;
+    ts->filter_errors_only = 0;
+    ts->filter_procname[0] = '\0';
+    ts->lib_filter_mode = 0;
+    ts->lib_filter_count = 0;
+    ts->func_filter_mode = 0;
+    ts->func_filter_count = 0;
+
+    if (!args || !args[0]) {
+        /* Empty = clear all filters */
+        return;
+    }
+
+    /* Check if this needs extended mode (commas or blacklist
+     * prefixes). S4 fix: check specifically for -LIB= and -FUNC=
+     * prefixes rather than scanning for any '-' character, because
+     * '-' appears legitimately in process names (e.g. PROC=my-app). */
+    {
+        const char *scan = args;
+        int needs_extended = 0;
+        while (*scan) {
+            if (*scan == ',')
+                needs_extended = 1;
+            /* Check for blacklist prefix at word boundary.
+             * A '-' at the start of the string or after whitespace
+             * followed by LIB= or FUNC= indicates blacklist mode. */
+            if (*scan == '-' && (scan == args || scan[-1] == ' '
+                    || scan[-1] == '\t')) {
+                if (strnicmp(scan, "-LIB=", 5) == 0 ||
+                    strnicmp(scan, "-FUNC=", 6) == 0)
+                    needs_extended = 1;
+            }
+            scan++;
+        }
+
+        if (!needs_extended) {
+            /* Simple single-value syntax -- delegate to
+             * parse_filters() for exact backward compatibility */
+            parse_filters(args, ts);
+            return;
+        }
+    }
+
+    ts->use_extended_filter = 1;
+
+    while (*args) {
+        while (*args == ' ' || *args == '\t')
+            args++;
+        if (*args == '\0')
+            break;
+
+        if (strnicmp(args, "-LIB=", 5) == 0) {
+            ts->lib_filter_mode = -1;  /* blacklist */
+            args += 5;
+            parse_name_list_lib(args, ts->lib_filter_ids,
+                                &ts->lib_filter_count,
+                                MAX_FILTER_NAMES);
+            args = skip_to_space(args);
+        } else if (strnicmp(args, "LIB=", 4) == 0) {
+            ts->lib_filter_mode = 1;   /* whitelist */
+            args += 4;
+            parse_name_list_lib(args, ts->lib_filter_ids,
+                                &ts->lib_filter_count,
+                                MAX_FILTER_NAMES);
+            args = skip_to_space(args);
+        } else if (strnicmp(args, "-FUNC=", 6) == 0) {
+            ts->func_filter_mode = -1;
+            args += 6;
+            parse_name_list_func(args,
+                                 ts->func_filter_lib_ids,
+                                 ts->func_filter_lvos,
+                                 &ts->func_filter_count,
+                                 MAX_FILTER_NAMES);
+            args = skip_to_space(args);
+        } else if (strnicmp(args, "FUNC=", 5) == 0) {
+            ts->func_filter_mode = 1;
+            args += 5;
+            parse_name_list_func(args,
+                                 ts->func_filter_lib_ids,
+                                 ts->func_filter_lvos,
+                                 &ts->func_filter_count,
+                                 MAX_FILTER_NAMES);
+            args = skip_to_space(args);
+        } else if (strnicmp(args, "PROC=", 5) == 0) {
+            /* Single proc filter (substring match).
+             * C5 note: Multi-value PROC is not supported
+             * server-side. Process filtering in the toggle grid
+             * is client-side only. */
+            int pi = 0;
+            args += 5;
+            while (*args && *args != ' ' && *args != '\t' &&
+                   pi < (int)sizeof(ts->filter_procname) - 1)
+                ts->filter_procname[pi++] = *args++;
+            ts->filter_procname[pi] = '\0';
+        } else if (strnicmp(args, "ERRORS", 6) == 0) {
+            ts->filter_errors_only = 1;
+            args += 6;
+        } else {
+            /* Unknown keyword: skip to next space */
+            while (*args && *args != ' ' && *args != '\t')
+                args++;
+        }
+    }
+}
+
 /* Check if an event matches a client's filter criteria.
  * All filters are AND-combined: all must match for the event to pass.
  * Returns 1 if event matches (should be sent), 0 if filtered out. */
@@ -648,13 +940,64 @@ static int trace_filter_match(struct trace_state *ts,
                                struct atrace_event *ev,
                                const char *task_name)
 {
-    /* LIB filter */
-    if (ts->filter_lib_id >= 0 && ev->lib_id != ts->filter_lib_id)
-        return 0;
+    if (ts->use_extended_filter) {
+        /* Extended lib filter */
+        if (ts->lib_filter_mode == 1) {
+            /* Whitelist: event lib_id must be in the list */
+            int found = 0, j;
+            for (j = 0; j < ts->lib_filter_count; j++) {
+                if (ev->lib_id == ts->lib_filter_ids[j]) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) return 0;
+        } else if (ts->lib_filter_mode == -1) {
+            /* Blacklist: event lib_id must NOT be in the list */
+            int j;
+            for (j = 0; j < ts->lib_filter_count; j++) {
+                if (ev->lib_id == ts->lib_filter_ids[j])
+                    return 0;
+            }
+        }
 
-    /* FUNC filter (by LVO + lib_id) */
-    if (ts->filter_lvo != 0 && ev->lvo_offset != ts->filter_lvo)
-        return 0;
+        /* Extended func filter using (lib_id, lvo) pairs (M2 fix).
+         * No func_table scan needed -- pairs were resolved at parse
+         * time by parse_name_list_func(). */
+        if (ts->func_filter_mode != 0) {
+            int found = 0, j;
+            for (j = 0; j < ts->func_filter_count; j++) {
+                if (ev->lib_id == ts->func_filter_lib_ids[j] &&
+                    ev->lvo_offset == ts->func_filter_lvos[j]) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (ts->func_filter_mode == 1 && !found)
+                return 0;  /* whitelist: not in list */
+            if (ts->func_filter_mode == -1 && found)
+                return 0;  /* blacklist: in list */
+        }
+
+        /* PROC and ERRORS checks are below, outside the if/else.
+         * Both simple and extended paths use the same fields. */
+
+    } else {
+        /* Simple filters (original, for TRACE START compatibility
+         * and FILTER commands without comma/blacklist syntax) */
+
+        /* LIB filter */
+        if (ts->filter_lib_id >= 0 &&
+            ev->lib_id != ts->filter_lib_id)
+            return 0;
+
+        /* FUNC filter (by LVO + lib_id) */
+        if (ts->filter_lvo != 0 &&
+            ev->lvo_offset != ts->filter_lvo)
+            return 0;
+    }
+
+    /* ---- Shared checks (both simple and extended paths) ---- */
 
     /* PROC filter (case-insensitive substring match on task name).
      * Match against the base name only, stripping the [N] CLI number
@@ -1345,6 +1688,8 @@ void trace_poll_events(struct daemon_state *d)
     ULONG pos;
     ULONG ov;
     int batch;
+    int total_consumed;
+    int sent_any;
     int i;
     struct DateStamp ds;
     static char timestr[16];
@@ -1368,7 +1713,7 @@ void trace_poll_events(struct daemon_state *d)
                     send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
                     send_end(c->fd);
                     send_sentinel(c->fd);
-                    /* Restore filter_task and noise before clearing state.
+                    /* Clear filter_task before clearing state.
                      * g_anchor is still valid at this point. */
                     trace_run_cleanup(c);
                 }
@@ -1395,7 +1740,7 @@ void trace_poll_events(struct daemon_state *d)
                     send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
                     send_end(c->fd);
                     send_sentinel(c->fd);
-                    /* Restore filter_task and noise before clearing state.
+                    /* Clear filter_task before clearing state.
                      * g_anchor is still valid at this point. */
                     trace_run_cleanup(c);
                 }
@@ -1426,8 +1771,9 @@ void trace_poll_events(struct daemon_state *d)
         return;
     }
     batch = 0;
+    total_consumed = 0;
 
-    while (batch < 64 && g_ring_entries[pos].valid) {
+    while (batch < 512 && g_ring_entries[pos].valid) {
         ev = &g_ring_entries[pos];
 
         /* Resolve task name once per event (used by both formatting
@@ -1439,6 +1785,7 @@ void trace_poll_events(struct daemon_state *d)
                            sizeof(trace_line_buf));
 
         /* Broadcast to all tracing clients (with per-client filtering) */
+        sent_any = 0;
         for (i = 0; i < MAX_CLIENTS; i++) {
             c = &d->clients[i];
             if (c->fd < 0 || !c->trace.active)
@@ -1452,10 +1799,11 @@ void trace_poll_events(struct daemon_state *d)
             }
             if (!trace_filter_match(&c->trace, ev, task_name))
                 continue;
+            sent_any = 1;
             if (send_trace_data_chunk(c->fd, trace_line_buf) < 0) {
-                /* Restore filter_task/noise, then disconnect
-                 * immediately so stale data can't arrive on
-                 * the next event loop iteration. */
+                /* Clear filter_task, then disconnect immediately
+                 * so stale data can't arrive on the next
+                 * event loop iteration. */
                 trace_run_cleanup(c);
                 net_close(c->fd);
                 c->fd = -1;
@@ -1468,11 +1816,16 @@ void trace_poll_events(struct daemon_state *d)
         /* Advance consumer */
         pos = (pos + 1) % ring->capacity;
         ring->read_pos = pos;
-        batch++;
+        /* Only count events actually sent to a subscriber toward the
+         * batch limit.  Skipped events (stale, filtered out) are free
+         * to consume — this prevents a full buffer of stale events
+         * from blocking real events for 128+ poll cycles. */
+        if (sent_any)
+            batch++;
+        total_consumed++;
     }
 
-    /* Update lifetime counter */
-    g_anchor->events_consumed += batch;
+    g_anchor->events_consumed += total_consumed;
 
     /* Report overflow */
     if (ring->overflow > 0) {
@@ -1716,6 +2069,13 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Enter streaming mode */
     c->trace.active = 1;
 
+    /* Drain stale buffer content and clear valid flags.
+     * Without a subscriber, background activity fills the ring buffer.
+     * A user starting TRACE START wants new activity, not history. */
+    Forbid();
+    drain_stale_events();
+    Permit();
+
     /* Send OK -- no sentinel (streaming response) */
     send_ok(c->fd, NULL);
     return 0;
@@ -1932,20 +2292,6 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
             strcpy(namebuf, "amigactld-exec");
     }
 
-    /* Look up noise function patch indices (before Forbid) */
-    {
-        int ni = 0;
-        const char **np;
-        for (np = noise_func_names; *np && ni < MAX_NOISE_FUNCS; np++) {
-            int pidx = find_patch_index_by_name(*np);
-            if (pidx >= 0 && pidx < (int)g_anchor->patch_count) {
-                c->trace.noise_patch_indices[ni] = pidx;
-                ni++;
-            }
-        }
-        c->trace.noise_saved_count = ni;
-    }
-
     /* Populate the proc_slot and launch */
     strncpy(g_daemon_state->procs[slot].command, command, 255);
     g_daemon_state->procs[slot].command[255] = '\0';
@@ -1998,42 +2344,37 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
             g_anchor->filter_task = NULL;
     }
 
-    /* Set filter_task and auto-enable noise only if we have exclusive
-     * ownership of the stub-level filter.
+    /* Set filter_task for stub-level task filtering if available.
      *
      * Design note: the filter_task field is a single global value in
      * the anchor struct. Only one TRACE RUN can use stub-level
      * filtering at a time. If another TRACE RUN is already active
-     * (filter_task != NULL), we skip the filter_task write and the
-     * noise auto-enable, falling back to daemon-side filtering only
-     * (the existing run_task_ptr check in trace_poll_events). The
-     * ring buffer may overflow in this case, same as Phase 3.
+     * (filter_task != NULL), we skip the filter_task write, falling
+     * back to daemon-side filtering only (the existing run_task_ptr
+     * check in trace_poll_events). The ring buffer may overflow in
+     * this case, same as Phase 3.
      *
-     * Noise auto-enable without stub-level filtering would immediately
-     * overflow the ring buffer (high-frequency functions producing
-     * 10K+ events/sec system-wide with no task filter to limit them),
-     * so noise save/enable is gated on filter_task ownership. */
+     * Noise functions are left at their current enable/disable state.
+     * Even with stub-level task filtering, auto-enabling noise
+     * overwhelms the ring buffer (~10K events in 0.5s from a single
+     * target process). Users who want noise events can enable them
+     * explicitly before TRACE RUN. */
     if (g_anchor->version >= 2 && g_anchor->filter_task == NULL) {
-        int ni;
-        /* Save noise enable states and enable all noise functions */
-        for (ni = 0; ni < c->trace.noise_saved_count; ni++) {
-            int pidx = c->trace.noise_patch_indices[ni];
-            c->trace.noise_saved_enabled[ni] =
-                g_anchor->patches[pidx].enabled;
-            g_anchor->patches[pidx].enabled = 1;
-        }
-        c->trace.noise_saved = 1;
         g_anchor->filter_task = (APTR)proc;
-    } else {
-        /* Another TRACE RUN or manual filter is active, or anchor
-         * version < 2. Fall back to daemon-side filtering only. */
-        c->trace.noise_saved = 0;
     }
 
     /* Capture event_sequence under Forbid() -- the new process cannot
      * run until Permit(), so this value is guaranteed to precede any
      * events from the traced process. */
     c->trace.run_start_seq = g_anchor->event_sequence;
+
+    /* Drain stale buffer content and clear valid flags.
+     * Without a subscriber, background activity fills the ring buffer.
+     * The target process (which cannot run until Permit()) would find
+     * no free slots for its events.  Clearing valid flags prevents
+     * trace_poll_events() from racing past the producer through stale
+     * entries with valid=1 from prior activity. */
+    drain_stale_events();
 
     Permit();
 
@@ -2053,37 +2394,15 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
 
 /* ---- TRACE RUN cleanup helper ---- */
 
-/* Restore noise function enable states and clear filter_task.
+/* Clear filter_task and TRACE RUN state.
  * Called when TRACE RUN ends (process exit, STOP, disconnect,
- * send failure, or atrace shutdown).
- *
- * Uses noise_saved as the trigger (not mode), so this is safe
- * to call after trace.mode has already been cleared. noise_saved
- * is only set to 1 when we successfully took ownership of
- * filter_task in trace_cmd_run(). */
+ * send failure, or atrace shutdown). */
 static void trace_run_cleanup(struct client *c)
 {
-    /* Restore noise enable states */
-    if (c->trace.noise_saved && g_anchor) {
-        int ni;
-        for (ni = 0; ni < c->trace.noise_saved_count; ni++) {
-            int pidx = c->trace.noise_patch_indices[ni];
-            if (pidx >= 0 && pidx < (int)g_anchor->patch_count)
-                g_anchor->patches[pidx].enabled =
-                    c->trace.noise_saved_enabled[ni];
-        }
-        c->trace.noise_saved = 0;
-
-        /* Clear task filter (we definitely own it if noise was saved) */
-        if (g_anchor->version >= 2)
-            g_anchor->filter_task = NULL;
-    } else if (g_anchor && g_anchor->version >= 2 &&
-               c->trace.run_task_ptr != NULL &&
-               g_anchor->filter_task == c->trace.run_task_ptr) {
-        /* No noise was saved, but filter_task matches our task --
-         * clear it defensively to prevent stuck filter_task from
-         * edge cases where noise_saved was cleared without clearing
-         * filter_task. */
+    /* Clear stub-level task filter if we own it */
+    if (g_anchor && g_anchor->version >= 2 &&
+        c->trace.run_task_ptr != NULL &&
+        g_anchor->filter_task == c->trace.run_task_ptr) {
         g_anchor->filter_task = NULL;
     }
 
@@ -2099,11 +2418,7 @@ static void trace_run_cleanup(struct client *c)
 void trace_run_disconnect_cleanup(struct daemon_state *d, int idx)
 {
     struct client *c = &d->clients[idx];
-    /* Trigger cleanup if noise was saved (we owned filter_task) OR
-     * if this client has an active TRACE RUN (catches cases where
-     * noise_saved is 0 but filter_task still needs clearing). */
-    if (c->trace.noise_saved ||
-        (c->trace.active && c->trace.mode == TRACE_MODE_RUN)) {
+    if (c->trace.active && c->trace.mode == TRACE_MODE_RUN) {
         trace_run_cleanup(c);
     }
 }
@@ -2240,7 +2555,7 @@ void trace_check_run_completed(struct daemon_state *d)
             c->fd = -1;
         }
 
-        /* Restore noise states, clear filter_task, clear trace state */
+        /* Clear filter_task, clear trace state */
         trace_run_cleanup(c);
     }
 }
@@ -2483,10 +2798,27 @@ int trace_handle_input(struct daemon_state *d, int idx)
             /* Send END + sentinel, return to normal mode */
             send_end(c->fd);
             send_sentinel(c->fd);
-            /* Restore noise states, clear filter_task, clear trace state */
+            /* Clear filter_task, clear trace state */
             trace_run_cleanup(c);
             return 0;
         }
+
+        /* FILTER command during active trace stream */
+        if (strnicmp(p, "FILTER", 6) == 0 &&
+            (p[6] == '\0' || p[6] == ' ' || p[6] == '\t')) {
+            char *filter_args = p + 6;
+            while (*filter_args == ' ' || *filter_args == '\t')
+                filter_args++;
+            /* Parse extended FILTER (Wave 5). Handles both simple
+             * and extended syntax (commas, blacklists). When no
+             * commas or -LIB=/-FUNC= prefixes, delegates to
+             * parse_filters() for backward compatibility. Resets
+             * all filter fields including extended state. */
+            parse_extended_filter(filter_args, &c->trace);
+            /* Fire-and-forget: no response sent */
+            continue;
+        }
+
         /* Silently discard other input during trace */
     }
 

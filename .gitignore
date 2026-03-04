@@ -18,5 +18,8 @@ __pycache__/
 amigactld-*.lha
 /amigactld.readme
 
+# Local utility scripts (not part of the repo)
+scripts/
+
 # Auto-created client config (template is tracked as .conf.example)
 client/amigactl.conf

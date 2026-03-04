@@ -47,10 +47,7 @@ int trace_any_active(struct daemon_state *d);
 void trace_check_run_completed(struct daemon_state *d);
 
 /* Clean up TRACE RUN state when client disconnects.
- * Clears filter_task and restores noise enable states if this
- * client owned the stub-level filter. Uses noise_saved flag
- * (not trace.mode) so it works regardless of call ordering
- * relative to inline state clearing. */
+ * Clears filter_task if this client owned the stub-level filter. */
 void trace_run_disconnect_cleanup(struct daemon_state *d, int idx);
 
 #endif /* AMIGACTLD_TRACE_H */

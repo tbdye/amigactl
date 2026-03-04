@@ -393,7 +393,7 @@ cleanup:
     /* Safely terminate tracked async processes */
     exec_shutdown_procs(&daemon);
 
-    /* Clean up TRACE RUN filter_task/noise before closing sockets */
+    /* Clean up TRACE RUN filter_task before closing sockets */
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (daemon.clients[i].fd >= 0)
             trace_run_disconnect_cleanup(&daemon, i);
@@ -479,7 +479,6 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].trace.mode = TRACE_MODE_START;
     d->clients[slot].trace.run_proc_slot = -1;
     d->clients[slot].trace.run_task_ptr = NULL;
-    d->clients[slot].trace.noise_saved = 0;
 
     send_banner(fd);
 }
@@ -793,9 +792,9 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
 static void disconnect_client(struct daemon_state *d, int idx)
 {
-    /* Restore filter_task and noise states if this client had an
-     * active TRACE RUN with stub-level filtering. Must come before
-     * the inline state clearing below. */
+    /* Clear filter_task if this client had an active TRACE RUN with
+     * stub-level filtering. Must come before the inline state
+     * clearing below. */
     trace_run_disconnect_cleanup(d, idx);
 
     /* Clean up streaming state before closing the connection */

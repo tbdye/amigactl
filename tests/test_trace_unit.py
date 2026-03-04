@@ -12,9 +12,11 @@ from unittest import mock
 import pytest
 
 from amigactl import (
-    AmigaConnection, CommandSyntaxError, InternalError, _parse_trace_event,
+    AmigaConnection, CommandSyntaxError, InternalError, RawTraceSession,
+    _parse_trace_event, read_one_trace_event,
 )
 from amigactl.colors import ColorWriter, TRACE_HEADER, format_trace_event
+from amigactl.protocol import ENCODING, ProtocolError, TraceStreamReader
 from amigactl.shell import AmigaShell, _DirCache
 
 
@@ -919,3 +921,488 @@ class TestShellDoTraceRun:
         shell.conn.trace_run.assert_called_once()
         call_args = shell.conn.trace_run.call_args
         assert call_args[0][0] == "Echo hello"
+
+
+# ---------------------------------------------------------------------------
+# TestTraceStreamReader
+# ---------------------------------------------------------------------------
+
+class TestTraceStreamReader:
+    """Tests for TraceStreamReader in client/amigactl/protocol.py."""
+
+    def _make_reader(self):
+        """Create a TraceStreamReader with a mock socket."""
+        sock = mock.MagicMock()
+        reader = TraceStreamReader(sock)
+        return reader, sock
+
+    def test_reader_complete_event(self):
+        """Feed a complete DATA <len> + payload, verify parsed event."""
+        reader, sock = self._make_reader()
+        payload = b"42\t14:30:01.000\texec.OpenLibrary\tShell\t\"dos\",0\t0x1234\tO"
+        frame = "DATA {}\n".format(len(payload)).encode(ENCODING) + payload
+        sock.recv.return_value = frame
+
+        event = reader.try_read_event()
+
+        assert event is not None
+        assert event is not False
+        assert event["type"] == "event"
+        assert event["seq"] == 42
+        assert event["func"] == "OpenLibrary"
+        assert event["status"] == "O"
+
+    def test_reader_partial_line(self):
+        """Feed partial header, then rest. Verify None then event."""
+        reader, sock = self._make_reader()
+        payload = b"1\t12:00:00.000\tdos.Open\ttask\targs\tret\tO"
+        full_frame = "DATA {}\n".format(len(payload)).encode(ENCODING) + payload
+
+        # First recv: partial header "DAT"
+        sock.recv.return_value = b"DAT"
+        result = reader.try_read_event()
+        assert result is None
+
+        # Second recv: rest of frame
+        sock.recv.return_value = full_frame[3:]
+        result = reader.try_read_event()
+        assert result is not None
+        assert result["type"] == "event"
+        assert result["func"] == "Open"
+
+    def test_reader_partial_chunk(self):
+        """Feed DATA header + partial payload, then rest."""
+        reader, sock = self._make_reader()
+        payload = b"1\t12:00:00.000\tdos.Open\ttask\targs\tret\tO"
+        header = "DATA {}\n".format(len(payload)).encode(ENCODING)
+
+        # First recv: header + first 10 bytes of payload
+        sock.recv.return_value = header + payload[:10]
+        result = reader.try_read_event()
+        assert result is None
+
+        # Second recv: remaining payload
+        sock.recv.return_value = payload[10:]
+        result = reader.try_read_event()
+        assert result is not None
+        assert result["type"] == "event"
+        assert result["func"] == "Open"
+
+    def test_reader_end_sentinel(self):
+        """Feed END + sentinel, verify False returned."""
+        reader, sock = self._make_reader()
+        sock.recv.return_value = b"END\n.\n"
+
+        result = reader.try_read_event()
+        assert result is False
+
+    def test_reader_end_split_sentinel(self):
+        """Feed END alone, verify None. Then feed sentinel, verify False."""
+        reader, sock = self._make_reader()
+
+        # First recv: just END line
+        sock.recv.return_value = b"END\n"
+        result = reader.try_read_event()
+        assert result is None
+
+        # Second recv: sentinel
+        sock.recv.return_value = b".\n"
+        result = reader.try_read_event()
+        assert result is False
+
+    def test_reader_multiple_events(self):
+        """Feed two complete events in one recv, verify both returned."""
+        reader, sock = self._make_reader()
+        payload1 = b"1\t12:00\tdos.Open\ttask\targs\tret\tO"
+        payload2 = b"2\t12:01\tdos.Close\ttask\targs\tret\tO"
+        frame1 = "DATA {}\n".format(len(payload1)).encode(ENCODING) + payload1
+        frame2 = "DATA {}\n".format(len(payload2)).encode(ENCODING) + payload2
+        sock.recv.return_value = frame1 + frame2
+
+        event1 = reader.try_read_event()
+        assert event1 is not None
+        assert event1["func"] == "Open"
+
+        assert reader.has_buffered_data()
+        event2 = reader.drain_buffered()
+        assert event2 is not None
+        assert event2["func"] == "Close"
+
+    def test_reader_comment(self):
+        """Feed DATA with # prefix, verify comment dict."""
+        reader, sock = self._make_reader()
+        payload = b"# OVERFLOW 5 events dropped"
+        frame = "DATA {}\n".format(len(payload)).encode(ENCODING) + payload
+        sock.recv.return_value = frame
+
+        result = reader.try_read_event()
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == "OVERFLOW 5 events dropped"
+
+    def test_reader_blocking_io_error(self):
+        """BlockingIOError from recv returns None."""
+        reader, sock = self._make_reader()
+        sock.recv.side_effect = BlockingIOError()
+
+        result = reader.try_read_event()
+        assert result is None
+
+    def test_reader_connection_closed(self):
+        """Empty recv raises ProtocolError."""
+        reader, sock = self._make_reader()
+        sock.recv.return_value = b""
+
+        with pytest.raises(ProtocolError, match="Connection closed"):
+            reader.try_read_event()
+
+    def test_reader_err_line(self):
+        """ERR line + sentinel returns False."""
+        reader, sock = self._make_reader()
+        sock.recv.return_value = b"ERR 500 internal error\n.\n"
+
+        result = reader.try_read_event()
+        assert result is False
+
+    def test_reader_err_split_sentinel(self):
+        """ERR without sentinel, then sentinel arrives."""
+        reader, sock = self._make_reader()
+
+        sock.recv.return_value = b"ERR 500 error\n"
+        result = reader.try_read_event()
+        assert result is None
+
+        sock.recv.return_value = b".\n"
+        result = reader.try_read_event()
+        assert result is False
+
+    def test_reader_has_buffered_data_empty(self):
+        """has_buffered_data() returns False on fresh reader."""
+        reader, sock = self._make_reader()
+        assert reader.has_buffered_data() is False
+
+    def test_reader_invalid_data_length(self):
+        """Invalid DATA length raises ProtocolError."""
+        reader, sock = self._make_reader()
+        sock.recv.return_value = b"DATA abc\n"
+
+        with pytest.raises(ProtocolError, match="Invalid DATA length"):
+            reader.try_read_event()
+
+    def test_reader_unexpected_line(self):
+        """Unexpected line raises ProtocolError."""
+        reader, sock = self._make_reader()
+        sock.recv.return_value = b"BOGUS\n"
+
+        with pytest.raises(ProtocolError, match="Unexpected line"):
+            reader.try_read_event()
+
+
+# ---------------------------------------------------------------------------
+# TestTraceStartRaw
+# ---------------------------------------------------------------------------
+
+class TestTraceStartRaw:
+    """Tests for trace_start_raw() on AmigaConnection."""
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_sends_command(self, mock_send, mock_readline):
+        """Verify correct command string is sent and OK is consumed."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK"
+
+        session = conn.trace_start_raw(lib="dos", func="Open")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE START LIB=dos FUNC=Open")
+        assert isinstance(session, RawTraceSession)
+        assert session.sock is conn._sock
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_raises_on_error(self, mock_send, mock_readline):
+        """ERR response raises exception."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["ERR 500 atrace not loaded", "."]
+
+        with pytest.raises(InternalError, match="atrace not loaded"):
+            conn.trace_start_raw()
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_restores_timeout(self, mock_send, mock_readline):
+        """Context manager restores original timeout on exit."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK"
+
+        with conn.trace_start_raw() as session:
+            # Socket should be non-blocking inside
+            conn._sock.setblocking.assert_called_with(False)
+
+        # After exiting, timeout should be restored
+        conn._sock.settimeout.assert_called_with(10)
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_no_filters(self, mock_send, mock_readline):
+        """Bare TRACE START with no filters."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK"
+
+        conn.trace_start_raw()
+
+        mock_send.assert_called_once_with(conn._sock, "TRACE START")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_all_filters(self, mock_send, mock_readline):
+        """TRACE START with all filters."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK"
+
+        conn.trace_start_raw(lib="dos", func="Open", proc="bbs",
+                             errors_only=True)
+
+        mock_send.assert_called_once_with(
+            conn._sock,
+            "TRACE START LIB=dos FUNC=Open PROC=bbs ERRORS")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_start_raw_not_connected(self, mock_send, mock_readline):
+        """Raises ProtocolError when not connected."""
+        conn = _make_mock_conn()
+        conn._sock = None
+
+        with pytest.raises(ProtocolError, match="Not connected"):
+            conn.trace_start_raw()
+
+
+# ---------------------------------------------------------------------------
+# TestTraceRunRaw
+# ---------------------------------------------------------------------------
+
+class TestTraceRunRaw:
+    """Tests for trace_run_raw() on AmigaConnection."""
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_raw_sends_command(self, mock_send, mock_readline):
+        """Verify correct command string is sent."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK 42"
+
+        session, proc_id = conn.trace_run_raw("Echo hello", lib="dos")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "TRACE RUN LIB=dos -- Echo hello")
+        assert proc_id == 42
+        assert isinstance(session, RawTraceSession)
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_raw_raises_on_error(self, mock_send, mock_readline):
+        """ERR response raises exception."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.side_effect = ["ERR 500 atrace not loaded", "."]
+
+        with pytest.raises(InternalError, match="atrace not loaded"):
+            conn.trace_run_raw("test")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_raw_all_options(self, mock_send, mock_readline):
+        """All options are placed before the -- separator."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK 1"
+
+        conn.trace_run_raw("test", lib="dos", func="Open",
+                           errors_only=True, cd="Work:")
+
+        mock_send.assert_called_once_with(
+            conn._sock,
+            "TRACE RUN LIB=dos FUNC=Open ERRORS CD=Work: -- test")
+
+    @mock.patch("amigactl.read_line")
+    @mock.patch("amigactl.send_command")
+    def test_trace_run_raw_no_proc_id(self, mock_send, mock_readline):
+        """OK with no proc_id returns None."""
+        conn = _make_mock_conn()
+        conn._sock.gettimeout.return_value = 10
+        mock_readline.return_value = "OK"
+
+        session, proc_id = conn.trace_run_raw("test")
+        assert proc_id is None
+
+
+# ---------------------------------------------------------------------------
+# TestSendFilter
+# ---------------------------------------------------------------------------
+
+class TestSendFilter:
+    """Tests for send_filter() on AmigaConnection."""
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_builds_correct_command(self, mock_send):
+        """Verify FILTER command with lib and func."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(lib="dos", func="Open")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER LIB=dos FUNC=Open")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_raw_string(self, mock_send):
+        """Verify raw filter string is passed through."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(raw="LIB=dos,exec")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER LIB=dos,exec")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_no_args_clears(self, mock_send):
+        """Bare FILTER (no args) clears all filters."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter()
+
+        mock_send.assert_called_once_with(conn._sock, "FILTER")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_proc(self, mock_send):
+        """Verify FILTER with proc."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(proc="bbs")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER PROC=bbs")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_nonblocking_socket(self, mock_send):
+        """Non-blocking socket gets temporary timeout for send."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = False
+
+        conn.send_filter(lib="dos")
+
+        # Should have set timeout, then restored non-blocking
+        conn._sock.settimeout.assert_called_with(2.0)
+        conn._sock.setblocking.assert_called_with(False)
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_not_connected(self, mock_send):
+        """Raises ProtocolError when not connected."""
+        conn = _make_mock_conn()
+        conn._sock = None
+
+        with pytest.raises(ProtocolError, match="Not connected"):
+            conn.send_filter(lib="dos")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_raw_empty_string(self, mock_send):
+        """raw="" sends bare FILTER (clears filters)."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(raw="")
+
+        mock_send.assert_called_once_with(conn._sock, "FILTER")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_send_failure_silent(self, mock_send):
+        """OSError during send is silently swallowed."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+        mock_send.side_effect = OSError("broken pipe")
+
+        # Should not raise
+        conn.send_filter(lib="dos")
+
+
+# ---------------------------------------------------------------------------
+# TestReadOneTraceEvent
+# ---------------------------------------------------------------------------
+
+class TestReadOneTraceEvent:
+    """Tests for read_one_trace_event() module-level function."""
+
+    @mock.patch("amigactl.recv_exact")
+    @mock.patch("amigactl.read_line")
+    def test_data_event(self, mock_readline, mock_recv):
+        """DATA chunk produces event dict."""
+        payload = b"1\t12:00:00.000\tdos.Open\ttask\targs\tret\tO"
+        mock_readline.return_value = "DATA {}".format(len(payload))
+        mock_recv.return_value = payload
+        sock = mock.MagicMock()
+
+        event = read_one_trace_event(sock)
+
+        assert event["type"] == "event"
+        assert event["func"] == "Open"
+
+    @mock.patch("amigactl.recv_exact")
+    @mock.patch("amigactl.read_line")
+    def test_comment_event(self, mock_readline, mock_recv):
+        """DATA chunk with # prefix produces comment dict."""
+        payload = b"# OVERFLOW 5 events dropped"
+        mock_readline.return_value = "DATA {}".format(len(payload))
+        mock_recv.return_value = payload
+        sock = mock.MagicMock()
+
+        event = read_one_trace_event(sock)
+
+        assert event["type"] == "comment"
+        assert event["text"] == "OVERFLOW 5 events dropped"
+
+    @mock.patch("amigactl.read_line")
+    def test_end_returns_none(self, mock_readline):
+        """END + sentinel returns None."""
+        mock_readline.side_effect = ["END", "."]
+        sock = mock.MagicMock()
+
+        result = read_one_trace_event(sock)
+        assert result is None
+
+    @mock.patch("amigactl.read_line")
+    def test_err_returns_none(self, mock_readline):
+        """ERR + sentinel returns None."""
+        mock_readline.side_effect = ["ERR 500 internal error", "."]
+        sock = mock.MagicMock()
+
+        result = read_one_trace_event(sock)
+        assert result is None
+
+    @mock.patch("amigactl.read_line")
+    def test_unexpected_line_raises(self, mock_readline):
+        """Unexpected line raises ProtocolError."""
+        mock_readline.return_value = "BOGUS"
+        sock = mock.MagicMock()
+
+        with pytest.raises(ProtocolError, match="Unexpected line"):
+            read_one_trace_event(sock)
+
+    @mock.patch("amigactl.read_line")
+    def test_end_bad_sentinel_raises(self, mock_readline):
+        """END with wrong sentinel raises ProtocolError."""
+        mock_readline.side_effect = ["END", "WRONG"]
+        sock = mock.MagicMock()
+
+        with pytest.raises(ProtocolError, match="Expected sentinel"):
+            read_one_trace_event(sock)

@@ -3107,14 +3107,20 @@ class AmigaShell(cmd.Cmd):
                 elif upper == "ERRORS":
                     kwargs["errors_only"] = True
 
-            # Column header
-            print(TRACE_HEADER)
-
-            def trace_callback(event):
-                print(format_trace_event(event, self.cw))
-
             try:
-                self.conn.trace_start(trace_callback, **kwargs)
+                # Use interactive viewer if terminal supports it
+                if sys.stdout.isatty() and os.name != "nt":
+                    from .trace_ui import TraceViewer
+                    with self.conn.trace_start_raw(**kwargs) as session:
+                        viewer = TraceViewer(
+                            self.conn, session, self.cw, mode="start")
+                        viewer.run()
+                else:
+                    # Fallback to original callback-based mode
+                    print(TRACE_HEADER)
+                    def trace_callback(event):
+                        print(format_trace_event(event, self.cw))
+                    self.conn.trace_start(trace_callback, **kwargs)
             except KeyboardInterrupt:
                 try:
                     self.conn.stop_trace()
@@ -3172,19 +3178,29 @@ class AmigaShell(cmd.Cmd):
             if "cd" not in kwargs and self.cwd:
                 kwargs["cd"] = self.cwd
 
-            # Column header
-            print(TRACE_HEADER)
-
-            def trace_callback(event):
-                print(format_trace_event(event, self.cw))
-
             try:
-                result = self.conn.trace_run(command, trace_callback,
-                                             **kwargs)
-                if result.get("rc") is not None:
-                    proc_id = result.get("proc_id", "?")
-                    print("Process {} exited with rc={}".format(
-                        proc_id, result["rc"]))
+                if sys.stdout.isatty() and os.name != "nt":
+                    from .trace_ui import TraceViewer
+                    session, proc_id = self.conn.trace_run_raw(
+                        command, **kwargs)
+                    with session:
+                        viewer = TraceViewer(
+                            self.conn, session, self.cw,
+                            mode="run", proc_id=proc_id)
+                        viewer.run()
+                else:
+                    # Fallback to original callback-based mode
+                    print(TRACE_HEADER)
+
+                    def trace_callback(event):
+                        print(format_trace_event(event, self.cw))
+
+                    result = self.conn.trace_run(command, trace_callback,
+                                                 **kwargs)
+                    if result.get("rc") is not None:
+                        proc_id = result.get("proc_id", "?")
+                        print("Process {} exited with rc={}".format(
+                            proc_id, result["rc"]))
             except KeyboardInterrupt:
                 try:
                     self.conn.stop_trace()

@@ -42,11 +42,58 @@ def _supports_color():
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
+REVERSE = "\033[7m"
 RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
 CYAN = "\033[36m"
+
+
+# Library color palette for trace events.
+# Known libraries get fixed colors. Unknown libraries are
+# auto-assigned from a rotating palette.
+#
+# Palette expanded to 10 entries (C3 fix) to reduce collision
+# likelihood. Bold variants create visual distinction even when
+# base colors repeat.
+_LIB_COLORS = {
+    "dos": CYAN,
+    "exec": YELLOW,
+    "intuition": GREEN,
+    "graphics": BLUE,
+    "icon": "\033[35m",       # magenta
+    "workbench": "\033[1;36m",  # bold cyan
+}
+
+_LIB_COLOR_PALETTE = [
+    CYAN,
+    YELLOW,
+    GREEN,
+    BLUE,
+    "\033[35m",      # magenta
+    "\033[1;31m",    # bold red
+    "\033[1;32m",    # bold green
+    "\033[1;33m",    # bold yellow
+    "\033[1;34m",    # bold blue
+    "\033[1;35m",    # bold magenta
+]
+
+_lib_color_assignments = {}  # runtime cache
+
+
+def get_lib_color(lib_name):
+    """Get the ANSI color code for a library name.
+
+    Known libraries get fixed colors. Unknown libraries are
+    auto-assigned from a rotating palette.
+    """
+    if lib_name in _LIB_COLORS:
+        return _LIB_COLORS[lib_name]
+    if lib_name not in _lib_color_assignments:
+        idx = len(_lib_color_assignments) % len(_LIB_COLOR_PALETTE)
+        _lib_color_assignments[lib_name] = _LIB_COLOR_PALETTE[idx]
+    return _lib_color_assignments[lib_name]
 
 
 class ColorWriter:
@@ -93,6 +140,9 @@ class ColorWriter:
 
     def dim(self, text):
         return self._wrap(DIM, text)
+
+    def reverse(self, text):
+        return self._wrap(REVERSE, text)
 
     def yellow(self, text):
         return self._wrap(YELLOW, text)

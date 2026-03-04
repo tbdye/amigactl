@@ -16,6 +16,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Type
 
 from .protocol import (
     BinaryTransferError, ENCODING, ProtocolError, ServerError,
+    TraceStreamReader, _parse_trace_event,
     read_binary_response,
     read_exec_response, read_line, read_response, recv_exact, send_command,
     send_data_chunks,
@@ -142,50 +143,71 @@ def _raise_for_error(info: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Trace event parsing
+# Raw trace session
 # ---------------------------------------------------------------------------
 
-def _parse_trace_event(text):
-    # type: (str) -> dict
-    """Parse a tab-separated trace event line into a dict.
+class RawTraceSession:
+    """Context manager for a raw trace session.
 
-    All keys are initialized to defaults so callers can access any key
-    without checking for existence, even if the event line is malformed.
-
-    Returns a dict with keys: type, raw, seq, time, lib, func, task,
-    args, retval, status.
+    Saves the socket timeout on entry and restores it on exit.
+    Provides the socket and a TraceStreamReader for non-blocking reads.
     """
-    parts = text.split("\t")
-    event = {
-        "raw": text, "type": "event",
-        "seq": 0, "time": "", "lib": "", "func": "",
-        "task": "", "args": "", "retval": "", "status": "-",
-    }
-    if len(parts) >= 1:
+
+    def __init__(self, sock, old_timeout):
+        self.sock = sock
+        self.reader = TraceStreamReader(sock)
+        self._old_timeout = old_timeout
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
         try:
-            event["seq"] = int(parts[0])
+            self.sock.settimeout(self._old_timeout)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Blocking trace event reader
+# ---------------------------------------------------------------------------
+
+def read_one_trace_event(sock):
+    """Read one trace event from the socket (BLOCKING).
+
+    Returns an event dict on success, or None if END was received
+    (stream terminated). Raises ProtocolError on framing errors.
+
+    This uses the blocking read_line() and is intended for the
+    callback-based trace_start() API, NOT the interactive viewer.
+    """
+    line = read_line(sock)
+    if line.startswith("DATA "):
+        try:
+            chunk_len = int(line[5:])
         except ValueError:
-            event["seq"] = 0
-    if len(parts) >= 2:
-        event["time"] = parts[1]
-    if len(parts) >= 3:
-        lib_func = parts[2]
-        dot = lib_func.find(".")
-        if dot >= 0:
-            event["lib"] = lib_func[:dot]
-            event["func"] = lib_func[dot + 1:]
-        else:
-            event["lib"] = ""
-            event["func"] = lib_func
-    if len(parts) >= 4:
-        event["task"] = parts[3]
-    if len(parts) >= 5:
-        event["args"] = parts[4]
-    if len(parts) >= 6:
-        event["retval"] = parts[5]
-    if len(parts) >= 7:
-        event["status"] = parts[6]
-    return event
+            raise ProtocolError(
+                "Invalid DATA chunk length: {!r}".format(line))
+        chunk = recv_exact(sock, chunk_len)
+        text = chunk.decode(ENCODING)
+        if text.startswith("#"):
+            return {
+                "type": "comment",
+                "text": text[2:] if len(text) > 2 else "",
+            }
+        return _parse_trace_event(text)
+    elif line == "END":
+        sentinel = read_line(sock)
+        if sentinel != ".":
+            raise ProtocolError(
+                "Expected sentinel, got: {!r}".format(sentinel))
+        return None
+    elif line == "ERR" or line.startswith("ERR "):
+        read_line(sock)  # sentinel
+        return None
+    else:
+        raise ProtocolError(
+            "Unexpected line during TRACE: {!r}".format(line))
 
 
 # ---------------------------------------------------------------------------
@@ -1492,6 +1514,149 @@ class AmigaConnection:
                             line))
         finally:
             self._sock.settimeout(old_timeout)
+
+    def trace_start_raw(self, lib=None, func=None, proc=None,
+                        errors_only=False):
+        # type: (Optional[str], Optional[str], Optional[str], bool) -> RawTraceSession
+        """Start a trace stream and return a RawTraceSession.
+
+        Unlike trace_start(), this does NOT enter a read loop. The
+        caller uses the returned session's .sock for select() and
+        .reader for non-blocking event parsing.
+
+        Returns a RawTraceSession context manager. The caller should
+        use it in a ``with`` block to ensure socket timeout is restored:
+
+            with conn.trace_start_raw(lib="dos") as session:
+                # session.sock for select()
+                # session.reader.try_read_event() for events
+                ...
+
+        Raises AmigactlError or ProtocolError on failure.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE START"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if proc:
+            cmd += " PROC={}".format(proc)
+        if errors_only:
+            cmd += " ERRORS"
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR (uses blocking read_line for the handshake)
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        # Save timeout before switching to non-blocking
+        old_timeout = self._sock.gettimeout()
+
+        # Set socket to non-blocking for the interactive loop
+        self._sock.setblocking(False)
+
+        return RawTraceSession(self._sock, old_timeout)
+
+    def trace_run_raw(self, command, lib=None, func=None,
+                      errors_only=False, cd=None):
+        # type: (str, Optional[str], Optional[str], bool, Optional[str]) -> Tuple[RawTraceSession, Optional[int]]
+        """Start a TRACE RUN stream and return (session, proc_id)."""
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE RUN"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if errors_only:
+            cmd += " ERRORS"
+        if cd:
+            cmd += " CD={}".format(cd)
+        cmd += " -- {}".format(command)
+
+        send_command(self._sock, cmd)
+
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        proc_id = None
+        info = status_line[3:].strip()
+        if info:
+            try:
+                proc_id = int(info)
+            except ValueError:
+                pass
+
+        old_timeout = self._sock.gettimeout()
+        self._sock.setblocking(False)
+
+        return RawTraceSession(self._sock, old_timeout), proc_id
+
+    def send_filter(self, lib=None, func=None, proc=None, raw=None):
+        # type: (Optional[str], Optional[str], Optional[str], Optional[str]) -> None
+        """Send a FILTER command during an active trace stream.
+
+        Fire-and-forget: no response is expected. Call with no arguments
+        to clear all filters.
+
+        Handles non-blocking sockets: temporarily sets socket to blocking
+        mode with a short timeout for the sendall() call, then restores
+        non-blocking mode. This prevents BlockingIOError from sendall()
+        on a non-blocking socket when the TCP send buffer is full.
+
+        Args:
+            lib: Library name filter (e.g. "dos").
+            func: Function name filter (e.g. "Open").
+            proc: Process name filter (e.g. "bbs").
+            raw: Raw filter string (e.g. "LIB=dos,exec -FUNC=AllocMem").
+                 When provided, lib/func/proc are ignored.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        if raw is not None:
+            cmd = "FILTER"
+            if raw:
+                cmd += " " + raw
+        else:
+            cmd = "FILTER"
+            if lib:
+                cmd += " LIB={}".format(lib)
+            if func:
+                cmd += " FUNC={}".format(func)
+            if proc:
+                cmd += " PROC={}".format(proc)
+
+        # Temporarily set blocking with short timeout for sendall().
+        # The socket may be in non-blocking mode (interactive viewer).
+        was_blocking = self._sock.getblocking()
+        try:
+            if not was_blocking:
+                self._sock.settimeout(2.0)
+            send_command(self._sock, cmd)
+        except (BlockingIOError, OSError):
+            # Fire-and-forget: silently drop if send fails.
+            # The daemon's filter state is unchanged; the user can
+            # retry by pressing Tab again.
+            pass
+        finally:
+            if not was_blocking:
+                self._sock.setblocking(False)
 
     def trace_enable(self, funcs=None):
         # type: (Optional[List[str]]) -> None

@@ -61,6 +61,7 @@ static const char *noise_func_names[] = {
     "ObtainSemaphore",
     "ReleaseSemaphore",
     "AllocMem",
+    "OpenLibrary",
     NULL  /* sentinel */
 };
 

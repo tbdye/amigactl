@@ -281,3 +281,226 @@ def send_data_chunks(sock: socket.socket, data: bytes, chunk_size: int = 4096) -
         sock.sendall(header + chunk)
         offset += len(chunk)
     sock.sendall(b"END\n")
+
+
+def _parse_trace_event(text):
+    # type: (str) -> dict
+    """Parse a tab-separated trace event line into a dict.
+
+    All keys are initialized to defaults so callers can access any key
+    without checking for existence, even if the event line is malformed.
+
+    Returns a dict with keys: type, raw, seq, time, lib, func, task,
+    args, retval, status.
+    """
+    parts = text.split("\t")
+    event = {
+        "raw": text, "type": "event",
+        "seq": 0, "time": "", "lib": "", "func": "",
+        "task": "", "args": "", "retval": "", "status": "-",
+    }
+    if len(parts) >= 1:
+        try:
+            event["seq"] = int(parts[0])
+        except ValueError:
+            event["seq"] = 0
+    if len(parts) >= 2:
+        event["time"] = parts[1]
+    if len(parts) >= 3:
+        lib_func = parts[2]
+        dot = lib_func.find(".")
+        if dot >= 0:
+            event["lib"] = lib_func[:dot]
+            event["func"] = lib_func[dot + 1:]
+        else:
+            event["lib"] = ""
+            event["func"] = lib_func
+    if len(parts) >= 4:
+        event["task"] = parts[3]
+    if len(parts) >= 5:
+        event["args"] = parts[4]
+    if len(parts) >= 6:
+        event["retval"] = parts[5]
+    if len(parts) >= 7:
+        event["status"] = parts[6]
+    return event
+
+
+class TraceStreamReader:
+    """Non-blocking, stateful line reader for trace event streams.
+
+    Designed for use with select(). The caller sets the socket to
+    non-blocking mode and calls try_read_event() when select()
+    indicates readability. The reader buffers partial data internally
+    and returns complete events when available.
+
+    States:
+    - READING_HEADER: Accumulating bytes for the next line
+      (DATA <len>, END, ERR, or comment)
+    - READING_CHUNK: After seeing DATA <len>, accumulating the
+      binary payload
+
+    Assumption: The daemon sends each DATA <len>\\n<payload> pair
+    atomically (single send_trace_data_chunk() call). This means
+    an ERR line can never appear mid-chunk -- the reader will
+    never see partial DATA followed by ERR bytes that would be
+    consumed as chunk data. If the connection drops mid-chunk,
+    the next recv() returns empty bytes, which is caught as a
+    ConnectionError.
+    """
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._buf = bytearray()
+        self._state = "header"     # "header" or "chunk"
+        self._chunk_remaining = 0
+        self._chunk_data = bytearray()
+
+    def try_read_event(self):
+        """Try to read one complete trace event.
+
+        Returns:
+        - dict: A complete parsed event (type="event" or type="comment")
+        - None: Incomplete data, call again when select() fires
+        - False: Stream ended (END received and sentinel consumed)
+
+        Raises ProtocolError on framing errors.
+        Raises ConnectionError on socket close.
+        """
+        # Read available data into buffer (non-blocking)
+        try:
+            data = self._sock.recv(4096)
+        except BlockingIOError:
+            return None  # No data available
+        except socket.timeout:
+            return None  # Timeout during drain, no data yet
+        except OSError as e:
+            raise ProtocolError("Socket error: {}".format(e))
+
+        if not data:
+            raise ProtocolError("Connection closed by server")
+
+        self._buf.extend(data)
+
+        # Process buffered data
+        return self.drain_buffered()
+
+    def drain_buffered(self):
+        """Process buffered data without calling recv().
+
+        Intended for use after try_read_event() when
+        has_buffered_data() returns True -- multiple events may
+        have arrived in a single recv() call.
+
+        Returns the same values as try_read_event():
+        - dict: A complete parsed event
+        - None: Incomplete data in buffer
+        - False: Stream ended
+        """
+        while True:
+            if self._state == "header":
+                # Look for a complete line (terminated by LF)
+                idx = self._buf.find(b"\n")
+                if idx < 0:
+                    return None  # Incomplete line
+
+                line_bytes = bytes(self._buf[:idx])
+                del self._buf[:idx + 1]
+
+                line = line_bytes.decode(ENCODING)
+                if line.endswith("\r"):
+                    line = line[:-1]
+
+                if line.startswith("DATA "):
+                    try:
+                        self._chunk_remaining = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA length: {!r}".format(line))
+                    self._chunk_data = bytearray()
+                    self._state = "chunk"
+                    # Fall through to chunk processing below
+                elif line == "END":
+                    # Consume sentinel line
+                    sentinel_idx = self._buf.find(b"\n")
+                    if sentinel_idx < 0:
+                        # Sentinel not yet received -- wait.
+                        self._state = "sentinel"
+                        return self._try_sentinel()
+                    sentinel = bytes(self._buf[:sentinel_idx])
+                    del self._buf[:sentinel_idx + 1]
+                    sentinel_str = sentinel.decode(ENCODING).rstrip("\r")
+                    if sentinel_str != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel_str))
+                    return False  # Stream ended
+                elif line == "ERR" or line.startswith("ERR "):
+                    # Consume sentinel after ERR
+                    sentinel_idx = self._buf.find(b"\n")
+                    if sentinel_idx < 0:
+                        self._state = "err_sentinel"
+                        return self._try_err_sentinel()
+                    del self._buf[:sentinel_idx + 1]
+                    return False  # Stream ended with error
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TRACE: {!r}".format(
+                            line))
+
+            elif self._state == "chunk":
+                if len(self._buf) < self._chunk_remaining:
+                    return None  # Incomplete chunk
+
+                chunk = bytes(self._buf[:self._chunk_remaining])
+                del self._buf[:self._chunk_remaining]
+                self._state = "header"
+
+                text = chunk.decode(ENCODING)
+                if text.startswith("#"):
+                    return {
+                        "type": "comment",
+                        "text": text[2:] if len(text) > 2 else "",
+                    }
+                return _parse_trace_event(text)
+
+            elif self._state == "sentinel":
+                return self._try_sentinel()
+
+            elif self._state == "err_sentinel":
+                return self._try_err_sentinel()
+
+            else:
+                raise ProtocolError(
+                    "Invalid reader state: {}".format(self._state))
+
+    def _try_sentinel(self):
+        """Try to consume the sentinel line after END."""
+        idx = self._buf.find(b"\n")
+        if idx < 0:
+            return None
+        sentinel = bytes(self._buf[:idx]).decode(ENCODING).rstrip("\r")
+        del self._buf[:idx + 1]
+        if sentinel != ".":
+            raise ProtocolError(
+                "Expected sentinel, got: {!r}".format(sentinel))
+        self._state = "header"
+        return False
+
+    def _try_err_sentinel(self):
+        """Try to consume the sentinel line after ERR."""
+        idx = self._buf.find(b"\n")
+        if idx < 0:
+            return None
+        del self._buf[:idx + 1]
+        self._state = "header"
+        return False
+
+    def has_buffered_data(self):
+        """Return True if there is unprocessed data in the buffer.
+
+        The event loop should call drain_buffered() again (without
+        recv) when this returns True, because multiple events may
+        have arrived in a single recv() call.
+        """
+        return len(self._buf) > 0

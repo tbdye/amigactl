@@ -61,15 +61,35 @@ struct tail_state {
 #define TRACE_MODE_START  0  /* normal TRACE START */
 #define TRACE_MODE_RUN    1  /* TRACE RUN (auto-terminate on process exit) */
 
+/* Extended filter support for FILTER command (Wave 5 parsing/matching) */
+#define MAX_FILTER_NAMES 32
+
 /* TRACE streaming state (per-client) */
 struct trace_state {
     int active;              /* 1 = TRACE in progress */
 
-    /* Filters (applied daemon-side, AND-combined) */
+    /* Simple filters (original, for TRACE START compatibility) */
     int filter_lib_id;       /* -1 = all libs, or specific lib_id */
     WORD filter_lvo;         /* 0 = all functions, or specific LVO */
     int filter_errors_only;  /* 1 = only events where retval indicates error */
     char filter_procname[64]; /* "" = all, or substring match on task name */
+
+    /* Extended filters (set by FILTER command during stream).
+     * Defined in Wave 1 (struct), populated in Wave 5 (parsing). */
+    int use_extended_filter;     /* 1 = use lists below instead */
+
+    /* Library whitelist/blacklist */
+    int lib_filter_mode;         /* 0=off, 1=whitelist, -1=blacklist */
+    int lib_filter_ids[MAX_FILTER_NAMES];
+    int lib_filter_count;
+
+    /* Function whitelist/blacklist (by lib_id + lvo pair).
+     * Stores (lib_id, lvo) pairs -- NOT func_table indices.
+     * This avoids O(FUNC_TABLE_SIZE) lookup per event. */
+    int func_filter_mode;        /* 0=off, 1=whitelist, -1=blacklist */
+    int func_filter_lib_ids[MAX_FILTER_NAMES];
+    WORD func_filter_lvos[MAX_FILTER_NAMES];
+    int func_filter_count;
 
     /* TRACE RUN state (only used when mode == TRACE_MODE_RUN) */
     int mode;                /* TRACE_MODE_START or TRACE_MODE_RUN */
@@ -77,14 +97,8 @@ struct trace_state {
     APTR run_task_ptr;       /* Task pointer for exact process matching */
     ULONG run_start_seq;     /* event_sequence at TRACE RUN start; skip older */
 
-    /* Phase 4: noise function save/restore during TRACE RUN.
-     * noise_saved is the order-independent trigger for cleanup --
-     * set only when we took ownership of filter_task, cleared only
-     * by trace_run_cleanup(). */
-    int noise_saved;                    /* 1 = save state is valid */
-    int noise_saved_count;              /* number of entries in saved arrays */
-    int noise_patch_indices[16];        /* patch indices of noise functions */
-    ULONG noise_saved_enabled[16];     /* saved enabled state per noise func */
+    /* (noise_saved fields removed -- noise functions are no longer
+     * auto-enabled/restored during TRACE RUN) */
 };
 
 /* Per-client state */
