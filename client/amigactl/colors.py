@@ -1,6 +1,7 @@
 """ANSI terminal color support for amigactl shell output."""
 
 import os
+import re
 import sys
 
 
@@ -80,6 +81,14 @@ _LIB_COLOR_PALETTE = [
 ]
 
 _lib_color_assignments = {}  # runtime cache
+
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x9b[0-9;]*[A-Za-z]')
+
+
+def strip_ansi(text):
+    """Remove ANSI escape sequences from text."""
+    return _ANSI_RE.sub('', text)
 
 
 def get_lib_color(lib_name):

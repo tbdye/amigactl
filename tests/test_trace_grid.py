@@ -43,6 +43,27 @@ def _make_terminal_state(rows=24, cols=80):
     return term, output
 
 
+def _make_viewer(**overrides):
+    """Create a TraceViewer with mocked conn/session for unit testing."""
+    from amigactl.trace_ui import TraceViewer
+    conn = mock.MagicMock()
+    session = mock.MagicMock()
+    session.sock = mock.MagicMock()
+    session.reader = mock.MagicMock()
+    session.reader.has_buffered_data.return_value = False
+
+    cw = ColorWriter(force_color=False)
+    viewer = TraceViewer(conn, session, cw, **overrides)
+
+    output = io.StringIO()
+    term = TerminalState(stdin_fd=0, stdout=output)
+    term.rows = 24
+    term.cols = 80
+    viewer.term = term
+
+    return viewer
+
+
 # ---------------------------------------------------------------------------
 # TestToggleGrid
 # ---------------------------------------------------------------------------
@@ -81,25 +102,31 @@ class TestToggleGrid:
         """FreeMem is NOT in the noise function set (M3 fix)."""
         assert "FreeMem" not in ToggleGrid._NOISE_FUNCS
 
-    def test_toggle_item(self):
+    def test_toggle_at_cursor(self):
         """Toggling an item flips its enabled state."""
         grid = _make_grid()
         # Items sorted by count: exec(234) first, dos(187) second
         assert grid.lib_items[0]["enabled"] is True
 
-        grid.toggle_item("1")  # Toggle first item
+        grid.toggle_at_cursor()  # Toggle first item (cursor defaults to 0)
         assert grid.lib_items[0]["enabled"] is False
 
-        grid.toggle_item("1")  # Toggle back
+        grid.toggle_at_cursor()  # Toggle back
         assert grid.lib_items[0]["enabled"] is True
 
-    def test_toggle_item_invalid_key(self):
-        """Invalid keys are silently ignored."""
+    def test_cursor_clamp_bounds(self):
+        """Cursor clamps to valid bounds at edges."""
         grid = _make_grid()
-        initial = [item["enabled"] for item in grid.lib_items]
-        grid.toggle_item("!")  # Not in key string
-        after = [item["enabled"] for item in grid.lib_items]
-        assert initial == after
+        # move_cursor(-1) from position 0 stays at 0
+        grid.cursor_pos[0] = 0
+        grid.move_cursor(-1)
+        assert grid.cursor_pos[0] == 0
+
+        # move_cursor(1) from last item stays at last item
+        last = len(grid.lib_items) - 1
+        grid.cursor_pos[0] = last
+        grid.move_cursor(1)
+        assert grid.cursor_pos[0] == last
 
     def test_all_on(self):
         """all_on() enables all items in the active category."""
@@ -134,8 +161,10 @@ class TestToggleGrid:
         grid = _make_grid(
             libs={"exec": 200, "dos": 100, "icon": 50})
         # Disable two of three libs
-        grid.toggle_item("1")  # exec
-        grid.toggle_item("3")  # icon
+        grid.cursor_pos[0] = 0
+        grid.toggle_at_cursor()  # exec
+        grid.cursor_pos[0] = 2
+        grid.toggle_at_cursor()  # icon
 
         cmd = grid.build_filter_command()
         assert "LIB=dos" == cmd
@@ -145,7 +174,8 @@ class TestToggleGrid:
         grid = _make_grid(
             libs={"exec": 200, "dos": 100, "icon": 50})
         # Disable only one of three libs
-        grid.toggle_item("3")  # icon
+        grid.cursor_pos[0] = 2
+        grid.toggle_at_cursor()  # icon
 
         cmd = grid.build_filter_command()
         assert "-LIB=icon" == cmd
@@ -164,7 +194,8 @@ class TestToggleGrid:
                    "Execute": 4, "LoadSeg": 3})
         # Disable just one
         grid.active_category = 1  # FUNCTIONS
-        grid.toggle_item("1")  # Open (highest count)
+        grid.cursor_pos[1] = 0
+        grid.toggle_at_cursor()  # Open (highest count)
 
         cmd = grid.build_filter_command()
         assert "-FUNC=Open" in cmd
@@ -175,10 +206,12 @@ class TestToggleGrid:
             libs={"exec": 200, "dos": 100, "icon": 50},
             funcs={"Open": 12, "Lock": 8, "Close": 6})
         # Disable one lib
-        grid.toggle_item("3")  # icon (in LIBRARIES)
+        grid.cursor_pos[0] = 2
+        grid.toggle_at_cursor()  # icon (in LIBRARIES)
         # Disable one func
         grid.active_category = 1  # FUNCTIONS
-        grid.toggle_item("3")  # Close (lowest count)
+        grid.cursor_pos[1] = 2
+        grid.toggle_at_cursor()  # Close (lowest count)
 
         cmd = grid.build_filter_command()
         assert "-LIB=icon" in cmd
@@ -192,7 +225,8 @@ class TestToggleGrid:
         grid = _make_grid()
         # Disable a process
         grid.active_category = 2  # PROCESSES
-        grid.toggle_item("1")  # bbs (highest count)
+        grid.cursor_pos[2] = 0
+        grid.toggle_at_cursor()  # bbs (highest count)
 
         cmd = grid.build_filter_command()
         # PROC should not appear in the filter command
@@ -239,8 +273,10 @@ class TestToggleGrid:
     def test_build_filter_all_libs_disabled(self):
         """All libs disabled produces a filter that blocks all (M1 fix)."""
         grid = _make_grid(libs={"exec": 200, "dos": 100})
-        grid.toggle_item("1")  # exec off
-        grid.toggle_item("2")  # dos off
+        grid.cursor_pos[0] = 0
+        grid.toggle_at_cursor()  # exec off
+        grid.cursor_pos[0] = 1
+        grid.toggle_at_cursor()  # dos off
         cmd = grid.build_filter_command()
         # Must NOT be empty -- should block everything
         assert cmd != ""
@@ -250,8 +286,10 @@ class TestToggleGrid:
         """All funcs disabled produces a filter that blocks all (M2 fix)."""
         grid = _make_grid(funcs={"Open": 12, "Lock": 8})
         grid.active_category = 1  # FUNCTIONS
-        grid.toggle_item("1")  # Open off
-        grid.toggle_item("2")  # Lock off
+        grid.cursor_pos[1] = 0
+        grid.toggle_at_cursor()  # Open off
+        grid.cursor_pos[1] = 1
+        grid.toggle_at_cursor()  # Lock off
         cmd = grid.build_filter_command()
         assert cmd != ""
         assert "FUNC=__NONE__" in cmd
@@ -264,15 +302,15 @@ class TestToggleGrid:
     def test_has_user_changes_after_toggle(self):
         """Toggling an item marks user_interacted (S5 fix)."""
         grid = _make_grid(funcs={"Open": 12, "Lock": 8})
-        grid.toggle_item("1")
+        grid.toggle_at_cursor()
         assert grid.user_interacted is True
         assert grid.has_user_changes() is True
 
     def test_has_user_changes_toggle_back_is_no_change(self):
         """Toggling an item and toggling it back is no semantic change."""
         grid = _make_grid(funcs={"Open": 12, "Lock": 8})
-        grid.toggle_item("1")
-        grid.toggle_item("1")  # toggle back
+        grid.toggle_at_cursor()
+        grid.toggle_at_cursor()  # toggle back
         # user_interacted is True, but filter output matches initial
         assert grid.user_interacted is True
         assert grid.has_user_changes() is False
@@ -324,13 +362,84 @@ class TestToggleGrid:
                     "Open should start checked"
 
     def test_footer_includes_esc(self):
-        """Footer text includes Esc cancel hint (S3 fix)."""
+        """Footer text includes Esc cancel hint (S3 fix).
+
+        The footer is rendered by _draw_hotkey_bar() in trace_ui.py,
+        not by _build_lines(). Verify the constant has the text.
+        """
+        from amigactl.trace_grid import GRID_FOOTER_TEXT
+        assert "Esc" in GRID_FOOTER_TEXT
+
+    def test_move_cursor_down(self):
+        """move_cursor(1) increments cursor position."""
         grid = _make_grid()
-        cw = ColorWriter(force_color=False)
-        for cols in [60, 100, 120]:
-            lines = grid._build_lines(cols, cw)
-            footer = lines[-1]
-            assert "Esc" in footer
+        assert grid.cursor_pos[0] == 0
+        grid.move_cursor(1)
+        assert grid.cursor_pos[0] == 1
+
+    def test_move_cursor_up(self):
+        """move_cursor(-1) decrements cursor position."""
+        grid = _make_grid()
+        grid.cursor_pos[0] = 1
+        grid.move_cursor(-1)
+        assert grid.cursor_pos[0] == 0
+
+    def test_cursor_persists_across_category_switch(self):
+        """Cursor position is preserved when switching categories."""
+        grid = _make_grid()
+        grid.cursor_pos[0] = 1
+        grid.active_category = 1
+        grid.cursor_pos[1] = 2
+        grid.active_category = 0
+        assert grid.cursor_pos[0] == 1
+
+    def test_toggle_at_cursor_empty_category(self):
+        """toggle_at_cursor on empty category does not crash."""
+        grid = _make_grid(libs={}, funcs={}, procs={})
+        grid.toggle_at_cursor()  # should not raise
+
+    def test_move_cursor_empty_category(self):
+        """move_cursor on empty category does not crash."""
+        grid = _make_grid(libs={}, funcs={}, procs={})
+        grid.move_cursor(1)  # should not raise
+
+    def test_clamp_cursor_after_shrink(self):
+        """clamp_cursor clamps when item list shrinks."""
+        grid = _make_grid()
+        grid.cursor_pos[1] = 9
+        grid.update_func_items({"Open": 12, "Lock": 8, "Close": 6},
+                               "dos")
+        grid.clamp_cursor(1)
+        assert grid.cursor_pos[1] == 2
+
+    def test_clamp_cursor_empty_list(self):
+        """clamp_cursor resets to 0 when item list is empty."""
+        grid = _make_grid()
+        grid.cursor_pos[1] = 5
+        grid.func_items = []
+        grid.clamp_cursor(1)
+        assert grid.cursor_pos[1] == 0
+
+    def test_daemon_disabled_indicator(self):
+        """Daemon-disabled items show [D] marker."""
+        grid = ToggleGrid(
+            {"exec": 100}, {"FindPort": 0, "Open": 50},
+            {"bbs": 10}, initial_lib="exec",
+            daemon_disabled_funcs={"exec.FindPort"})
+        grid._mark_daemon_disabled()
+        item = next(i for i in grid.func_items if i["name"] == "FindPort")
+        assert item["daemon_disabled"] is True
+        assert not item["enabled"]  # noise default
+
+    def test_prepopulated_funcs_appear_in_grid(self):
+        """Functions from TRACE STATUS appear with count=0."""
+        grid = ToggleGrid(
+            {"exec": 0, "dos": 0},
+            {"FindPort": 0, "FindTask": 0},
+            {}, initial_lib="exec")
+        names = {i["name"] for i in grid.func_items}
+        assert "FindPort" in names
+        assert "FindTask" in names
 
 
 # ---------------------------------------------------------------------------
@@ -392,13 +501,21 @@ class TestToggleGridRendering:
         assert "LIBRARIES" in lines[0]
 
     def test_render_fits_terminal(self):
-        """All rendered lines fit within 80 columns."""
+        """All rendered lines fit within 80 columns.
+
+        The footer line is excluded because GRID_FOOTER_TEXT is a
+        fixed-width string that gets truncated by write_at() at
+        render time.
+        """
+        from amigactl.trace_grid import GRID_FOOTER_TEXT
         grid = _make_grid()
         grid.selected_lib = "dos"
         cw = ColorWriter(force_color=False)
         lines = grid._build_lines(80, cw)
 
         for line in lines:
+            if line == GRID_FOOTER_TEXT:
+                continue
             visible = _visible_len(line)
             assert visible <= 80, \
                 "Line exceeds 80 cols ({}): {!r}".format(visible, line)
@@ -439,12 +556,12 @@ class TestToggleGridRendering:
         assert len(rendered) > 0  # Something was written
 
     def test_format_item_enabled(self):
-        """Enabled item shows key in brackets."""
+        """Enabled item shows [x] in brackets."""
         grid = _make_grid()
         cw = ColorWriter(force_color=False)
         item = {"name": "exec", "count": 234, "enabled": True}
-        text = grid._format_item("1", item, cw, 25)
-        assert "[1]" in text
+        text = grid._format_item(item, cw, 25)
+        assert "[x]" in text
         assert "exec" in text
         assert "234" in text
 
@@ -453,7 +570,7 @@ class TestToggleGridRendering:
         grid = _make_grid()
         cw = ColorWriter(force_color=False)
         item = {"name": "exec", "count": 234, "enabled": False}
-        text = grid._format_item("1", item, cw, 25)
+        text = grid._format_item(item, cw, 25)
         assert "[ ]" in text
         assert "exec" in text
 
@@ -463,7 +580,7 @@ class TestToggleGridRendering:
         cw = ColorWriter(force_color=False)
         item = {"name": "VeryLongFunctionName", "count": 5,
                 "enabled": True}
-        text = grid._format_item("1", item, cw, 20)
+        text = grid._format_item(item, cw, 20)
         visible = _visible_len(text)
         assert visible <= 20
 
@@ -472,19 +589,19 @@ class TestToggleGridRendering:
         grid = _make_grid(libs={}, funcs={}, procs={})
         cw = ColorWriter(force_color=False)
         lines = grid._build_lines(80, cw)
-        # Should at least have headers and footer
-        assert len(lines) >= 3
+        # Should at least have headers (footer is in hotkey bar)
+        assert len(lines) >= 2
 
     def test_footer_present(self):
-        """All rendering modes include a help footer."""
-        grid = _make_grid()
-        cw = ColorWriter(force_color=False)
+        """Footer text is available for the hotkey bar.
 
-        for cols in [60, 100, 120]:
-            lines = grid._build_lines(cols, cw)
-            footer = lines[-1]
-            assert "Enter" in footer
-            assert "apply" in footer
+        The footer is rendered by _draw_hotkey_bar() in trace_ui.py
+        (not by _build_lines()) to avoid duplicate display. Verify
+        the GRID_FOOTER_TEXT constant has the expected content.
+        """
+        from amigactl.trace_grid import GRID_FOOTER_TEXT
+        assert "Enter" in GRID_FOOTER_TEXT
+        assert "apply" in GRID_FOOTER_TEXT
 
     def test_active_category_reverse(self):
         """Active category header is rendered in reverse video."""
@@ -513,7 +630,7 @@ class TestToggleGridRendering:
         assert alloc_item is not None
         assert not alloc_item["enabled"]
 
-        text = grid._format_item("1", alloc_item, cw, 30)
+        text = grid._format_item(alloc_item, cw, 30)
         # Should have dim ANSI code
         assert "\033[2m" in text
 
@@ -523,27 +640,57 @@ class TestToggleGridRendering:
         cw = ColorWriter(force_color=False)
 
         item = {"name": "exec", "count": 234, "enabled": True}
-        text = grid._format_item("1", item, cw, 25)
+        text = grid._format_item(item, cw, 25)
         # The count "234" should be at the right side
         # Total visible length should be <= width
         visible = _visible_len(text)
         assert visible <= 25
 
-    def test_focused_lib_index_updated_on_toggle(self):
-        """focused_lib_index is updated when toggling in LIBRARIES (C5)."""
-        grid = _make_grid(libs={"exec": 200, "dos": 100, "icon": 50})
-        # Items sorted: exec(0), dos(1), icon(2)
-        assert grid.focused_lib_index == 0
+    def test_cursor_highlight_active_only(self):
+        """Highlighted (reverse) styling appears only in active column."""
+        grid = _make_grid()
+        grid.active_category = 0  # LIBRARIES
+        grid.cursor_pos[0] = 0
+        cw = ColorWriter(force_color=True)
+        lines = grid._render_three_column(120, cw)
+        # Find the first item row (after header + blank)
+        item_line = lines[2]
+        col_width = (120 - 4) // 3
+        # Split into segments by column width
+        # The first column (LIBRARIES) should have reverse
+        left_seg = item_line[:col_width + 10]  # generous bounds
+        assert "\033[7m" in left_seg
+        # The middle and right columns should NOT have reverse
+        # (they are not the active category)
+        right_start = col_width + 2 + col_width + 2
+        right_seg = item_line[right_start:] if len(item_line) > right_start else ""
+        assert "\033[7m" not in right_seg
 
-        # Simulate what TraceViewer._handle_grid_key does:
-        # toggle key "2" in LIBRARIES category updates focused_lib_index
-        keys = "123456789abcdefghijklmnopqrstuvwxyz"
-        key = "2"
-        idx = keys.find(key)
-        if 0 <= idx < len(grid.lib_items):
-            grid.focused_lib_index = idx
+    def test_format_item_highlighted(self):
+        """_format_item with highlighted=True produces reverse video."""
+        grid = _make_grid()
+        cw = ColorWriter(force_color=True)
+        item = {"name": "exec", "count": 234, "enabled": True}
+        text = grid._format_item(item, cw, 25, highlighted=True)
+        assert "\033[7m" in text
 
-        assert grid.focused_lib_index == 1  # dos
+    def test_format_item_daemon_disabled(self):
+        """Daemon-disabled items show [D] when not enabled."""
+        grid = _make_grid()
+        cw = ColorWriter(force_color=False)
+        item = {"name": "FindPort", "count": 0, "enabled": False,
+                "daemon_disabled": True}
+        text = grid._format_item(item, cw, 30)
+        assert "[D]" in text
+
+    def test_format_item_daemon_disabled_but_enabled(self):
+        """Daemon-disabled items show [x] when user enables them."""
+        grid = _make_grid()
+        cw = ColorWriter(force_color=False)
+        item = {"name": "FindPort", "count": 0, "enabled": True,
+                "daemon_disabled": True}
+        text = grid._format_item(item, cw, 30)
+        assert "[x]" in text
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +749,8 @@ class TestToggleGridIntegration:
         viewer._enter_toggle_grid()
 
         # Disable one library (dos is second by count)
-        viewer.grid.toggle_item("2")  # dos
+        viewer.grid.cursor_pos[viewer.grid.active_category] = 1
+        viewer.grid.toggle_at_cursor()  # dos
 
         viewer._apply_grid_filters()
 
@@ -657,7 +805,8 @@ class TestToggleGridIntegration:
         viewer._enter_toggle_grid()
 
         # Disable dos (second item by count)
-        viewer.grid.toggle_item("2")
+        viewer.grid.cursor_pos[viewer.grid.active_category] = 1
+        viewer.grid.toggle_at_cursor()
 
         viewer._save_func_state()
         viewer._apply_grid_filters()
@@ -719,6 +868,7 @@ class TestToggleGridIntegration:
 
         # Change focused index
         viewer.grid.focused_lib_index = 1  # dos
+        viewer.grid.cursor_pos[0] = 1
         name = viewer._get_selected_lib_name()
         assert name == "dos"
 
@@ -785,8 +935,10 @@ class TestToggleGridIntegration:
 
         viewer._enter_toggle_grid()
         # Disable all libraries
-        viewer.grid.toggle_item("1")  # exec off
-        viewer.grid.toggle_item("2")  # dos off
+        viewer.grid.cursor_pos[viewer.grid.active_category] = 0
+        viewer.grid.toggle_at_cursor()  # exec off
+        viewer.grid.cursor_pos[viewer.grid.active_category] = 1
+        viewer.grid.toggle_at_cursor()  # dos off
         viewer._save_func_state()
         viewer._apply_grid_filters()
 
@@ -817,7 +969,8 @@ class TestToggleGridIntegration:
         assert viewer.grid_visible is True
 
         # Make a change then press Escape
-        viewer.grid.toggle_item("1")  # disable exec
+        viewer.grid.cursor_pos[viewer.grid.active_category] = 0
+        viewer.grid.toggle_at_cursor()  # disable exec
         viewer._handle_grid_key(("esc", ""))  # bare Escape
 
         # Grid should be closed without applying
@@ -827,6 +980,26 @@ class TestToggleGridIntegration:
         conn.send_filter.assert_not_called()
         # Client-side filters unchanged (still None = initial state)
         assert viewer.disabled_libs is None
+
+    def test_focused_lib_index_synced_on_right_arrow(self):
+        """focused_lib_index is synced from cursor_pos[0] on Right arrow."""
+        viewer = _make_viewer()
+        viewer.discovered_libs = {"exec": 200, "dos": 100, "icon": 50}
+        viewer.discovered_funcs = {
+            "exec": {"FindResident": 50},
+            "dos": {"Open": 12},
+            "icon": {"GetDiskObject": 5},
+        }
+        viewer.discovered_procs = {}
+
+        viewer._enter_toggle_grid()
+
+        # Move cursor to dos (index 1) in LIBRARIES
+        viewer.grid.cursor_pos[0] = 1
+        # Press Right arrow -- handler syncs focused_lib_index
+        viewer._handle_grid_key(("esc", "[C"))
+
+        assert viewer.grid.focused_lib_index == 1
 
 
 # ---------------------------------------------------------------------------

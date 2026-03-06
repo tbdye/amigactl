@@ -717,12 +717,12 @@ class TestTraceRunPhase4:
 
             conn.trace_run("C:List SYS:", collect)
 
-            # At least some events should show "List" as the task name
-            # Phase 4b adds CLI number prefix: "[N] List"
+            # RunCommand executes in the daemon's own process context,
+            # so the task name is the daemon's CLI command name "amigactld"
             assert len(events) > 0, "No events received"
             task_names = {ev.get("task", "") for ev in events}
-            assert any(t.endswith("List") for t in task_names), \
-                "Expected task name ending with 'List', got: {}".format(task_names)
+            assert any("amigactld" in t for t in task_names), \
+                "Expected task name containing 'amigactld', got: {}".format(task_names)
         finally:
             conn.close()
 
@@ -739,12 +739,12 @@ class TestTraceRunPhase4:
 
             conn.trace_run("C:List SYS:", collect)
 
-            # All events should be from "List" (the traced process)
-            # Phase 4b adds CLI number prefix: "[N] List"
+            # All events should be from the daemon process (RunCommand
+            # executes in the daemon's own context, identified as "amigactld")
             assert len(events) > 0, "No events received"
             for ev in events:
                 task = ev.get("task", "")
-                assert task.endswith("List"), \
+                assert "amigactld" in task, \
                     "Event from non-target task: {}".format(task)
         finally:
             conn.close()

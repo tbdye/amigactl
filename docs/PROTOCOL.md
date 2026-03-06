@@ -429,6 +429,32 @@ If the atrace module is unloaded during streaming, the server sends a
 comment line (`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and
 the sentinel.  See COMMANDS.md for the full TRACE command specification.
 
+**FILTER** is a mid-stream command sent during an active TRACE session
+(similar to STOP).  It updates the server-side event filters without
+restarting the stream.  The syntax mirrors TRACE START's filter arguments:
+
+```
+FILTER [LIB=<name>] [FUNC=<name>] [PROC=<name>] [ERRORS] [ENABLE=<func>[,func...]] [DISABLE=<func>[,func...]]
+```
+
+A bare `FILTER` with no arguments clears all filters (returns to
+unfiltered mode).  `LIB=`, `FUNC=`, `PROC=`, and `ERRORS` update the
+per-session filters and behave identically to their TRACE START
+counterparts.
+
+`ENABLE=<func>[,func...]` and `DISABLE=<func>[,func...]` toggle
+daemon-level patch state.  `ENABLE=FindPort,GetMsg` re-enables the
+specified function patches; `DISABLE=FindPort` disables one.
+
+**WARNING:** `ENABLE=` and `DISABLE=` modify global patch state
+(`g_anchor->patches[].enabled`).  They affect ALL connected trace
+clients, not just the sender.  This is fundamentally different from
+`LIB=`, `FUNC=`, and `PROC=`, which are per-session filters.  Unknown
+function names are silently ignored.
+
+The server responds to FILTER with `OK\n.\n`.  The response is delivered
+inline within the DATA/END stream.
+
 ## Error Codes
 
 | Code | Name              | Meaning                                        |

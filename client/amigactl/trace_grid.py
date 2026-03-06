@@ -2,7 +2,7 @@
 
 Provides a visual, keyboard-driven filter interface showing all
 observed libraries, functions, and processes with their event counts.
-Items are toggled on/off with single keypresses (1-9, a-z).
+Items are selected with arrow keys and toggled with Space.
 
 Extracted from trace_ui.py for testability and code organization
 (C2 fix from R1).
@@ -13,8 +13,8 @@ from .trace_ui import _visible_len
 # Hotkey bar text for when the grid is visible. Shared between
 # the grid footer (rendered inside the scroll area) and the
 # hotkey bar (fixed bottom line in trace_ui.py). [SF6 fix]
-GRID_FOOTER_TEXT = ("  [A]ll on  [N]one  Arrows: switch category"
-                    "  Enter: apply  Esc: cancel")
+GRID_FOOTER_TEXT = ("  Up/Down: select  Space: toggle  [A]ll on  [N]one"
+                    "  Arrows: category  Enter: apply  Esc: cancel")
 
 
 class ToggleGrid:
@@ -25,7 +25,8 @@ class ToggleGrid:
     """
 
     def __init__(self, discovered_libs, discovered_funcs_for_lib,
-                 discovered_procs, initial_lib=None):
+                 discovered_procs, initial_lib=None,
+                 daemon_disabled_funcs=None):
         """Initialize the grid.
 
         Args:
@@ -36,11 +37,24 @@ class ToggleGrid:
             discovered_procs: {proc_name: count}
             initial_lib: Name of the initially selected library
                 (used to scope noise defaults correctly).
+            daemon_disabled_funcs: set of "lib.func" strings for
+                functions disabled at the daemon level (noise functions).
         """
         self.categories = ["LIBRARIES", "FUNCTIONS", "PROCESSES"]
         self.active_category = 0
         self.selected_lib = initial_lib
         self.focused_lib_index = 0  # C5 fix (R4): cursor in LIBRARIES
+        self._daemon_disabled_funcs = daemon_disabled_funcs or set()
+
+        # Per-category cursor position (persisted across category switches).
+        # Invariant: focused_lib_index == cursor_pos[0] at all points
+        # where focused_lib_index is consumed (_get_selected_lib_name,
+        # update_func_items). Both are set together in _enter_toggle_grid()
+        # and synced in _handle_grid_key() (Right-arrow and Space handlers).
+        # move_cursor() on category 0 updates cursor_pos[0] but not
+        # focused_lib_index; the sync happens on the next Right-arrow or
+        # Space before any consumer reads focused_lib_index.
+        self.cursor_pos = {0: 0, 1: 0, 2: 0}
 
         # Build items for each category
         self.lib_items = self._build_items(discovered_libs)
@@ -49,6 +63,9 @@ class ToggleGrid:
 
         # Default: noise functions start unchecked
         self._apply_noise_defaults()
+
+        # Mark daemon-disabled items (Fix 3)
+        self._mark_daemon_disabled()
 
         # S5 fix (Wave 5): Snapshot the initial filter output so we
         # can detect whether the user actually changed anything.
@@ -99,6 +116,18 @@ class ToggleGrid:
             if item["name"] in noise_for_lib:
                 item["enabled"] = False
 
+    def _mark_daemon_disabled(self):
+        """Mark function items that are daemon-disabled.
+
+        daemon_disabled_funcs uses "lib.func" format. Items are matched
+        against the currently selected library.
+        """
+        lib = self.selected_lib or ""
+        for item in self.func_items:
+            qualified = "{}.{}".format(lib, item["name"])
+            item["daemon_disabled"] = (
+                qualified in self._daemon_disabled_funcs)
+
     def update_func_items(self, discovered_funcs_for_lib, lib_name):
         """Update function items when the user switches libraries.
 
@@ -110,14 +139,55 @@ class ToggleGrid:
         self.selected_lib = lib_name
         self.func_items = self._build_items(discovered_funcs_for_lib)
         self._apply_noise_defaults()
+        self._mark_daemon_disabled()
 
-    def toggle_item(self, key_char):
-        """Toggle the item mapped to the given key."""
+    def clamp_cursor(self, cat_idx):
+        """Clamp cursor_pos for the given category to valid bounds.
+
+        Must be called after any operation that may shrink the item
+        list for a category (e.g., update_func_items() on library
+        switch). Render methods and toggle_at_cursor() assume
+        cursor_pos is pre-clamped.
+
+        Args:
+            cat_idx: Category index (0=LIBRARIES, 1=FUNCTIONS, 2=PROCESSES).
+        """
+        cat_name = self.categories[cat_idx]
+        if cat_name == "LIBRARIES":
+            items = self.lib_items
+        elif cat_name == "FUNCTIONS":
+            items = self.func_items
+        elif cat_name == "PROCESSES":
+            items = self.proc_items
+        else:
+            return
+        if not items:
+            self.cursor_pos[cat_idx] = 0
+        else:
+            self.cursor_pos[cat_idx] = max(
+                0, min(len(items) - 1, self.cursor_pos[cat_idx]))
+
+    def move_cursor(self, delta):
+        """Move cursor within the active category by delta rows.
+
+        Clamps to [0, len(items)-1]. No-op if category is empty.
+
+        Args:
+            delta: +1 for down, -1 for up.
+        """
         items = self._active_items()
-        keys = "123456789abcdefghijklmnopqrstuvwxyz"
-        idx = keys.find(key_char.lower())
-        if 0 <= idx < len(items):
-            items[idx]["enabled"] = not items[idx]["enabled"]
+        if not items:
+            return
+        pos = self.cursor_pos[self.active_category]
+        pos = max(0, min(len(items) - 1, pos + delta))
+        self.cursor_pos[self.active_category] = pos
+
+    def toggle_at_cursor(self):
+        """Toggle the item at the current cursor position."""
+        items = self._active_items()
+        pos = self.cursor_pos[self.active_category]
+        if 0 <= pos < len(items):
+            items[pos]["enabled"] = not items[pos]["enabled"]
             self.user_interacted = True
 
     def all_on(self):
@@ -220,7 +290,7 @@ class ToggleGrid:
         term.clear_scroll_region()
         lines = self._build_lines(term.cols, cw)
         for i, line in enumerate(lines):
-            row = i + 2  # scroll region starts at row 2
+            row = i + 3  # scroll region starts at row 3
             if row >= term.rows - 1:
                 break
             term.write_at(row, line)
@@ -234,31 +304,31 @@ class ToggleGrid:
         else:
             return self._render_stacked(cols, cw)
 
-    def _format_item(self, key_char, item, cw, width):
+    def _format_item(self, item, cw, width, highlighted=False):
         """Format a single toggle item as a fixed-width string.
 
-        Format: "[k] Name      123" or "[ ] Name      123"
-        - Enabled items show the key character: [1], [a]
-        - Disabled items show empty brackets: [ ]
-        - Noise functions (when disabled) are rendered in dim color
-        - Counts are right-aligned within the column width
+        Format: "[x] Name      123" or "[ ] Name      123"
+        - Enabled items show [x], disabled show [ ]
+        - highlighted=True renders in reverse video (cursor position)
+        - Disabled non-highlighted items render dim
 
         Args:
-            key_char: The toggle key (e.g. "1", "a").
             item: Dict with "name", "count", "enabled" keys.
             cw: ColorWriter instance.
             width: Total column width including brackets and padding.
+            highlighted: Whether this item is at the cursor position
+                in the active category.
         """
         name = item["name"]
         count = str(item["count"])
 
-        if item["enabled"]:
-            bracket = "[{}]".format(key_char)
+        if item.get("daemon_disabled") and not item["enabled"]:
+            bracket = "[D]"  # Daemon-disabled
         else:
-            bracket = "[ ]"
+            bracket = "[x]" if item["enabled"] else "[ ]"
 
         # Name + count, right-aligned count
-        # Available space: width - len("[k] ") - len(count) - 1 space
+        # Available space: width - len("[x] ") - len(count) - 1 space
         name_width = width - 5 - len(count)
         if name_width < 1:
             name_width = 1
@@ -272,8 +342,10 @@ class ToggleGrid:
         if len(text) > width:
             text = text[:width]
 
-        # Color: disabled items are dim
-        if not item["enabled"]:
+        # Color: highlighted = reverse, disabled = dim
+        if highlighted:
+            text = cw.reverse(text)
+        elif not item["enabled"]:
             text = cw.dim(text)
 
         return text
@@ -283,14 +355,13 @@ class ToggleGrid:
 
         Layout:
           LIBRARIES          FUNCTIONS (dos)     PROCESSES
-          [1] exec     234   [1] Open       12   [1] bbs      89
-          [2] dos      187   [2] Lock        8   [2] Shell    43
+          [x] exec     234   [x] Open       12   [x] bbs      89
+          [ ] dos      187   [ ] Lock        8   [ ] Shell    43
 
-        The active category header is rendered in bold.
+        The active category header is rendered in reverse video.
         """
         lines = []
         col_width = (cols - 4) // 3  # 2-char gap between columns
-        keys = "123456789abcdefghijklmnopqrstuvwxyz"
 
         # Headers
         headers = []
@@ -309,22 +380,19 @@ class ToggleGrid:
         max_items = max(len(self.lib_items),
                         len(self.func_items),
                         len(self.proc_items))
-        for row in range(min(max_items, len(keys))):
+        for row in range(max_items):
             parts = []
             for cat_idx, items in enumerate([
                     self.lib_items, self.func_items,
                     self.proc_items]):
                 if row < len(items):
-                    key = keys[row]
+                    hl = (cat_idx == self.active_category
+                          and row == self.cursor_pos[cat_idx])
                     parts.append(self._format_item(
-                        key, items[row], cw, col_width))
+                        items[row], cw, col_width, highlighted=hl))
                 else:
                     parts.append(" " * col_width)
             lines.append("  ".join(parts))
-
-        # Footer
-        lines.append("")
-        lines.append(GRID_FOOTER_TEXT)
 
         return lines
 
@@ -338,7 +406,6 @@ class ToggleGrid:
         """
         lines = []
         col_width = (cols - 2) // 2
-        keys = "123456789abcdefghijklmnopqrstuvwxyz"
 
         # Determine which two categories to show
         if self.active_category <= 1:
@@ -370,22 +437,23 @@ class ToggleGrid:
         lines.append("")
 
         max_items = max(len(left_items), len(right_items))
-        for row in range(min(max_items, len(keys))):
+        for row in range(max_items):
             parts = []
             if row < len(left_items):
+                hl = (left_idx == self.active_category
+                      and row == self.cursor_pos[left_idx])
                 parts.append(self._format_item(
-                    keys[row], left_items[row], cw, col_width))
+                    left_items[row], cw, col_width, highlighted=hl))
             else:
                 parts.append(" " * col_width)
             if row < len(right_items):
+                hl = (right_idx == self.active_category
+                      and row == self.cursor_pos[right_idx])
                 parts.append(self._format_item(
-                    keys[row], right_items[row], cw, col_width))
+                    right_items[row], cw, col_width, highlighted=hl))
             else:
                 parts.append("")
             lines.append("  ".join(parts))
-
-        lines.append("")
-        lines.append(GRID_FOOTER_TEXT)
 
         return lines
 
@@ -396,7 +464,6 @@ class ToggleGrid:
         Category name shown as header.
         """
         lines = []
-        keys = "123456789abcdefghijklmnopqrstuvwxyz"
 
         cat = self.categories[self.active_category]
         label = cat
@@ -406,11 +473,10 @@ class ToggleGrid:
         lines.append("")
 
         items = self._active_items()
-        for row in range(min(len(items), len(keys))):
+        cat_idx = self.active_category
+        for row in range(len(items)):
+            hl = (row == self.cursor_pos[cat_idx])
             lines.append(self._format_item(
-                keys[row], items[row], cw, cols - 2))
-
-        lines.append("")
-        lines.append(GRID_FOOTER_TEXT)
+                items[row], cw, cols - 2, highlighted=hl))
 
         return lines

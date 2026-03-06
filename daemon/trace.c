@@ -51,6 +51,9 @@
 #define RET_LOCK        6   /* BPTR lock: NULL=fail, non-zero=hex addr */
 #define RET_LEN         7   /* byte count: -1=fail, >=0=decimal count */
 #define RET_OLD_LOCK    8   /* old lock from CurrentDir: NULL=ok, non-zero=hex */
+#define RET_PTR_OPAQUE  9   /* opaque pointer: OK for non-NULL, NULL for fail */
+#define RET_EXECUTE    10  /* Execute(): show raw value, neutral status */
+/* Next available: 11 */
 
 struct trace_func_entry {
     const char *lib_name;
@@ -64,13 +67,13 @@ struct trace_func_entry {
 
 static const struct trace_func_entry func_table[] = {
     /* exec.library functions (12) */
-    { "exec", "FindPort",         LIB_EXEC, -390, ERR_CHECK_NULL,  1, RET_PTR      },
-    { "exec", "FindResident",     LIB_EXEC,  -96, ERR_CHECK_NULL,  1, RET_PTR      },
-    { "exec", "FindSemaphore",    LIB_EXEC, -594, ERR_CHECK_NULL,  1, RET_PTR      },
-    { "exec", "FindTask",         LIB_EXEC, -294, ERR_CHECK_NULL,  1, RET_PTR      },
+    { "exec", "FindPort",         LIB_EXEC, -390, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
+    { "exec", "FindResident",     LIB_EXEC,  -96, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
+    { "exec", "FindSemaphore",    LIB_EXEC, -594, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
+    { "exec", "FindTask",         LIB_EXEC, -294, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "OpenDevice",       LIB_EXEC, -444, ERR_CHECK_NZERO, 1, RET_NZERO_ERR},
     { "exec", "OpenLibrary",      LIB_EXEC, -552, ERR_CHECK_NULL,  1, RET_PTR      },
-    { "exec", "OpenResource",     LIB_EXEC, -498, ERR_CHECK_NULL,  1, RET_PTR      },
+    { "exec", "OpenResource",     LIB_EXEC, -498, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "GetMsg",           LIB_EXEC, -372, ERR_CHECK_NONE,  0, RET_MSG_PTR  },
     { "exec", "PutMsg",           LIB_EXEC, -366, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "ObtainSemaphore",  LIB_EXEC, -564, ERR_CHECK_VOID,  0, RET_VOID     },
@@ -81,9 +84,9 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "Close",             LIB_DOS,   -36, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Lock",              LIB_DOS,   -84, ERR_CHECK_NULL,  1, RET_LOCK     },
     { "dos", "DeleteFile",        LIB_DOS,   -72, ERR_CHECK_NULL,  1, RET_BOOL_DOS },
-    { "dos", "Execute",           LIB_DOS,  -222, ERR_CHECK_NULL,  1, RET_BOOL_DOS },
+    { "dos", "Execute",           LIB_DOS,  -222, ERR_CHECK_NONE,  1, RET_EXECUTE },
     { "dos", "GetVar",            LIB_DOS,  -906, ERR_CHECK_NEGATIVE, 1, RET_LEN   },
-    { "dos", "FindVar",           LIB_DOS,  -918, ERR_CHECK_NULL,  1, RET_PTR      },
+    { "dos", "FindVar",           LIB_DOS,  -918, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "dos", "LoadSeg",           LIB_DOS,  -150, ERR_CHECK_NULL,  1, RET_PTR      },
     { "dos", "NewLoadSeg",        LIB_DOS,  -768, ERR_CHECK_NULL,  1, RET_PTR      },
     { "dos", "CreateDir",         LIB_DOS,  -120, ERR_CHECK_NULL,  1, RET_LOCK     },
@@ -192,7 +195,7 @@ static const char *noise_func_names[] = {
 /* ---- Task name cache ---- */
 
 #define TASK_CACHE_SIZE   64
-#define TASK_CACHE_REFRESH_INTERVAL  50  /* polls = ~5 seconds */
+#define TASK_CACHE_REFRESH_INTERVAL  20  /* polls = ~2 seconds */
 
 struct task_cache_entry {
     APTR task_ptr;
@@ -202,6 +205,70 @@ struct task_cache_entry {
 static struct task_cache_entry task_cache[TASK_CACHE_SIZE];
 static int task_cache_count = 0;
 static int task_cache_polls = 0;
+
+/* Extract the CLI command name for a Process, if available.
+ * Returns 1 if a command name was extracted, 0 if falling back to
+ * tc_Node.ln_Name is needed.
+ *
+ * For CLI processes (pr_TaskNum > 0), reads the command name BSTR
+ * from the CLI structure. The basename is extracted (path prefix
+ * stripped). This matches SnoopDOS behavior.
+ *
+ * Must be called under Forbid() -- the CLI structure is owned by
+ * the process and could be freed if the process exits. */
+static int resolve_cli_name(struct Process *pr, char *buf, int bufsz)
+{
+    struct CommandLineInterface *cli;
+    UBYTE *bstr;
+    int len;
+    char cmd[64];
+    const char *base;
+    const char *slash;
+    const char *colon;
+
+    if (pr->pr_TaskNum <= 0)
+        return 0;
+
+    cli = (struct CommandLineInterface *)BADDR(pr->pr_CLI);
+    if (!cli)
+        return 0;
+
+    if (!cli->cli_CommandName)
+        return 0;
+
+    bstr = (UBYTE *)BADDR(cli->cli_CommandName);
+    if (!bstr)
+        return 0;
+
+    len = bstr[0];
+    if (len == 0)
+        return 0;
+
+    /* Cap to buffer size */
+    if (len > 63)
+        len = 63;
+
+    memcpy(cmd, &bstr[1], len);
+    cmd[len] = '\0';
+
+    /* Extract basename: strip everything before the last '/' or ':' */
+    base = cmd;
+    slash = strrchr(cmd, '/');
+    colon = strrchr(cmd, ':');
+    if (slash && colon)
+        base = (slash > colon) ? slash + 1 : colon + 1;
+    else if (slash)
+        base = slash + 1;
+    else if (colon)
+        base = colon + 1;
+
+    /* If basename is empty after stripping (e.g., "SYS:"), fall back */
+    if (!base[0])
+        return 0;
+
+    snprintf(buf, bufsz, "[%ld] %s", (long)pr->pr_TaskNum, base);
+    return 1;
+}
 
 /* ---- Forward declarations ---- */
 
@@ -397,13 +464,17 @@ static void refresh_task_cache(void)
         if (node->ln_Name) {
             if (node->ln_Type == NT_PROCESS) {
                 struct Process *pr = (struct Process *)node;
-                LONG cli_num = pr->pr_TaskNum;
-                if (cli_num > 0) {
-                    snprintf(task_cache[idx].name, 64, "[%ld] %s",
-                             (long)cli_num, node->ln_Name);
-                } else {
-                    strncpy(task_cache[idx].name, node->ln_Name, 63);
-                    task_cache[idx].name[63] = '\0';
+                if (!resolve_cli_name(pr, task_cache[idx].name, 64)) {
+                    /* No CLI command name -- use tc_Node.ln_Name with
+                     * optional CLI number prefix */
+                    LONG cli_num = pr->pr_TaskNum;
+                    if (cli_num > 0) {
+                        snprintf(task_cache[idx].name, 64, "[%ld] %s",
+                                 (long)cli_num, node->ln_Name);
+                    } else {
+                        strncpy(task_cache[idx].name, node->ln_Name, 63);
+                        task_cache[idx].name[63] = '\0';
+                    }
                 }
             } else {
                 strncpy(task_cache[idx].name, node->ln_Name, 63);
@@ -423,13 +494,17 @@ static void refresh_task_cache(void)
         if (node->ln_Name) {
             if (node->ln_Type == NT_PROCESS) {
                 struct Process *pr = (struct Process *)node;
-                LONG cli_num = pr->pr_TaskNum;
-                if (cli_num > 0) {
-                    snprintf(task_cache[idx].name, 64, "[%ld] %s",
-                             (long)cli_num, node->ln_Name);
-                } else {
-                    strncpy(task_cache[idx].name, node->ln_Name, 63);
-                    task_cache[idx].name[63] = '\0';
+                if (!resolve_cli_name(pr, task_cache[idx].name, 64)) {
+                    /* No CLI command name -- use tc_Node.ln_Name with
+                     * optional CLI number prefix */
+                    LONG cli_num = pr->pr_TaskNum;
+                    if (cli_num > 0) {
+                        snprintf(task_cache[idx].name, 64, "[%ld] %s",
+                                 (long)cli_num, node->ln_Name);
+                    } else {
+                        strncpy(task_cache[idx].name, node->ln_Name, 63);
+                        task_cache[idx].name[63] = '\0';
+                    }
                 }
             } else {
                 strncpy(task_cache[idx].name, node->ln_Name, 63);
@@ -448,14 +523,18 @@ static void refresh_task_cache(void)
         if (this_task->tc_Node.ln_Name) {
             if (this_task->tc_Node.ln_Type == NT_PROCESS) {
                 struct Process *pr = (struct Process *)this_task;
-                LONG cli_num = pr->pr_TaskNum;
-                if (cli_num > 0) {
-                    snprintf(task_cache[idx].name, 64, "[%ld] %s",
-                             (long)cli_num, this_task->tc_Node.ln_Name);
-                } else {
-                    strncpy(task_cache[idx].name,
-                            this_task->tc_Node.ln_Name, 63);
-                    task_cache[idx].name[63] = '\0';
+                if (!resolve_cli_name(pr, task_cache[idx].name, 64)) {
+                    /* No CLI command name -- use tc_Node.ln_Name with
+                     * optional CLI number prefix */
+                    LONG cli_num = pr->pr_TaskNum;
+                    if (cli_num > 0) {
+                        snprintf(task_cache[idx].name, 64, "[%ld] %s",
+                                 (long)cli_num, this_task->tc_Node.ln_Name);
+                    } else {
+                        strncpy(task_cache[idx].name,
+                                this_task->tc_Node.ln_Name, 63);
+                        task_cache[idx].name[63] = '\0';
+                    }
                 }
             } else {
                 strncpy(task_cache[idx].name,
@@ -475,7 +554,7 @@ static void refresh_task_cache(void)
 }
 
 /* Resolve a Task pointer to a name string.
- * Uses a cached task-name table refreshed every ~5 seconds.
+ * Uses a cached task-name table refreshed every ~2 seconds.
  * Falls back to direct dereference under Forbid for cache misses. */
 static const char *resolve_task_name(APTR task_ptr)
 {
@@ -498,7 +577,26 @@ static const char *resolve_task_name(APTR task_ptr)
             return task_cache[i].name;
     }
 
-    /* Cache miss -- attempt direct dereference under Forbid.
+    /* Cache miss -- attempt on-demand refresh.
+     * The task may be alive but the periodic refresh hasn't caught it.
+     * Refresh now and re-search. This adds a Forbid/Permit per miss
+     * but misses are rare (only for tasks first seen since last refresh).
+     *
+     * Use minimum gap: require at least 3 periodic polls between
+     * on-demand refreshes. This prevents O(N/2) refresh storms when
+     * burst events arrive from a new task (each miss would trigger a
+     * refresh, but they all resolve after the first one). */
+    if (task_cache_polls >= 3) {
+        refresh_task_cache();
+
+        /* Re-search after refresh */
+        for (i = 0; i < task_cache_count; i++) {
+            if (task_cache[i].task_ptr == task_ptr)
+                return task_cache[i].name;
+        }
+    }
+
+    /* Cache miss after refresh -- attempt direct dereference under Forbid.
      * This handles short-lived tasks that started and exited between
      * cache refreshes. The Forbid prevents the task from being
      * removed while we read its name (same approach as Phase 1).
@@ -512,13 +610,15 @@ static const char *resolve_task_name(APTR task_ptr)
         /* Check if this is a Process with a CLI number */
         if (task->tc_Node.ln_Type == NT_PROCESS) {
             struct Process *pr = (struct Process *)task;
-            LONG cli_num = pr->pr_TaskNum;
-            if (cli_num > 0) {
-                snprintf(fallback, sizeof(fallback), "[%ld] %s",
-                         (long)cli_num, name);
-            } else {
-                strncpy(fallback, name, sizeof(fallback) - 1);
-                fallback[sizeof(fallback) - 1] = '\0';
+            if (!resolve_cli_name(pr, fallback, sizeof(fallback))) {
+                LONG cli_num = pr->pr_TaskNum;
+                if (cli_num > 0) {
+                    snprintf(fallback, sizeof(fallback), "[%ld] %s",
+                             (long)cli_num, name);
+                } else {
+                    strncpy(fallback, name, sizeof(fallback) - 1);
+                    fallback[sizeof(fallback) - 1] = '\0';
+                }
             }
         } else {
             strncpy(fallback, name, sizeof(fallback) - 1);
@@ -860,6 +960,12 @@ static void parse_extended_filter(const char *args,
                     strnicmp(scan, "-FUNC=", 6) == 0)
                     needs_extended = 1;
             }
+            /* ENABLE= and DISABLE= always require extended mode */
+            if (scan == args || scan[-1] == ' ' || scan[-1] == '\t') {
+                if (strnicmp(scan, "ENABLE=", 7) == 0 ||
+                    strnicmp(scan, "DISABLE=", 8) == 0)
+                    needs_extended = 1;
+            }
             scan++;
         }
 
@@ -911,6 +1017,52 @@ static void parse_extended_filter(const char *args,
                                  &ts->func_filter_count,
                                  MAX_FILTER_NAMES);
             args = skip_to_space(args);
+        } else if (strnicmp(args, "ENABLE=", 7) == 0) {
+            /* NOTE: ENABLE=/DISABLE= modify g_anchor->patches[].enabled which
+             * is GLOBAL state -- all connected trace clients are affected.
+             * This differs from LIB=/FUNC=/PROC= which are per-session. */
+            /* Enable specific patches (fire-and-forget during streaming) */
+            char name[32];
+            int nlen;
+            args += 7;
+            while (*args && *args != ' ' && *args != '\t') {
+                nlen = 0;
+                while (*args && *args != ',' && *args != ' ' && *args != '\t'
+                       && nlen < (int)sizeof(name) - 1)
+                    name[nlen++] = *args++;
+                name[nlen] = '\0';
+                if (*args == ',')
+                    args++;
+
+                {
+                    int pidx = find_patch_index_by_name(name);
+                    if (pidx >= 0 && pidx < (int)g_anchor->patch_count)
+                        g_anchor->patches[pidx].enabled = 1;
+                }
+            }
+            /* Force extended mode so we don't fall through to simple parser */
+            ts->use_extended_filter = 1;
+        } else if (strnicmp(args, "DISABLE=", 8) == 0) {
+            /* Disable specific patches (fire-and-forget during streaming) */
+            char name[32];
+            int nlen;
+            args += 8;
+            while (*args && *args != ' ' && *args != '\t') {
+                nlen = 0;
+                while (*args && *args != ',' && *args != ' ' && *args != '\t'
+                       && nlen < (int)sizeof(name) - 1)
+                    name[nlen++] = *args++;
+                name[nlen] = '\0';
+                if (*args == ',')
+                    args++;
+
+                {
+                    int pidx = find_patch_index_by_name(name);
+                    if (pidx >= 0 && pidx < (int)g_anchor->patch_count)
+                        g_anchor->patches[pidx].enabled = 0;
+                }
+            }
+            ts->use_extended_filter = 1;
         } else if (strnicmp(args, "PROC=", 5) == 0) {
             /* Single proc filter (substring match).
              * C5 note: Multi-value PROC is not supported
@@ -1241,11 +1393,15 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -444:  /* OpenDevice(devName, unit, ioReq, flags) */
-            p += snprintf(p, remaining, "\"%s%s\",unit=%lu,0x%lx,0x%lx",
-                          ev->string_data, trunc,
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2],
-                          (unsigned long)ev->args[3]);
+            if (ev->args[3] != 0)
+                p += snprintf(p, remaining, "\"%s%s\",unit=%lu,flags=0x%lx",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1],
+                              (unsigned long)ev->args[3]);
+            else
+                p += snprintf(p, remaining, "\"%s%s\",unit=%lu",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
             return;
 
         case -552:  /* OpenLibrary(libName, version) */
@@ -1327,16 +1483,15 @@ static void format_args(struct atrace_event *ev,
 
         case -222:  /* Execute(string, input, output) */
         {
-            /* Show NULL for zero file handles instead of 0x0 */
             if (ev->args[1] == 0 && ev->args[2] == 0)
-                p += snprintf(p, remaining, "\"%s%s\",in=NULL,out=NULL",
+                p += snprintf(p, remaining, "\"%s%s\"",
                               ev->string_data, trunc);
             else if (ev->args[1] == 0)
-                p += snprintf(p, remaining, "\"%s%s\",in=NULL,out=0x%lx",
+                p += snprintf(p, remaining, "\"%s%s\",out=0x%lx",
                               ev->string_data, trunc,
                               (unsigned long)ev->args[2]);
             else if (ev->args[2] == 0)
-                p += snprintf(p, remaining, "\"%s%s\",in=0x%lx,out=NULL",
+                p += snprintf(p, remaining, "\"%s%s\",in=0x%lx",
                               ev->string_data, trunc,
                               (unsigned long)ev->args[1]);
             else
@@ -1355,10 +1510,8 @@ static void format_args(struct atrace_event *ev,
             if (f & 0x100)      scope = "GLOBAL";
             else if (f & 0x200) scope = "LOCAL";
             else                scope = "ANY";
-            p += snprintf(p, remaining, "\"%s%s\",buf=0x%lx,%lu,%s",
+            p += snprintf(p, remaining, "\"%s%s\",%s",
                           ev->string_data, trunc,
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2],
                           scope);
             return;
         }
@@ -1390,9 +1543,8 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -768:  /* NewLoadSeg(file, tags) */
-            p += snprintf(p, remaining, "\"%s%s\",tags=0x%lx",
-                          ev->string_data, trunc,
-                          (unsigned long)ev->args[1]);
+            p += snprintf(p, remaining, "\"%s%s\"",
+                          ev->string_data, trunc);
             return;
 
         case -120:  /* CreateDir(name) */
@@ -1416,10 +1568,9 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -504:  /* RunCommand(seg, stack, paramptr, paramlen) */
-            p += snprintf(p, remaining, "seg=0x%lx,stack=%lu,params=0x%lx,%lu",
+            p += snprintf(p, remaining, "seg=0x%lx,stack=%lu,%lu",
                           (unsigned long)ev->args[0],
                           (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2],
                           (unsigned long)ev->args[3]);
             return;
 
@@ -1430,10 +1581,8 @@ static void format_args(struct atrace_event *ev,
             if (f & 0x100)      scope = "GLOBAL";
             else if (f & 0x200) scope = "LOCAL";
             else                scope = "ANY";
-            p += snprintf(p, remaining, "\"%s%s\",buf=0x%lx,%lu,%s",
+            p += snprintf(p, remaining, "\"%s%s\",%s",
                           ev->string_data, trunc,
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2],
                           scope);
             return;
         }
@@ -1451,9 +1600,8 @@ static void format_args(struct atrace_event *ev,
         }
 
         case -606:  /* SystemTagList(command, tags) */
-            p += snprintf(p, remaining, "\"%s%s\",tags=0x%lx",
-                          ev->string_data, trunc,
-                          (unsigned long)ev->args[1]);
+            p += snprintf(p, remaining, "\"%s%s\"",
+                          ev->string_data, trunc);
             return;
 
         case -678:  /* AddDosEntry(dlist) */
@@ -1584,6 +1732,27 @@ static char format_retval(struct atrace_event *ev,
         }
         snprintf(buf, bufsz, "%ld", (long)srv);
         return 'O';
+
+    case RET_PTR_OPAQUE:
+        /* Opaque pointer: non-zero means success, show OK not hex */
+        if (rv == 0) {
+            snprintf(buf, bufsz, "NULL");
+            return 'E';
+        }
+        snprintf(buf, bufsz, "OK");
+        return 'O';
+
+    case RET_EXECUTE:
+        /* Execute(): return value is ambiguous between shell rc and DOS boolean.
+         * Show raw value without OK/FAIL interpretation. rc=0 means the shell
+         * completed (success in shell convention). Non-zero is the shell rc. */
+        if (rv == 0)
+            snprintf(buf, bufsz, "rc=0");
+        else if (rv == (ULONG)-1)
+            snprintf(buf, bufsz, "OK");      /* DOSTRUE = genuine success */
+        else
+            snprintf(buf, bufsz, "rc=%ld", (long)srv);
+        return '-';   /* Neutral status -- never classified as error */
 
     case RET_OLD_LOCK:
         /* Old lock from CurrentDir: informational */

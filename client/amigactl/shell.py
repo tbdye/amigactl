@@ -3111,9 +3111,18 @@ class AmigaShell(cmd.Cmd):
                 # Use interactive viewer if terminal supports it
                 if sys.stdout.isatty() and os.name != "nt":
                     from .trace_ui import TraceViewer
+                    # Pre-populate grid data from TRACE STATUS (Fix 3).
+                    # Must happen before trace_start_raw() enters streaming mode.
+                    _pre_status = None
+                    try:
+                        _pre_status = self.conn.trace_status()
+                    except Exception:
+                        pass  # Non-fatal: grid will still auto-discover from events
                     with self.conn.trace_start_raw(**kwargs) as session:
                         viewer = TraceViewer(
                             self.conn, session, self.cw, mode="start")
+                        if _pre_status is not None:
+                            viewer._prepopulate_from_status(_pre_status)
                         viewer.run()
                 else:
                     # Fallback to original callback-based mode
@@ -3181,12 +3190,21 @@ class AmigaShell(cmd.Cmd):
             try:
                 if sys.stdout.isatty() and os.name != "nt":
                     from .trace_ui import TraceViewer
+                    # Pre-populate grid data from TRACE STATUS (Fix 3).
+                    # Must happen before trace_run_raw() enters streaming mode.
+                    _pre_status = None
+                    try:
+                        _pre_status = self.conn.trace_status()
+                    except Exception:
+                        pass  # Non-fatal: grid will still auto-discover from events
                     session, proc_id = self.conn.trace_run_raw(
                         command, **kwargs)
                     with session:
                         viewer = TraceViewer(
                             self.conn, session, self.cw,
                             mode="run", proc_id=proc_id)
+                        if _pre_status is not None:
+                            viewer._prepopulate_from_status(_pre_status)
                         viewer.run()
                 else:
                     # Fallback to original callback-based mode

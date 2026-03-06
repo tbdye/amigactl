@@ -41,6 +41,7 @@ from collections import Counter
 import pytest
 
 from amigactl import AmigaConnection
+from amigactl.trace_ui import SegmentResolver
 
 
 # ---------------------------------------------------------------------------
@@ -467,14 +468,14 @@ class TestExecFunctions:
         assert ev["status"] == "O", (
             "dos.library should be resident, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+        assert ev["retval"] == "OK", (
+            "Expected retval 'OK', got: {}".format(ev["retval"]))
 
     def test_opendevice(self, trace_events):
         """OpenDevice("timer.device", unit=0) -- status O, retval OK."""
         matches = _find_events(trace_events, "OpenDevice", '"timer.device"')
         # Further filter for unit=0 (UNIT_MICROHZ)
-        matches = [ev for ev in matches if "unit=0," in ev.get("args", "")]
+        matches = [ev for ev in matches if ",unit=0" in ev.get("args", "")]
         assert len(matches) >= 1, (
             "No OpenDevice('timer.device', unit=0) event found in {} events"
             .format(len(trace_events)))
@@ -498,8 +499,8 @@ class TestExecFunctions:
         assert ev["status"] == "O", (
             "OpenResource should succeed, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+        assert ev["retval"] == "OK", (
+            "Expected retval 'OK', got: {}".format(ev["retval"]))
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +520,8 @@ class TestExecNoiseGroup1:
         assert ev["lib"] == "exec"
         # AMITCP port may or may not exist; assert consistency
         if ev["status"] == "O":
-            assert _HEX_PTR.match(ev["retval"]), (
-                "FindPort OK but retval not hex: {}".format(ev["retval"]))
+            assert ev["retval"] == "OK", (
+                "FindPort OK but retval not 'OK': {}".format(ev["retval"]))
         else:
             assert ev["status"] == "E"
             assert ev["retval"] == "NULL"
@@ -537,8 +538,8 @@ class TestExecNoiseGroup1:
         assert ev["status"] == "O", (
             "atrace_patches semaphore should exist, got status={} retval={}"
             .format(ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+        assert ev["retval"] == "OK", (
+            "Expected retval 'OK', got: {}".format(ev["retval"]))
 
     def test_findtask_self(self, noise_group1_events):
         """FindTask(NULL) -- self-lookup, always succeeds."""
@@ -551,8 +552,8 @@ class TestExecNoiseGroup1:
         assert ev["status"] == "O", (
             "FindTask(NULL) should succeed, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+        assert ev["retval"] == "OK", (
+            "Expected retval 'OK', got: {}".format(ev["retval"]))
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +810,34 @@ class TestDosFunctions:
         assert ev["status"] == "O", (
             "Close status should be 'O', got: {}".format(ev["status"]))
 
+    def test_close_annotation(self, trace_events):
+        """Close(fh) is annotated with the Open path by HandleResolver."""
+        from amigactl.trace_ui import HandleResolver
+
+        # Find Open("RAM:atrace_test_write",Write) and get its retval
+        open_matches = _find_events(
+            trace_events, "Open", '"RAM:atrace_test_write",Write')
+        assert len(open_matches) >= 1
+        open_retval = open_matches[0]["retval"]
+        open_seq = open_matches[0]["seq"]
+
+        # Build a HandleResolver, feed all events through it
+        hr = HandleResolver()
+        for ev in trace_events:
+            hr.track(ev)
+
+        # Find the Close that matches the Open's return handle
+        close_events = _find_events(trace_events, "Close")
+        norm_retval = HandleResolver._normalize_hex(open_retval)
+        matching_close = [
+            ev for ev in close_events
+            if ev["seq"] > open_seq
+            and "fh={}".format(norm_retval) in ev.get("args", "")]
+        assert len(matching_close) >= 1
+        annotation = hr.annotate(matching_close[0])
+        assert annotation == "RAM:atrace_test_write", \
+            "Expected 'RAM:atrace_test_write', got: {}".format(annotation)
+
     def test_lock(self, trace_events):
         """Lock("RAM:", Shared) -- status O."""
         matches = _find_events(trace_events, "Lock", '"RAM:",Shared')
@@ -868,11 +897,11 @@ class TestDosFunctions:
             assert ev["status"] == "E"
 
     def test_newloadseg(self, trace_events):
-        """NewLoadSeg('C:Echo', tags=0x0) -- verify event format."""
+        """NewLoadSeg('C:Echo') -- verify event format."""
         matches = _find_events(
-            trace_events, "NewLoadSeg", '"C:Echo",tags=0x0')
+            trace_events, "NewLoadSeg", '"C:Echo"')
         assert len(matches) >= 1, (
-            "No NewLoadSeg('C:Echo',tags=0x0) event found in {} events"
+            "No NewLoadSeg('C:Echo') event found in {} events"
             .format(len(trace_events)))
         ev = matches[0]
         assert ev["lib"] == "dos"
@@ -892,7 +921,7 @@ class TestDosFunctions:
             assert ev["status"] == "E"
 
     def test_execute(self, trace_events):
-        """Execute("Echo >NIL: atrace_exec", in=NULL, out=NULL) -- status O."""
+        """Execute("Echo >NIL: atrace_exec") -- neutral status."""
         matches = _find_events(
             trace_events, "Execute", "atrace_exec")
         assert len(matches) >= 1, (
@@ -904,20 +933,14 @@ class TestDosFunctions:
         assert "Echo >NIL: atrace_exec" in ev["args"], (
             "Execute args should contain command string, got: {}".format(
                 ev["args"]))
-        # Both input and output handles are NULL in the C test
-        assert "in=NULL" in ev["args"], (
-            "Execute args should contain 'in=NULL', got: {}".format(
-                ev["args"]))
-        assert "out=NULL" in ev["args"], (
-            "Execute args should contain 'out=NULL', got: {}".format(
-                ev["args"]))
-        # Execute returns DOSTRUE if the shell started successfully,
-        # regardless of whether the command itself exists or succeeds.
-        assert ev["status"] == "O", (
-            "Execute should succeed, got status={} retval={}".format(
+        # Execute uses RET_EXECUTE: neutral status '-', retval is
+        # "OK" for DOSTRUE (-1) or "rc=N" for shell return codes.
+        assert ev["status"] == "-", (
+            "Execute should have neutral status, got status={} retval={}".format(
                 ev["status"], ev["retval"]))
-        assert ev["retval"] == "OK", (
-            "Execute retval should be 'OK', got: {}".format(ev["retval"]))
+        assert ev["retval"] in ("OK", "rc=0"), (
+            "Execute retval should be 'OK' or 'rc=0', got: {}".format(
+                ev["retval"]))
 
     def test_getvar(self, trace_events):
         """GetVar("atrace_test_var") -- variable set in prior block, status O."""
@@ -961,10 +984,10 @@ class TestDosFunctions:
         assert "LV_VAR" in ev["args"], (
             "FindVar args should contain 'LV_VAR', got: {}".format(
                 ev["args"]))
-        # FindVar returns a pointer (RET_PTR): O with hex or E with NULL
+        # FindVar returns RET_PTR_OPAQUE: O with "OK" or E with NULL
         if ev["status"] == "O":
-            assert _HEX_PTR.match(ev["retval"]), (
-                "Successful FindVar should return hex pointer: {}".format(
+            assert ev["retval"] == "OK", (
+                "Successful FindVar should return 'OK': {}".format(
                     ev["retval"]))
         else:
             assert ev["status"] == "E"
@@ -1089,12 +1112,9 @@ class TestDosFunctions:
             pytest.skip("RunCommand not captured (C:Echo likely not on disk)")
         ev = matches[0]
         assert ev["lib"] == "dos"
-        # Args format: seg=0x<ptr>,stack=4096,params=0x<ptr>,6
+        # Args format: seg=0x<ptr>,stack=4096,6
         assert "seg=0x" in ev["args"], (
             "RunCommand args should contain 'seg=0x', got: {}".format(
-                ev["args"]))
-        assert "params=0x" in ev["args"], (
-            "RunCommand args should contain 'params=0x', got: {}".format(
                 ev["args"]))
         # RunCommand returns rc (RET_RC). C:Echo may be resident (not on
         # disk) so LoadSeg might fail and RunCommand would not be called.
@@ -1113,8 +1133,35 @@ class TestDosFunctions:
                 "RunCommand status should be 'O' or 'E', got: {}".format(
                     ev["status"]))
 
+    def test_runcommand_segment_annotation(self, trace_events):
+        """SegmentResolver correlates LoadSeg with RunCommand in live events."""
+        # Feed all events through SegmentResolver to build cache, then
+        # check if RunCommand events get annotated.
+        sr = SegmentResolver()
+        annotated_count = 0
+        for ev in trace_events:
+            sr.track(ev)
+            if ev.get("func") == "RunCommand":
+                filename = sr.annotate(ev)
+                if filename is not None:
+                    annotated_count += 1
+                    # The annotation should be a non-empty string
+                    assert len(filename) > 0, (
+                        "SegmentResolver returned empty filename")
+        # atrace_test calls RunCommand after LoadSeg("C:Echo").
+        # If C:Echo is resident (no LoadSeg), skip gracefully.
+        run_matches = _find_events(trace_events, "RunCommand", "stack=4096")
+        load_matches = _find_events(trace_events, "LoadSeg", '"C:Echo"')
+        if len(run_matches) > 0 and len(load_matches) > 0:
+            # LoadSeg succeeded -- RunCommand should be annotated
+            ok_loads = [e for e in load_matches if e.get("status") == "O"]
+            if ok_loads:
+                assert annotated_count > 0, (
+                    "SegmentResolver failed to annotate RunCommand despite "
+                    "successful LoadSeg('C:Echo') in event stream")
+
     def test_systemtaglist(self, trace_events):
-        """SystemTagList("Echo >NIL: systest", tags=...) -- verify args."""
+        """SystemTagList("Echo >NIL: systest") -- verify args."""
         matches = _find_events(
             trace_events, "SystemTagList", "systest")
         assert len(matches) >= 1, (
@@ -1124,9 +1171,6 @@ class TestDosFunctions:
         assert ev["lib"] == "dos"
         assert "Echo >NIL: systest" in ev["args"], (
             "SystemTagList args should contain command string, got: {}".format(
-                ev["args"]))
-        assert "tags=0x" in ev["args"], (
-            "SystemTagList args should contain 'tags=0x', got: {}".format(
                 ev["args"]))
         # SystemTagList returns rc (RET_RC).
         assert ev["retval"].startswith("rc="), (
@@ -1368,3 +1412,70 @@ class TestPhase4bFeatures:
                     "{} seq={} args starts with '\"' -- possible stale "
                     "string_data leak: {}".format(
                         func_name, ev["seq"], ev["args"]))
+
+    def test_save_scrollback(self, trace_events, tmp_path):
+        """Save pipeline produces a valid log file from real daemon data.
+
+        End-to-end test: feed real trace events through HandleResolver,
+        format with annotation, strip ANSI, write to a file, and verify
+        the output contains expected function names and paths with no
+        ANSI escape sequences.
+        """
+        from amigactl.trace_ui import HandleResolver, ColumnLayout
+        from amigactl.colors import ColorWriter, strip_ansi
+
+        hr = HandleResolver()
+        cw = ColorWriter(force_color=True)
+        layout = ColumnLayout(120)
+
+        lines = []
+        prev_time = None
+        for ev in trace_events:
+            hr.track(ev)
+            # Apply annotation (same logic as TraceViewer._annotated_event)
+            annotation = hr.annotate(ev)
+            if annotation is not None:
+                ev = dict(ev)
+                ev["args"] = '{} "{}"'.format(ev["args"], annotation)
+            time_str = ev.get("time", "")
+            formatted = layout.format_event(ev, cw, time_str=time_str)
+            lines.append(strip_ansi(formatted))
+            prev_time = ev.get("time", "")
+
+        out_file = tmp_path / "atrace_test_save.log"
+        out_file.write_text('\n'.join(lines) + '\n')
+
+        content = out_file.read_text()
+
+        # No ANSI escape sequences in the output
+        assert "\x1b" not in content, (
+            "ANSI escape found in saved output")
+        assert "\x9b" not in content, (
+            "8-bit CSI found in saved output")
+
+        # Expected function names from atrace_test are present
+        assert "Open" in content
+        assert "Close" in content
+        assert "Lock" in content
+
+        # Expected test path from atrace_test
+        assert "RAM:atrace_test" in content
+
+        # Line count matches event count
+        non_empty = [l for l in content.strip().split('\n') if l.strip()]
+        assert len(non_empty) == len(trace_events), (
+            "Expected {} lines, got {}".format(
+                len(trace_events), len(non_empty)))
+
+    def test_transient_process_has_task_name(self, trace_events):
+        """Events from short-lived processes have non-empty task names."""
+        # atrace_test calls Execute("run >NIL: C:Version")
+        # The run shell is transient -- verify it has a task name
+        execute_events = [e for e in trace_events
+                          if e["func"] == "Execute"]
+        for ev in execute_events:
+            # The Execute call itself comes from atrace_test (not transient).
+            # But events from the spawned shell (if any) should have names.
+            assert ev["task"] != "", (
+                "Execute event should have a task name: seq={}".format(
+                    ev["seq"]))

@@ -10,6 +10,7 @@ No external TUI libraries (curses, etc.) -- pure ANSI escape codes.
 import atexit
 import copy
 from collections import deque
+from datetime import datetime
 import os
 import re
 import select
@@ -24,8 +25,20 @@ try:
 except ImportError:
     termios = None  # Windows -- not supported for interactive viewer
 
-from .colors import RESET, format_trace_event, get_lib_color
+from .colors import RESET, format_trace_event, get_lib_color, strip_ansi
 from .protocol import ProtocolError, send_command
+
+# Shell variables suppressed by the shell-noise filter [i].
+# Includes RC and Result2: these duplicate information already visible
+# in traced function return values. Post-command SetVar RC/Result2 are
+# shell bookkeeping, not application library calls. Users debugging
+# shell behavior can toggle [i] off to see them.
+_SHELL_INIT_VARS = frozenset({
+    "process",
+    "RC", "Result2",
+    "echo", "debug", "oldredirect",
+    "interactive", "simpleshell",
+})
 
 
 class TerminalState:
@@ -120,17 +133,26 @@ class TerminalState:
         self.stdout.write(s)
         self.stdout.flush()
 
+    def clear_screen(self):
+        """Clear entire screen and move cursor to home position."""
+        self._write("\033[2J\033[H")
+
     def setup_regions(self):
-        """Configure DECSTBM three-region layout.
+        """Configure DECSTBM four-region layout.
 
         Line 1:          Status bar (fixed)
-        Lines 2..rows-1: Scroll region (events)
+        Line 2:          Column header (fixed)
+        Lines 3..rows-1: Scroll region (events)
         Line rows:        Hotkey bar (fixed)
         """
-        # Set scroll region: rows 2 through rows-1
-        self._write("\033[2;{}r".format(self.rows - 1))
+        if self.rows < 5:
+            # Terminal too short for a valid scroll region; skip DECSTBM
+            # to avoid emitting invalid escape sequences.
+            return
+        # Set scroll region: rows 3 through rows-1
+        self._write("\033[3;{}r".format(self.rows - 1))
         # Move cursor into scroll region
-        self._write("\033[2;1H")
+        self._write("\033[3;1H")
 
     def write_status_bar(self, text):
         """Write text to the fixed top line (line 1)."""
@@ -172,7 +194,7 @@ class TerminalState:
     def clear_scroll_region(self):
         """Clear the scroll region content."""
         self._write("\0337")
-        for row in range(2, self.rows):
+        for row in range(3, self.rows):
             self._write("\033[{};1H\033[2K".format(row))
         self._write("\0338")
 
@@ -376,6 +398,281 @@ class ColumnLayout:
 
         return "  ".join(parts)
 
+    def format_header(self, cw):
+        """Format a column header string matching format_event() widths.
+
+        Uses the same column widths and separator style as format_event()
+        so the header aligns with event data. The entire header is
+        rendered in dim text to distinguish it from events.
+
+        Args:
+            cw: ColorWriter instance.
+        """
+        def _pad(s, width, align="left"):
+            pad = max(0, width - len(s))
+            if align == "right":
+                return " " * pad + s
+            return s + " " * pad
+
+        parts = [_pad("SEQ", self.seq_width)]
+        if self.time_width > 0:
+            parts.append("TIME".rjust(self.time_width))
+        parts.append(_pad("FUNCTION", self.func_width))
+        parts.append(_pad("TASK", self.proc_width))
+        parts.append(_pad("ARGS", self.args_width))
+        parts.append("RESULT")
+
+        header = "  ".join(parts)
+        return cw.dim(header)
+
+
+class HandleResolver:
+    """Track Open/Lock return values and resolve handles to paths.
+
+    Maintains a bounded cache mapping hex handle values to file paths.
+    Populated by tracking Open and Lock events; consumed by Close and
+    CurrentDir annotation.
+
+    The cache is keyed by the normalized hex string representation of
+    the handle (e.g., "0x1c16daf"), not the integer value.
+    """
+
+    def __init__(self, max_size=256):
+        self._cache = {}       # hex_str -> path
+        self._order = []       # insertion order for FIFO eviction
+        self._max_size = max_size
+
+    def clear(self):
+        """Clear all cached handles. Called at trace session start."""
+        self._cache.clear()
+        self._order.clear()
+
+    def track(self, event):
+        """Track an event, caching handle->path for Open and Lock.
+
+        Call this for every event, before formatting. Only Open and
+        Lock with non-NULL return values are cached.
+
+        Args:
+            event: Parsed event dict with keys: func, retval, args,
+                   status.
+        """
+        func = event.get("func", "")
+        retval = event.get("retval", "")
+        status = event.get("status", "-")
+        args = event.get("args", "")
+
+        # Only cache successful operations (status O) with non-NULL
+        # return values that look like hex pointers
+        if func not in ("Open", "Lock"):
+            return
+        if status != "O":
+            return
+        if not retval.startswith("0x"):
+            return
+
+        # Extract path from args: Open("path",mode) or Lock("path",type)
+        path = self._extract_path(args)
+        if not path:
+            return
+
+        key = self._normalize_hex(retval)
+
+        # Evict oldest if at capacity
+        if len(self._cache) >= self._max_size and \
+                key not in self._cache:
+            oldest = self._order.pop(0)
+            self._cache.pop(oldest, None)
+
+        self._cache[key] = path
+        if key not in self._order:
+            self._order.append(key)
+
+    def annotate(self, event, consume=False):
+        """Return annotation string for Close/CurrentDir, or None.
+
+        Args:
+            event: Parsed event dict.
+            consume: If True, remove the cache entry for Close events.
+                     Used during eager annotation (process time) to
+                     prevent stale entries from persisting after Close.
+        """
+        func = event.get("func", "")
+        args = event.get("args", "")
+
+        if func == "Close":
+            hex_val = self._extract_hex(args, "fh=")
+            if hex_val and hex_val in self._cache:
+                path = self._cache[hex_val]
+                if consume:
+                    del self._cache[hex_val]
+                    if hex_val in self._order:
+                        self._order.remove(hex_val)
+                return path
+
+        if func == "CurrentDir":
+            # Only annotate if the daemon sent a bare hex value
+            # (no quotes = not already resolved by daemon lock_cache)
+            if args.startswith('"'):
+                return None  # daemon already resolved it
+            hex_val = self._extract_hex(args, "lock=")
+            if hex_val and hex_val in self._cache:
+                return self._cache[hex_val]
+
+        return None
+
+    @staticmethod
+    def _extract_path(args):
+        """Extract quoted path from args like '"RAM:foo",Write'.
+
+        Returns the path string without quotes, or None.
+        """
+        if not args.startswith('"'):
+            return None
+        end = args.find('"', 1)
+        if end < 0:
+            return None
+        return args[1:end]
+
+    @staticmethod
+    def _extract_hex(args, prefix):
+        """Extract hex value after a prefix like 'fh=' or 'lock='.
+
+        Handles formats like:
+        - 'fh=0x1c16daf'
+        - 'lock=0x1c16daf'
+        - 'lock=NULL' (returns None)
+
+        Returns the normalized hex string (e.g., '0x1c16daf') or None.
+        """
+        idx = args.find(prefix)
+        if idx < 0:
+            return None
+        start = idx + len(prefix)
+        if args[start:start + 2] != "0x":
+            return None
+        # Find end of hex value (next comma, space, or end of string)
+        end = start
+        while end < len(args) and args[end] not in (',', ' ', ')'):
+            end += 1
+        raw = args[start:end]
+        return HandleResolver._normalize_hex(raw)
+
+    @staticmethod
+    def _normalize_hex(hex_str):
+        """Normalize a hex string to consistent format.
+
+        Strips leading zeros after '0x' prefix for consistent matching
+        between '0x01c16daf' (retval format) and '0x1c16daf' (args format).
+        """
+        if not hex_str.startswith("0x"):
+            return hex_str
+        # Parse as int, re-format without leading zeros
+        try:
+            val = int(hex_str, 16)
+            return "0x{:x}".format(val)
+        except ValueError:
+            return hex_str
+
+
+class SegmentResolver:
+    """Track LoadSeg/NewLoadSeg return values and resolve segment
+    pointers to filenames for RunCommand annotation.
+
+    Maintains a bounded cache mapping hex segment values to filenames.
+    Populated by tracking LoadSeg/NewLoadSeg events; consumed by
+    RunCommand annotation.
+
+    Cache semantics differ from HandleResolver: segments are not
+    consumed on use because RunCommand does not free the segment
+    (the caller calls UnloadSeg separately, which is not a traced
+    function). Entries expire via FIFO eviction only.
+    """
+
+    def __init__(self, max_size=128):
+        self._cache = {}       # hex_str -> filename
+        self._order = []       # insertion order for FIFO eviction
+        self._max_size = max_size
+
+    def clear(self):
+        """Clear all cached segments. Called at trace session start."""
+        self._cache.clear()
+        self._order.clear()
+
+    def track(self, event):
+        """Track LoadSeg/NewLoadSeg events, caching segment->filename.
+
+        Args:
+            event: Parsed event dict with func, retval, args, status.
+        """
+        func = event.get("func", "")
+        if func not in ("LoadSeg", "NewLoadSeg"):
+            return
+        retval = event.get("retval", "")
+        status = event.get("status", "")
+        if status != "O":
+            return
+        if not retval.startswith("0x"):
+            return
+
+        # Extract filename from args: LoadSeg("filename")
+        args = event.get("args", "")
+        if not args.startswith('"'):
+            return
+        end = args.find('"', 1)
+        if end < 0:
+            return
+        filename = args[1:end]
+        if not filename:
+            return
+
+        key = self._normalize_hex(retval)
+
+        # Evict oldest if at capacity.
+        # O(n) pop(0) on _order is acceptable for max_size=128.
+        if len(self._cache) >= self._max_size and \
+                key not in self._cache:
+            oldest = self._order.pop(0)
+            self._cache.pop(oldest, None)
+
+        self._cache[key] = filename
+        if key not in self._order:
+            self._order.append(key)
+
+    def annotate(self, event):
+        """Return filename for RunCommand's seg= argument, or None.
+
+        Args:
+            event: Parsed event dict for a RunCommand event.
+        """
+        func = event.get("func", "")
+        if func != "RunCommand":
+            return None
+        args = event.get("args", "")
+        # Extract seg=0x... from args
+        if not args.startswith("seg=0x"):
+            return None
+        # Find end of hex value (next comma or end of string)
+        end = args.find(",", 4)
+        if end < 0:
+            hex_str = args[4:]  # skip "seg=" prefix, keeping "0x..."
+        else:
+            hex_str = args[4:end]  # skip "seg=" prefix, keeping "0x..."
+        key = self._normalize_hex(hex_str)
+        return self._cache.get(key)
+
+    @staticmethod
+    def _normalize_hex(hex_str):
+        """Normalize hex string by stripping leading zeros.
+
+        '0x01c16daf' -> '0x1c16daf'
+        '0x00001234' -> '0x1234'
+        """
+        if not hex_str.startswith("0x"):
+            return hex_str
+        stripped = hex_str[2:].lstrip("0") or "0"
+        return "0x" + stripped
+
 
 class TraceViewer:
     """Interactive trace event viewer.
@@ -402,6 +699,7 @@ class TraceViewer:
         self.help_visible = False
         self.grid_visible = False
         self.errors_filter = False  # Toggle for ERRORS mode
+        self.shell_noise_filter = True  # Suppress shell init events
 
         # Event tracking
         self.total_events = 0
@@ -421,10 +719,12 @@ class TraceViewer:
         self.pause_buffer_limit = 1000
         self.pause_scroll_pos = 0
 
-        # Scrollback buffer: retains displayed events for scroll-back
-        # when paused. Populated by _display_event(). [SF4 fix]: Uses
-        # deque(maxlen=N) for O(1) append with automatic size limiting.
-        self.scrollback_limit = 1000
+        # Scrollback buffer: retains ALL received events for retroactive
+        # filtering and scroll-back when paused. Populated by
+        # _process_event_result() before client filters are applied.
+        # [SF4 fix]: Uses deque(maxlen=N) for O(1) append with automatic
+        # size limiting.
+        self.scrollback_limit = 10000
         self.scrollback = deque(maxlen=self.scrollback_limit)
         self._scroll_snapshot = None  # [R3-SF7 fix]: frozen on pause
         self._scrollback_full = False  # [R3-SF10 fix]: ever reached maxlen
@@ -458,6 +758,8 @@ class TraceViewer:
 
         # Grid state
         self.grid = None             # ToggleGrid instance (when used)
+        self.daemon_disabled_funcs = set()  # Daemon-disabled functions in "lib.func" format (Fix 3)
+        self.user_enabled_funcs = set()  # Functions user explicitly enabled, "lib.func" format (Fix 3)
 
         # Resize handling (C7 fix)
         self._resize_pending = False
@@ -466,6 +768,55 @@ class TraceViewer:
         # the status bar 10x/sec when nothing has changed.
         self._status_dirty = True
         self._last_status_time = 0.0  # monotonic time of last redraw
+
+        # Highlight cursor (event detail view)
+        self.highlight_pos = 0            # Index into combined event list
+
+        # Detail view overlay
+        self.detail_visible = False       # Detail overlay active
+        self._detail_event = None         # Event dict being shown in detail
+        self._detail_scroll_pos = 0       # Scroll position within detail content
+        self._detail_lines = []           # Pre-rendered detail lines
+
+        # Handle/lock path annotation (Feature B)
+        self.handle_resolver = HandleResolver()
+
+        # Segment/filename annotation (Fix 9)
+        self.segment_resolver = SegmentResolver()
+
+    def _prepopulate_from_status(self, status):
+        """Pre-populate discovered_libs and discovered_funcs from TRACE STATUS.
+
+        Ensures all patched functions (including daemon-disabled noise
+        functions) appear in the toggle grid with count=0. Also tracks
+        which functions are daemon-disabled so the grid can send
+        ENABLE/DISABLE commands when toggling them.
+
+        Args:
+            status: Dict from conn.trace_status(), containing patch_list.
+        """
+        patch_list = status.get("patch_list", [])
+        self.daemon_disabled_funcs = set()  # Track daemon-disabled funcs ("lib.func" format)
+
+        for entry in patch_list:
+            name = entry.get("name", "")
+            enabled = entry.get("enabled", True)
+            if "." not in name:
+                continue
+            lib, func = name.split(".", 1)
+
+            # Initialize lib with count=0 if not yet seen
+            if lib not in self.discovered_libs:
+                self.discovered_libs[lib] = 0
+            if lib not in self.discovered_funcs:
+                self.discovered_funcs[lib] = {}
+            if func not in self.discovered_funcs[lib]:
+                self.discovered_funcs[lib][func] = 0
+
+            if not enabled:
+                # Store in "lib.func" format to match TRACE STATUS patch_N=<lib>.<func>
+                # and prevent future name collisions across libraries.
+                self.daemon_disabled_funcs.add("{}.{}".format(lib, func))
 
     def run(self):
         """Main entry point. Sets up terminal and runs event loop."""
@@ -476,8 +827,10 @@ class TraceViewer:
                 signal.SIGWINCH, self._handle_sigwinch)
             try:
                 self.layout = ColumnLayout(term.cols)
+                term.clear_screen()       # Bug 20: wipe stale shell text
                 term.setup_regions()
                 self._draw_status_bar()
+                self._draw_header()
                 self._draw_hotkey_bar()
                 self._event_loop()
             except KeyboardInterrupt:
@@ -522,7 +875,8 @@ class TraceViewer:
             # C2 fix (R4): Only redraw status bar when state changed
             # or once per second (for elapsed time update). Avoids
             # 10x/sec redraws that cause flicker on slow SSH.
-            if not self.grid_visible and not self.help_visible:
+            if not self.grid_visible and not self.help_visible \
+                    and not self.detail_visible:
                 now = _time.monotonic()
                 if self._status_dirty or \
                    (now - self._last_status_time) >= 1.0:
@@ -593,6 +947,34 @@ class TraceViewer:
         if self.start_time is None:
             self.start_time = event.get("time", "")
 
+        # Track Open/Lock for handle annotation (Feature B)
+        self.handle_resolver.track(event)
+
+        # Track LoadSeg/NewLoadSeg for segment annotation (Fix 9)
+        self.segment_resolver.track(event)
+
+        # Eagerly resolve handle annotation for Close/CurrentDir.
+        # Must happen AFTER track() (which caches this event's Open/Lock)
+        # and BEFORE the event is stored in scrollback. This ensures the
+        # annotation reflects the cache state at event time, not render
+        # time. Fixes wrong-path bug when handles are reused.
+        annotation = self.handle_resolver.annotate(event, consume=True)
+        if annotation is not None:
+            event["_handle_annotation"] = annotation
+
+        # Eagerly resolve segment annotation for RunCommand (Fix 9).
+        seg_annotation = self.segment_resolver.annotate(event)
+        if seg_annotation is not None:
+            event["_segment_annotation"] = seg_annotation
+
+        # Store ALL events in scrollback regardless of filter state.
+        # This enables retroactive filter changes: the user can
+        # capture events, pause, change filters, and see previously-
+        # hidden events appear from the scrollback.
+        self.scrollback.append(event)
+        if len(self.scrollback) >= self.scrollback_limit:
+            self._scrollback_full = True
+
         # Client-side filtering (toggle grid state)
         if not self._passes_client_filter(event):
             return
@@ -611,8 +993,10 @@ class TraceViewer:
             self._draw_status_bar()
             return
 
-        # Grid mode: buffer events to prevent scroll region corruption
-        if self.grid_visible:
+        # Help/grid/detail mode: buffer events to prevent scroll region
+        # corruption. Defense-in-depth: detail_visible implies paused
+        # (caught above), but guard here for consistency with help/grid.
+        if self.help_visible or self.grid_visible or self.detail_visible:
             if len(self.pause_buffer) < self.pause_buffer_limit:
                 self.pause_buffer.append(event)
             return
@@ -634,32 +1018,117 @@ class TraceViewer:
         if key is None:
             return
 
+        if self.detail_visible:
+            if isinstance(key, tuple) and key[0] == "esc":
+                seq = key[1]
+                if seq == "":  # Bare Escape: dismiss detail
+                    self._dismiss_detail()
+                    return
+                elif seq == "[A":  # Up
+                    self._detail_scroll_pos = max(
+                        0, self._detail_scroll_pos - 1)
+                    self._render_detail()
+                    return
+                elif seq == "[B":  # Down
+                    self._detail_scroll_pos = min(
+                        self._detail_scroll_max(),
+                        self._detail_scroll_pos + 1)
+                    self._render_detail()
+                    return
+                elif seq == "[5~":  # PgUp
+                    self._detail_scroll_pos = max(
+                        0, self._detail_scroll_pos -
+                        (self.term.rows - 4))
+                    self._render_detail()
+                    return
+                elif seq == "[6~":  # PgDn
+                    self._detail_scroll_pos = min(
+                        self._detail_scroll_max(),
+                        self._detail_scroll_pos +
+                        (self.term.rows - 4))
+                    self._render_detail()
+                    return
+            # Any non-navigation key: ignore (only Esc dismisses)
+            return
+
         if self.help_visible:
-            # Any key dismisses help
+            # Arrow/page keys scroll help; any other key dismisses
+            if isinstance(key, tuple) and key[0] == "esc":
+                seq = key[1]
+                if seq == "[A":    # Up arrow
+                    self._help_scroll_pos = max(
+                        0, self._help_scroll_pos - 1)
+                    self._render_help()
+                    return
+                elif seq == "[B":  # Down arrow
+                    self._help_scroll_pos = min(
+                        self._help_scroll_max(),
+                        self._help_scroll_pos + 1)
+                    self._render_help()
+                    return
+                elif seq == "[5~":  # Page Up
+                    self._help_scroll_pos = max(
+                        0, self._help_scroll_pos -
+                        (self.term.rows - 4))
+                    self._render_help()
+                    return
+                elif seq == "[6~":  # Page Down
+                    self._help_scroll_pos = min(
+                        self._help_scroll_max(),
+                        self._help_scroll_pos +
+                        (self.term.rows - 4))
+                    self._render_help()
+                    return
+            # Any other key dismisses help and re-renders events
             self.help_visible = False
             self.term.clear_scroll_region()
             self.term.setup_regions()
             self._draw_hotkey_bar()
+            self._draw_status_bar()
+            if not self.paused:
+                self.pause_buffer = []
+                self.pause_scroll_pos = 0
+                self._rerender_from_scrollback()
+            else:
+                self._scroll_snapshot = self._build_filtered_snapshot()
+                self.pause_scroll_pos = len(self._scroll_snapshot) + \
+                    len(self.pause_buffer)
+                self._init_highlight_at_bottom()
+                self._scroll_pause_buffer(0)
             return
 
         if self.grid_visible:
             self._handle_grid_key(key)
             return
 
-        # Scroll-back when paused (S4)
-        if self.paused and isinstance(key, tuple) and key[0] == "esc":
+        # Scroll-back: auto-pause on Up/PgUp, auto-unpause on
+        # Down/PgDn at bottom. Highlight cursor moves with arrows.
+        if isinstance(key, tuple) and key[0] == "esc":
             seq = key[1]
             if seq == "[A":    # Up arrow
-                self._scroll_pause_buffer(-1)
-                return
-            elif seq == "[B":  # Down arrow
-                self._scroll_pause_buffer(1)
+                if not self.paused:
+                    self._toggle_pause()
+                    self._move_highlight(-1)
+                else:
+                    self._move_highlight(-1)
                 return
             elif seq == "[5~":  # Page Up
-                self._scroll_pause_buffer(-(self.term.rows - 3))
+                if not self.paused:
+                    self._toggle_pause()
+                    self._move_highlight(-(self.term.rows - 4))
+                else:
+                    self._move_highlight(-(self.term.rows - 4))
                 return
-            elif seq == "[6~":  # Page Down
-                self._scroll_pause_buffer(self.term.rows - 3)
+            elif seq == "[B" and self.paused:  # Down arrow
+                at_bottom = self._move_highlight(1)
+                if at_bottom:
+                    self._toggle_pause()
+                return
+            elif seq == "[6~" and self.paused:  # Page Down
+                at_bottom = self._move_highlight(
+                    self.term.rows - 4)
+                if at_bottom:
+                    self._toggle_pause()
                 return
 
         if key == "q":
@@ -683,6 +1152,27 @@ class TraceViewer:
             self._show_help()
         elif key == "e":
             self._toggle_errors_filter()
+        elif key == "S":
+            self._save_scrollback()
+        elif key == "i":
+            self.shell_noise_filter = not self.shell_noise_filter
+            self._status_dirty = True
+            if not self.paused:
+                self._rerender_from_scrollback()
+            else:
+                self._scroll_snapshot = self._build_filtered_snapshot()
+                self.pause_scroll_pos = len(self._scroll_snapshot) + \
+                    len(self.pause_buffer)
+                self._init_highlight_at_bottom()
+                self._scroll_pause_buffer(0)
+            self._draw_status_bar()
+            self._draw_hotkey_bar()
+        elif key == "c":
+            if not self.paused:
+                self._clear_events()
+        elif key == "\r" or key == "\n":
+            if self.paused:
+                self._open_detail_view()
 
     def _toggle_errors_filter(self):
         """Toggle ERRORS filter on/off (S7: replaces grid RETURN STATUS)."""
@@ -693,26 +1183,141 @@ class TraceViewer:
         self._draw_status_bar()
         self._draw_hotkey_bar()
 
+    def _clear_events(self):
+        """Clear all accumulated events and reset the display.
+
+        Wipes the scrollback buffer, all counters, statistics, and
+        discovered filter values. Does NOT clear disabled_* filter
+        choices (those are the user's active filters) and does NOT
+        send any protocol commands (the trace stream continues).
+        """
+        # Clear scrollback
+        self.scrollback.clear()
+        self._scrollback_full = False
+
+        # Reset counters
+        self.shown_events = 0
+        self.total_events = 0
+        self.error_count = 0
+        self.last_event_time = None
+        self.start_time = None
+
+        # Clear statistics
+        self.func_counts.clear()
+        self.lib_counts.clear()
+        self.proc_counts.clear()
+        self.error_counts.clear()
+
+        # Clear discovered filter data
+        self.discovered_libs.clear()
+        self.discovered_funcs.clear()
+        self.discovered_procs.clear()
+
+        # Clear handle resolution cache
+        self.handle_resolver.clear()
+
+        # Clear segment resolution cache (Fix 9)
+        self.segment_resolver.clear()
+
+        # Clear pause buffer (no stale events on next pause)
+        self.pause_buffer.clear()
+        self.pause_scroll_pos = 0
+
+        # Redraw: wipe scroll region, update bars
+        self.term.clear_scroll_region()
+        self._status_dirty = True
+        self._draw_status_bar()
+        self._draw_hotkey_bar()
+
+    def _save_scrollback(self):
+        """Save filtered scrollback buffer to a timestamped log file."""
+        # Filter through current client-side filters (disabled_libs,
+        # disabled_funcs, disabled_procs, shell_noise_filter, search).
+        # The saved file should match what the user sees on screen.
+        events = self._build_filtered_snapshot()
+        if not events:
+            self.term.write_hotkey_bar("Nothing to save")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = "atrace_{}.log".format(timestamp)
+
+        lines = []
+        prev_time = None
+        for event in events:
+            ev = self._annotated_event(event)
+            if hasattr(self, 'layout'):
+                time_str = self._format_timestamp_for_scroll(
+                    ev, prev_time)
+                formatted = self.layout.format_event(
+                    ev, self.cw, time_str=time_str)
+            else:
+                formatted = format_trace_event(ev, self.cw)
+            lines.append(strip_ansi(formatted))
+            prev_time = ev.get("time", "")
+
+        try:
+            with open(filename, 'w') as f:
+                f.write('\n'.join(lines))
+                f.write('\n')
+            if len(events) < len(self.scrollback):
+                self.term.write_hotkey_bar(
+                    "Saved {} of {} events to {}".format(
+                        len(events), len(self.scrollback), filename))
+            else:
+                self.term.write_hotkey_bar(
+                    "Saved {} events to {}".format(len(events), filename))
+        except OSError as e:
+            self.term.write_hotkey_bar("Save failed: {}".format(e))
+
     # ---- Display methods ----
+
+    def _annotated_event(self, event):
+        """Return event with handle/segment annotations applied to args.
+
+        Prefers the eagerly-computed annotation stored at process time
+        (Fix 1: correct for reused handles). Falls back to live cache
+        lookup for events processed before this fix was deployed (e.g.,
+        if scrollback contains events from a mixed session).
+
+        Returns the original event if no annotation applies, or a
+        shallow copy with modified args if annotation is available.
+        Does not mutate the original event.
+        """
+        ev = event  # may be replaced with a copy
+
+        # Handle annotation (Close/CurrentDir)
+        annotation = event.get("_handle_annotation")
+        if annotation is None:
+            # Fallback: live cache lookup (legacy path)
+            annotation = self.handle_resolver.annotate(event)
+        if annotation is not None:
+            ev = dict(event)
+            ev["args"] = '{} "{}"'.format(event["args"], annotation)
+
+        # Segment annotation (RunCommand) -- Fix 9
+        seg_ann = event.get("_segment_annotation")
+        if seg_ann is not None:
+            if ev is event:
+                ev = dict(event)
+            args = ev.get("args", event.get("args", ""))
+            ev["args"] = re.sub(
+                r'(seg=0x[0-9a-fA-F]+)',
+                r'\1 "' + seg_ann + '"',
+                args)
+
+        return ev
 
     def _display_event(self, event):
         """Format and display a single trace event in the scroll region.
 
-        Before Wave 6 (adaptive layout), uses format_trace_event()
-        from colors.py. After Wave 6, uses ColumnLayout.format_event()
-        with a pre-formatted timestamp.
+        Pure formatting+output method. Scrollback storage is handled by
+        _process_event_result() before this method is called.
 
-        The viewer formats the timestamp (which depends on viewer state:
-        timestamp_mode, start_time, last_event_time) before passing to
-        the layout engine. This avoids the layout engine needing access
-        to viewer state (M2 fix).
+        Uses ColumnLayout.format_event() with a pre-formatted timestamp
+        when available, otherwise falls back to format_trace_event().
         """
-        # Retain event in scrollback for pause-time scrolling
-        self.scrollback.append(event)
-        # [R3-SF10 fix]: Track when scrollback reaches capacity
-        if len(self.scrollback) >= self.scrollback_limit:
-            self._scrollback_full = True
-
+        event = self._annotated_event(event)
         if hasattr(self, 'layout'):
             # Wave 6: adaptive layout with pre-formatted timestamp
             time_str = self._format_timestamp(event)
@@ -722,6 +1327,75 @@ class TraceViewer:
             # Waves 3-5: use existing format_trace_event()
             formatted = format_trace_event(event, self.cw)
         self.term.write_event(formatted)
+
+    def _rerender_from_scrollback(self):
+        """Re-render the scroll region from the scrollback buffer.
+
+        Applies current client filters and search pattern to the
+        full scrollback, displaying the most recent events that fit
+        in the visible scroll region.
+
+        Does not modify shown_events (lifetime counter).
+
+        Called after:
+        - Closing the filter grid (apply or cancel)
+        - Unpausing
+        - Changing the search pattern
+        - Any filter change that should retroactively show/hide events
+        """
+        self.term.clear_scroll_region()
+        visible_lines = self.term.rows - 4  # status + hotkey bars
+
+        # Filter scrollback through current filters
+        filtered = self._build_filtered_snapshot()
+
+        # Display the last visible_lines events using write_at()
+        # for absolute row positioning (same pattern as
+        # _scroll_pause_buffer()).
+        display_start = max(0, len(filtered) - visible_lines)
+        display_events = filtered[display_start:]
+
+        prev_time = None
+        for idx, event in enumerate(display_events):
+            row = 3 + idx  # scroll region starts at row 3
+            if row >= self.term.rows - 1:
+                break
+            event = self._annotated_event(event)
+            if hasattr(self, 'layout'):
+                time_str = self._format_timestamp_for_scroll(
+                    event, prev_time)
+                text = self.layout.format_event(
+                    event, self.cw, time_str=time_str)
+            else:
+                text = format_trace_event(event, self.cw)
+            self.term.write_at(row, text)
+            prev_time = event.get("time", "")
+
+        # Update last_event_time so delta timestamps for new live events
+        # are relative to the last re-rendered event, providing visual
+        # continuity after filter changes.
+        if prev_time is not None:
+            self.last_event_time = prev_time
+
+    def _build_filtered_snapshot(self):
+        """Build a list of scrollback events filtered through current
+        client filters and search pattern.
+
+        Used by _rerender_from_scrollback(), enter-pause snapshot
+        building, grid-close-while-paused snapshot rebuilding, and
+        search-while-paused snapshot rebuilding.
+        """
+        filtered = []
+        for event in self.scrollback:
+            if not self._passes_client_filter(event):
+                continue
+            if self.search_pattern:
+                formatted = format_trace_event(event, self.cw)
+                if self.search_pattern.lower() not in \
+                   formatted.lower():
+                    continue
+            filtered.append(event)
+        return filtered
 
     def _display_comment(self, event):
         """Display a comment event (e.g. overflow warnings).
@@ -742,21 +1416,24 @@ class TraceViewer:
         - paused: show pause position and buffer info
         - default: show event counts, active filters, elapsed time
         """
-        if self.stats_mode:
+        if self.detail_visible:
+            seq = self._detail_event.get("seq", "?") \
+                if self._detail_event else "?"
+            text = "DETAIL | Event #{}".format(seq)
+        elif self.stats_mode:
             text = self._build_stats_text()
         elif self.paused:
-            snapshot_len = (len(self._scroll_snapshot)
-                            if self._scroll_snapshot else 0)
-            combined_len = snapshot_len + len(self.pause_buffer)
+            combined = self._get_combined_events()
+            combined_len = len(combined)
             if combined_len > 0:
-                pos = self.pause_scroll_pos + 1
-                visible_lines = self.term.rows - 3
+                visible_lines = self.term.rows - 4
                 new_count = max(0, combined_len - (
                     self.pause_scroll_pos + visible_lines))
-                text = "PAUSED | line {}/{} | {} new".format(
-                    pos, combined_len, new_count)
-                if combined_len >= (self.scrollback_limit +
-                                    self.pause_buffer_limit):
+                text = "PAUSED | event {}/{} | {} new".format(
+                    self.highlight_pos + 1, combined_len, new_count)
+                if (len(self.scrollback) >= self.scrollback_limit
+                        and len(self.pause_buffer)
+                        >= self.pause_buffer_limit):
                     text += " | buffer full"
             else:
                 text = "PAUSED"
@@ -772,6 +1449,8 @@ class TraceViewer:
             filter_parts = []
             if self.errors_filter:
                 filter_parts.append("ERRORS")
+            if self.shell_noise_filter:
+                filter_parts.append("init")
             if self.search_pattern:
                 filter_parts.append(
                     'search: "{}"'.format(self.search_pattern))
@@ -785,12 +1464,29 @@ class TraceViewer:
 
         self.term.write_status_bar(text)
 
+    def _draw_header(self):
+        """Render the column header at line 2 (between status and scroll)."""
+        if hasattr(self, 'layout'):
+            header = self.layout.format_header(self.cw)
+            self.term.write_at(2, header)
+
     def _draw_hotkey_bar(self):
         """Render the hotkey bar (bottom line).
 
-        Delegates to _build_hotkey_bar() for content, then writes
-        to the terminal's fixed bottom line.
+        When help is visible, shows help-specific navigation hints
+        instead of the main hotkeys. Otherwise delegates to
+        _build_hotkey_bar() for content.
         """
+        if self.detail_visible:
+            bar = "  Esc to dismiss"
+            self.term.write_hotkey_bar(
+                bar + " " * max(0, self.term.cols - len(bar)))
+            return
+        if self.help_visible:
+            bar = "  Up/Down  PgUp/PgDn  scroll  |  Any other key to dismiss"
+            self.term.write_hotkey_bar(
+                bar + " " * max(0, self.term.cols - len(bar)))
+            return
         text = self._build_hotkey_bar()
         self.term.write_hotkey_bar(text)
 
@@ -815,24 +1511,31 @@ class TraceViewer:
         else:
             errors_text = "[e] errors"
 
+        if self.shell_noise_filter:
+            init_text = "[i] INIT"
+        else:
+            init_text = "[i] init"
+
         full = ("  [Tab] filters  [/] search  {}  {}  "
-                "{}  [t] time  [?] help  [q] quit").format(
-                    pause_text, stats_text, errors_text)
+                "{}  {}  [c] clear  [S] save  [t] time  [?] help  "
+                "[q] quit").format(
+                    pause_text, stats_text, errors_text, init_text)
 
         if len(full) <= self.term.cols:
             return full
 
         # Abbreviated
-        short = "[Tab]filt [/]srch {} {} {} [t] [?] [q]".format(
+        short = "[Tab]filt [/]srch {} {} {} {} [c] [S] [t] [?] [q]".format(
             "[p]PAUS" if self.paused else "[p]",
             "[s]STAT" if self.stats_mode else "[s]",
-            "[e]ERR" if self.errors_filter else "[e]")
+            "[e]ERR" if self.errors_filter else "[e]",
+            "[i]INI" if self.shell_noise_filter else "[i]")
 
         if len(short) <= self.term.cols:
             return short
 
         # Minimal
-        return "[Tab] [/] [p] [s] [e] [t] [?] [q]"
+        return "[Tab] [/] [p] [s] [e] [i] [c] [t] [?] [q]"
 
     # ---- Filter methods ----
 
@@ -947,6 +1650,26 @@ class TraceViewer:
             if proc in self.disabled_procs:
                 return False
 
+        # Shell init noise filter (Fix 4): suppress SetVar/GetVar for
+        # known shell initialization variables.
+        if self.shell_noise_filter:
+            func = event.get("func", "")
+            if func in ("SetVar", "GetVar"):
+                args = event.get("args", "")
+                # Extract variable name from args format:
+                # SetVar: "varname",LOCAL
+                # GetVar: "varname",LOCAL
+                if args.startswith('"'):
+                    end_quote = args.find('"', 1)
+                    if end_quote > 1:
+                        varname = args[1:end_quote]
+                        if varname in _SHELL_INIT_VARS:
+                            return False
+            if func == "FindVar":
+                args = event.get("args", "")
+                if ",LV_ALIAS" in args:
+                    return False
+
         return True
 
     def _send_current_filter(self):
@@ -993,50 +1716,204 @@ class TraceViewer:
     def _toggle_pause(self):
         """Toggle pause state."""
         if self.paused:
-            # Unpause: catch up on buffered events
+            # Unpause: re-render from scrollback with current filters
             self.paused = False
-            self._scroll_snapshot = None  # [R3-SF7 fix]: clear snapshot
-            buf = self.pause_buffer
+            self._scroll_snapshot = None
             self.pause_buffer = []
             self.pause_scroll_pos = 0
-            if len(buf) > 0:
-                # Show catch-up indicator
-                self.term.write_event(
-                    self.cw.warning(
-                        "# {} buffered events".format(len(buf))))
-                last_replayed_time = None
-                for event in buf:
-                    # [R2-SF2 fix]: Re-filter through current filters.
-                    # Filters may have changed while paused (user opened
-                    # grid, changed filters, applied).
-                    if not self._passes_client_filter(event):
-                        continue
-                    if self.search_pattern:
-                        formatted = format_trace_event(event, self.cw)
-                        if self.search_pattern.lower() not in \
-                           formatted.lower():
-                            continue
-                    self.shown_events += 1
-                    self._display_event(event)
-                    last_replayed_time = event.get("time", "")
-                # [R3-MF2 fix]: Update last_event_time after replay so
-                # the next live event's delta is relative to the last
-                # replayed event, not whatever stale value was before
-                # the pause.
-                if last_replayed_time is not None:
-                    self.last_event_time = last_replayed_time
+            self.highlight_pos = 0
+            self._rerender_from_scrollback()
         else:
             self.paused = True
             self.pause_buffer = []
-            # [R3-SF7 fix]: Snapshot scrollback for stable iteration
-            self._scroll_snapshot = list(self.scrollback)
-            # [R3-SF8 fix]: Position at bottom so user sees latest
-            visible_lines = self.term.rows - 3
+            # Build filtered snapshot from full scrollback
+            self._scroll_snapshot = self._build_filtered_snapshot()
+            visible_lines = self.term.rows - 4
             total = len(self._scroll_snapshot)
             self.pause_scroll_pos = max(0, total - visible_lines)
+            self.highlight_pos = max(0, len(self._scroll_snapshot) - 1)
         self._status_dirty = True  # C2 fix
         self._draw_status_bar()
         self._draw_hotkey_bar()
+
+    def _get_combined_events(self):
+        """Build the combined event list (snapshot + filtered pause_buffer)."""
+        snapshot = self._scroll_snapshot or []
+        filtered_new = [
+            e for e in self.pause_buffer
+            if self._passes_client_filter(e)
+            and (not self.search_pattern
+                 or self.search_pattern.lower()
+                 in format_trace_event(e, self.cw).lower())
+        ]
+        return snapshot + filtered_new
+
+    def _init_highlight_at_bottom(self):
+        """Set highlight_pos to the last visible event.
+
+        Called when entering pause mode, and after any operation
+        that resets pause_scroll_pos to the bottom (help dismiss,
+        grid close, [i] toggle, search exit).
+        """
+        combined = self._get_combined_events()
+        visible_lines = self.term.rows - 4
+        if combined:
+            self.highlight_pos = min(
+                len(combined) - 1,
+                self.pause_scroll_pos + visible_lines - 1)
+        else:
+            self.highlight_pos = 0
+
+    def _move_highlight(self, delta):
+        """Move the highlight cursor by delta positions.
+
+        Adjusts the viewport (pause_scroll_pos) if the highlight
+        moves outside the visible window. Returns True if the
+        highlight was already at the last event and delta > 0
+        (signals auto-unpause).
+        """
+        combined = self._get_combined_events()
+        if not combined:
+            return True
+
+        old_pos = self.highlight_pos
+        new_pos = self.highlight_pos + delta
+        new_pos = max(0, min(new_pos, len(combined) - 1))
+
+        # Auto-unpause: highlight was at bottom and user pressed Down/PgDn
+        if delta > 0 and old_pos >= len(combined) - 1:
+            return True
+
+        self.highlight_pos = new_pos
+
+        # Adjust viewport to keep highlight visible
+        visible_lines = self.term.rows - 4
+        if self.highlight_pos < self.pause_scroll_pos:
+            self.pause_scroll_pos = self.highlight_pos
+        elif self.highlight_pos >= self.pause_scroll_pos + visible_lines:
+            self.pause_scroll_pos = self.highlight_pos - visible_lines + 1
+
+        max_pos = max(0, len(combined) - visible_lines)
+        self.pause_scroll_pos = max(0, min(self.pause_scroll_pos, max_pos))
+
+        self._scroll_pause_buffer(0)
+        return False
+
+    def _format_detail_status(self, status):
+        """Format status code for detail view display."""
+        if status == "O":
+            return "OK"
+        elif status == "E":
+            return "Error"
+        return status
+
+    def _build_detail_lines(self, event):
+        """Build detail view content lines for an event.
+
+        Returns a list of strings for display in the detail overlay.
+        Long field values are soft-wrapped at the terminal width.
+        """
+        ev = self._annotated_event(event)
+        lines = []
+        lines.append("")
+        lines.append("  Event #{}".format(ev.get("seq", "?")))
+        lines.append("  " + "\u2500" * min(34, self.term.cols - 4))
+        lines.append("")
+
+        fields = [
+            ("Time", ev.get("time", "")),
+            ("Function", "{}.{}".format(
+                ev.get("lib", ""), ev.get("func", ""))),
+            ("Task", ev.get("task", "")),
+            ("Args", ev.get("args", "")),
+            ("Result", ev.get("retval", "")),
+            ("Status", self._format_detail_status(
+                ev.get("status", "-"))),
+        ]
+
+        # "  " + 10-char label + " " = 13 chars before value
+        indent = 13
+        wrap_width = max(self.term.cols - indent, 20)
+
+        for label, value in fields:
+            if len(value) <= wrap_width:
+                lines.append("  {:<10s} {}".format(label, value))
+            else:
+                lines.append("  {:<10s} {}".format(
+                    label, value[:wrap_width]))
+                remaining = value[wrap_width:]
+                while remaining:
+                    chunk = remaining[:wrap_width]
+                    remaining = remaining[wrap_width:]
+                    lines.append(" " * indent + chunk)
+
+        lines.append("")
+        return lines
+
+    def _detail_scroll_max(self):
+        """Return the maximum detail scroll position."""
+        available = self.term.rows - 4
+        if len(self._detail_lines) > available:
+            available -= 1
+        return max(0, len(self._detail_lines) - available)
+
+    def _render_detail(self):
+        """Render the detail overlay at the current scroll position."""
+        # Clear the column header at row 2 (visually confusing behind
+        # the detail overlay)
+        self.term.write_at(2, " " * self.term.cols)
+        self.term.clear_scroll_region()
+        available = self.term.rows - 4
+        needs_indicator = len(self._detail_lines) > available
+
+        if needs_indicator:
+            available -= 1
+
+        start = self._detail_scroll_pos
+        end = start + available
+        visible = self._detail_lines[start:end]
+
+        for i, line in enumerate(visible):
+            row = 3 + i
+            if row >= self.term.rows - 1:
+                break
+            self.term.write_at(row, line)
+
+        if needs_indicator:
+            indicator = "  [lines {}-{} of {}]".format(
+                start + 1,
+                min(start + available, len(self._detail_lines)),
+                len(self._detail_lines))
+            self.term.write_at(3 + available, indicator)
+
+    def _open_detail_view(self):
+        """Open the detail view overlay for the highlighted event."""
+        combined = self._get_combined_events()
+        if not combined:
+            return
+        idx = max(0, min(self.highlight_pos, len(combined) - 1))
+        event = combined[idx]
+        self._detail_event = event
+        self._detail_lines = self._build_detail_lines(event)
+        self._detail_scroll_pos = 0
+        self.detail_visible = True
+        self._render_detail()
+        self._draw_status_bar()
+        self._draw_hotkey_bar()
+
+    def _dismiss_detail(self):
+        """Dismiss the detail overlay and restore the scrollback view."""
+        self.detail_visible = False
+        self._detail_event = None
+        self._detail_lines = []
+        self._detail_scroll_pos = 0
+        self.term.clear_scroll_region()
+        self.term.setup_regions()
+        self._draw_header()  # Restore column header at row 2
+        self._draw_hotkey_bar()
+        self._draw_status_bar()
+        # Re-render pause scrollback with highlight preserved
+        self._scroll_pause_buffer(0)
 
     def _scroll_pause_buffer(self, delta):
         """Scroll through combined scrollback snapshot and pause buffer.
@@ -1045,13 +1922,19 @@ class TraceViewer:
         pause_buffer (live arrivals) to avoid mutation during render.
         [R3-MF1 fix]: Delta timestamps are computed sequentially
         across the visible window, not from stale last_event_time.
-        """
-        snapshot = self._scroll_snapshot or []
-        combined = snapshot + self.pause_buffer
-        if not combined:
-            return
 
-        visible_lines = self.term.rows - 3
+        Returns True if the scroll position is at the bottom after
+        scrolling (used by auto-unpause logic).
+        """
+        combined = self._get_combined_events()
+        if not combined:
+            return True  # empty buffer counts as "at bottom"
+
+        # Clamp highlight_pos to valid range (defense-in-depth)
+        self.highlight_pos = max(
+            0, min(self.highlight_pos, len(combined) - 1))
+
+        visible_lines = self.term.rows - 4
         max_pos = max(0, len(combined) - visible_lines)
 
         self.pause_scroll_pos += delta
@@ -1078,7 +1961,7 @@ class TraceViewer:
 
         for i in range(start, end):
             event = combined[i]
-            row = 2 + (i - start)
+            row = 3 + (i - start)
 
             # [R3-SF10 fix]: Show truncation notice at top.
             # This replaces the first event row when scrolled to
@@ -1093,6 +1976,7 @@ class TraceViewer:
 
             if row >= self.term.rows - 1:
                 break
+            event = self._annotated_event(event)
             if hasattr(self, 'layout'):
                 time_str = self._format_timestamp_for_scroll(
                     event, prev_time)
@@ -1100,10 +1984,21 @@ class TraceViewer:
                     event, self.cw, time_str=time_str)
             else:
                 formatted = format_trace_event(event, self.cw)
+
+            # Highlight the selected row with reverse video
+            if i == self.highlight_pos:
+                vis_len = _visible_len(formatted)
+                pad = max(0, self.term.cols - vis_len)
+                # Re-apply reverse video after every RESET in the formatted string
+                # so the highlight bar spans the full row width
+                highlighted = formatted.replace("\033[0m", "\033[0m\033[7m")
+                formatted = "\033[7m" + highlighted + " " * pad + "\033[0m"
+
             self.term.write_at(row, formatted)
             prev_time = event.get("time", "")
 
         self._draw_status_bar()
+        return self.pause_scroll_pos >= max_pos
 
     def _enter_search_mode(self):
         """Replace hotkey bar with search input.
@@ -1163,6 +2058,17 @@ class TraceViewer:
             self.search_pattern = None
         self._draw_status_bar()
         self._draw_hotkey_bar()
+        if self.paused:
+            # Rebuild snapshot with updated search filter, re-render
+            # in place so arrow-key scrolling remains consistent.
+            self._scroll_snapshot = self._build_filtered_snapshot()
+            visible_lines = self.term.rows - 4
+            total = len(self._scroll_snapshot)
+            self.pause_scroll_pos = max(0, total - visible_lines)
+            self._init_highlight_at_bottom()
+            self._scroll_pause_buffer(0)
+        else:
+            self._rerender_from_scrollback()
 
     def _build_stats_text(self):
         """Build statistics string for status bar."""
@@ -1237,9 +2143,7 @@ class TraceViewer:
     def _show_help(self):
         """Show the help overlay in the scroll region."""
         self.help_visible = True
-        self.term.clear_scroll_region()
-
-        help_text = [
+        self._help_lines = [
             "",
             "  atrace Interactive Trace Viewer",
             "  ================================",
@@ -1251,30 +2155,67 @@ class TraceViewer:
             "    s       Toggle statistics display in status bar",
             "    t       Cycle timestamp: absolute / relative / delta",
             "    e       Toggle ERRORS filter (show only errors)",
+            "    i       Toggle shell init noise filter (default: on)",
+            "    c       Clear all events and reset counters",
+            "    S       Save scrollback to log file",
             "    ?       Toggle this help screen",
             "    q       Stop trace and exit viewer",
             "",
-            "  While paused:",
-            "    Up/Down     Scroll through buffered events",
-            "    PgUp/PgDn   Scroll one page",
+            "  Scrollback:",
+            "    Up/PgUp     Scroll up (auto-pauses if live)",
+            "    Down/PgDn   Scroll down (resumes at bottom)",
+            "    Enter       Show full event details (when paused)",
             "",
             "  While in filter grid:",
-            "    1-9, a-z    Toggle individual items",
+            "    Up/Down     Select item",
+            "    Space       Toggle selected item",
+            "    Left/Right  Switch category",
             "    A           Enable all in current category",
             "    N           Disable all in current category",
-            "    Left/Right  Switch category",
             "    Enter       Apply filters and return to stream",
+            "    Esc         Cancel without applying",
             "",
-            "  Process filtering is client-side only (C5).",
-            "  Press any key to dismiss this help.",
+            "  Process filtering is client-side only.",
         ]
+        self._help_scroll_pos = 0
+        self._render_help()
+        self._draw_hotkey_bar()
 
-        # Render into scroll region area
-        for i, line in enumerate(help_text):
-            row = i + 2
+    def _help_scroll_max(self):
+        """Return the maximum help scroll position."""
+        available = self.term.rows - 4
+        # Reserve a row for the position indicator when help is truncated
+        if len(self._help_lines) > available:
+            available -= 1
+        return max(0, len(self._help_lines) - available)
+
+    def _render_help(self):
+        """Render the help overlay at the current scroll position."""
+        self.term.clear_scroll_region()
+        available = self.term.rows - 4  # status + header at top, hotkey at bottom
+        needs_indicator = len(self._help_lines) > available
+
+        # Reserve a row for the position indicator when help is truncated
+        if needs_indicator:
+            available -= 1
+
+        start = self._help_scroll_pos
+        end = start + available
+        visible = self._help_lines[start:end]
+
+        for i, line in enumerate(visible):
+            row = 3 + i
             if row >= self.term.rows - 1:
                 break
             self.term.write_at(row, line)
+
+        # Show position indicator on the reserved row
+        if needs_indicator:
+            indicator = "  [lines {}-{} of {}]".format(
+                start + 1,
+                min(start + available, len(self._help_lines)),
+                len(self._help_lines))
+            self.term.write_at(3 + available, indicator)
 
     def _restore_grid_state(self):
         """Restore toggle grid item states from saved disabled_* sets.
@@ -1368,12 +2309,14 @@ class TraceViewer:
         from .trace_grid import ToggleGrid
         self.grid = ToggleGrid(
             self.discovered_libs, initial_funcs,
-            self.discovered_procs, initial_lib=initial_lib)
+            self.discovered_procs, initial_lib=initial_lib,
+            daemon_disabled_funcs=self.daemon_disabled_funcs)
         if initial_lib:
             # C5 fix (R4): Set focused_lib_index to match initial lib
             for i, item in enumerate(self.grid.lib_items):
                 if item["name"] == initial_lib:
                     self.grid.focused_lib_index = i
+                    self.grid.cursor_pos[0] = i
                     break
 
         # Snapshot disabled_funcs so cancel can restore.
@@ -1387,6 +2330,7 @@ class TraceViewer:
         self._restore_grid_state()
         self.grid_visible = True
         self.grid.render(self.term, self.cw)
+        self._draw_hotkey_bar()
 
     def _handle_grid_key(self, key):
         """Handle keypress while toggle grid is visible."""
@@ -1399,38 +2343,26 @@ class TraceViewer:
             self.term.clear_scroll_region()
             self.term.setup_regions()
             self._draw_hotkey_bar()
-            # Replay events buffered while grid was visible
-            # [SF7 fix]: Only replay if NOT paused.
             if not self.paused:
-                buf = self.pause_buffer
                 self.pause_buffer = []
                 self.pause_scroll_pos = 0
-                if buf:
-                    last_replayed_time = None
-                    for event in buf:
-                        # [MF3 fix]: Re-filter events through
-                        # current filters.
-                        if not self._passes_client_filter(event):
-                            continue
-                        if self.search_pattern:
-                            formatted = format_trace_event(
-                                event, self.cw)
-                            if self.search_pattern.lower() not in \
-                               formatted.lower():
-                                continue
-                        self.shown_events += 1
-                        self._display_event(event)
-                        last_replayed_time = event.get("time", "")
-                    # [R3-MF2 fix]: Update last_event_time after
-                    # replay so the next live event's delta is
-                    # relative to the last replayed event.
-                    if last_replayed_time is not None:
-                        self.last_event_time = last_replayed_time
+                self._rerender_from_scrollback()
+            else:
+                # Grid closed while paused: rebuild _scroll_snapshot
+                # with new filter state so scroll-back view is consistent.
+                # _scroll_pause_buffer() filters pause_buffer internally
+                # and clamps pause_scroll_pos, so just set a large value
+                # to scroll to the bottom.
+                self._scroll_snapshot = self._build_filtered_snapshot()
+                self.pause_scroll_pos = len(self._scroll_snapshot) + \
+                    len(self.pause_buffer)
+                self._init_highlight_at_bottom()
+                self._scroll_pause_buffer(0)
             return
 
-        if key == "A":
+        if key in ("A", "a"):
             self.grid.all_on()
-        elif key == "N":
+        elif key in ("N", "n"):
             self.grid.none()
         elif isinstance(key, tuple) and key[0] == "esc":
             seq = key[1]
@@ -1447,35 +2379,22 @@ class TraceViewer:
                 self.term.clear_scroll_region()
                 self.term.setup_regions()
                 self._draw_hotkey_bar()
-                # Replay events buffered while grid was visible
-                # [SF7 fix]: Only replay if NOT paused.
                 if not self.paused:
-                    buf = self.pause_buffer
                     self.pause_buffer = []
                     self.pause_scroll_pos = 0
-                    if buf:
-                        last_replayed_time = None
-                        for event in buf:
-                            if not self._passes_client_filter(event):
-                                continue
-                            if self.search_pattern:
-                                formatted = format_trace_event(
-                                    event, self.cw)
-                                if self.search_pattern.lower() \
-                                   not in formatted.lower():
-                                    continue
-                            self.shown_events += 1
-                            self._display_event(event)
-                            last_replayed_time = event.get(
-                                "time", "")
-                        if last_replayed_time is not None:
-                            self.last_event_time = \
-                                last_replayed_time
+                    self._rerender_from_scrollback()
+                else:
+                    # Re-render pause scroll view (snapshot unchanged
+                    # since Escape = no filter changes)
+                    self._init_highlight_at_bottom()
+                    self._scroll_pause_buffer(0)
                 return
             elif seq == "[D":    # Left arrow
                 self.grid.active_category = max(
                     0, self.grid.active_category - 1)
             elif seq == "[C":  # Right arrow
+                # Sync focused_lib_index with LIBRARIES cursor
+                self.grid.focused_lib_index = self.grid.cursor_pos[0]
                 new_cat = min(
                     len(self.grid.categories) - 1,
                     self.grid.active_category + 1)
@@ -1499,21 +2418,17 @@ class TraceViewer:
                                 item["enabled"] = (
                                     item["name"]
                                     not in disabled_for_lib)
-        elif isinstance(key, str) and len(key) == 1:
-            # Check if toggling a library in LIBRARIES category
+                        self.grid.clamp_cursor(1)  # FUNCTIONS
+            elif seq == "[A":  # Up arrow
+                self.grid.move_cursor(-1)
+            elif seq == "[B":  # Down arrow
+                self.grid.move_cursor(1)
+        elif key == " ":  # Space: toggle at cursor
             if self.grid.categories[self.grid.active_category] \
                     == "LIBRARIES":
-                # C5 fix (R4): Update focused_lib_index to the item
-                # the user just interacted with, so FUNCTIONS column
-                # shows that library's functions when they navigate
-                # right.
-                keys = "123456789abcdefghijklmnopqrstuvwxyz"
-                idx = keys.find(key.lower())
-                if 0 <= idx < len(self.grid.lib_items):
-                    self.grid.focused_lib_index = idx
-                self.grid.toggle_item(key)
-            else:
-                self.grid.toggle_item(key)
+                self.grid.focused_lib_index = \
+                    self.grid.cursor_pos[self.grid.active_category]
+            self.grid.toggle_at_cursor()
 
         # Re-render
         self.grid.render(self.term, self.cw)
@@ -1562,6 +2477,39 @@ class TraceViewer:
                         "-FUNC=" + ",".join(
                             sorted(all_disabled_funcs)))
                     filter_cmd = " ".join(parts)
+
+            # Fix 3: Send ENABLE/DISABLE for daemon-disabled functions that
+            # the user has toggled. Uses user_enabled_funcs to track what
+            # the user has explicitly enabled at the daemon level.
+            enable_funcs = []
+            disable_funcs = []
+
+            selected_lib = self.grid.selected_lib or ""
+            for item in self.grid.func_items:
+                fname = item["name"]
+                qualified = "{}.{}".format(selected_lib, fname)
+                if item["enabled"] and qualified in self.daemon_disabled_funcs:
+                    # User wants it ON but daemon has it OFF -> ENABLE
+                    enable_funcs.append(fname)
+                elif not item["enabled"] and qualified in self.user_enabled_funcs:
+                    # User previously enabled it, now wants it OFF -> DISABLE
+                    disable_funcs.append(fname)
+
+            if enable_funcs:
+                filter_cmd += " ENABLE=" + ",".join(enable_funcs)
+                # Update tracking (use "lib.func" format)
+                for f in enable_funcs:
+                    qualified = "{}.{}".format(selected_lib, f)
+                    self.daemon_disabled_funcs.discard(qualified)
+                    self.user_enabled_funcs.add(qualified)
+
+            if disable_funcs:
+                filter_cmd += " DISABLE=" + ",".join(disable_funcs)
+                # Update tracking (use "lib.func" format)
+                for f in disable_funcs:
+                    qualified = "{}.{}".format(selected_lib, f)
+                    self.daemon_disabled_funcs.add(qualified)
+                    self.user_enabled_funcs.discard(qualified)
 
             if filter_cmd:
                 if self.errors_filter:
@@ -1640,11 +2588,22 @@ class TraceViewer:
         get_lib_color()) that has not been written yet.
         """
         self.term._update_size()
+        if self.term.rows < 5:
+            # Terminal too short; reset DECSTBM to avoid invalid sequences
+            self.term._write("\033[r")
+            return
         if hasattr(self, 'layout'):
             self.layout = ColumnLayout(self.term.cols)
         self.term.setup_regions()
         self._draw_status_bar()
+        if not self.detail_visible:
+            self._draw_header()
         self._draw_hotkey_bar()
+        if self.detail_visible:
+            self._detail_lines = self._build_detail_lines(
+                self._detail_event)
+            self._detail_scroll_pos = 0
+            self._render_detail()
         if self.grid_visible:
             self.grid.render(self.term, self.cw)
 
