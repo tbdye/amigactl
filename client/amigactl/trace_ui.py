@@ -440,30 +440,61 @@ class HandleResolver:
     def __init__(self, max_size=256):
         self._cache = {}       # hex_str -> path
         self._order = []       # insertion order for FIFO eviction
+        self._close_annotations = {}  # seq -> path (pre-recorded at Close time)
+        self._close_order = []        # insertion order for FIFO eviction
         self._max_size = max_size
 
     def clear(self):
         """Clear all cached handles. Called at trace session start."""
         self._cache.clear()
         self._order.clear()
+        self._close_annotations.clear()
+        self._close_order.clear()
 
     def track(self, event):
-        """Track an event, caching handle->path for Open and Lock.
+        """Track an event, updating the handle-to-path cache.
 
-        Call this for every event, before formatting. Only Open and
-        Lock with non-NULL return values are cached.
+        Call this for every event, before formatting.
+
+        - Open/Lock with non-NULL return values populate the cache.
+        - Close events snapshot the annotation (handle -> path) into
+          ``_close_annotations`` keyed by sequence number, then evict
+          the handle from the live cache so subsequent Opens at the
+          same address create a fresh mapping.
 
         Args:
             event: Parsed event dict with keys: func, retval, args,
-                   status.
+                   status, seq.
         """
         func = event.get("func", "")
         retval = event.get("retval", "")
         status = event.get("status", "-")
         args = event.get("args", "")
 
-        # Only cache successful operations (status O) with non-NULL
-        # return values that look like hex pointers
+        # --- Close: snapshot annotation, then evict handle ---
+        if func == "Close":
+            hex_val = self._extract_hex(args, "fh=")
+            if hex_val and hex_val in self._cache:
+                seq = event.get("seq", "")
+                path = self._cache[hex_val]
+
+                # FIFO eviction on close_annotations
+                if len(self._close_annotations) >= self._max_size and \
+                        seq not in self._close_annotations:
+                    oldest = self._close_order.pop(0)
+                    self._close_annotations.pop(oldest, None)
+
+                self._close_annotations[seq] = path
+                if seq not in self._close_order:
+                    self._close_order.append(seq)
+
+                # Evict from live cache
+                del self._cache[hex_val]
+                if hex_val in self._order:
+                    self._order.remove(hex_val)
+            return
+
+        # --- Open/Lock: populate cache ---
         if func not in ("Open", "Lock"):
             return
         if status != "O":
@@ -491,16 +522,27 @@ class HandleResolver:
     def annotate(self, event, consume=False):
         """Return annotation string for Close/CurrentDir, or None.
 
+        For Close events, looks up the pre-recorded annotation saved
+        by ``track()`` (keyed by sequence number) first, then falls
+        back to the live cache for backwards compatibility with events
+        that were not fed through ``track()``.
+
         Args:
             event: Parsed event dict.
             consume: If True, remove the cache entry for Close events.
-                     Used during eager annotation (process time) to
-                     prevent stale entries from persisting after Close.
+                     Retained for backwards compatibility but largely
+                     superseded by track()-based eviction.
         """
         func = event.get("func", "")
         args = event.get("args", "")
 
         if func == "Close":
+            # Primary path: pre-recorded annotation from track()
+            seq = event.get("seq", "")
+            if seq and seq in self._close_annotations:
+                return self._close_annotations[seq]
+
+            # Fallback: live cache lookup (for events not tracked)
             hex_val = self._extract_hex(args, "fh=")
             if hex_val and hex_val in self._cache:
                 path = self._cache[hex_val]

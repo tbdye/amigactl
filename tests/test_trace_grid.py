@@ -98,9 +98,9 @@ class TestToggleGrid:
                 assert item["enabled"], \
                     "{} should start checked".format(item["name"])
 
-    def test_freemem_not_in_noise(self):
-        """FreeMem is NOT in the noise function set (M3 fix)."""
-        assert "FreeMem" not in ToggleGrid._NOISE_FUNCS
+    def test_freemem_in_noise(self):
+        """FreeMem IS in the noise function set (Phase 5)."""
+        assert "FreeMem" in ToggleGrid._NOISE_FUNCS
 
     def test_toggle_at_cursor(self):
         """Toggling an item flips its enabled state."""

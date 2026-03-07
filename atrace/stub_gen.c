@@ -81,7 +81,7 @@ static const UWORD stub_prefix[] = {
     /*122: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)  = -126          */
 
     /* === Fill event entry === */
-    /*126: */ 0xED82,                   /* asl.l #6, d2                         */
+    /*126: */ 0xEF82,                   /* asl.l #7, d2                         */
     /*128: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #RING_ENTRIES_ADDR, a5      */
     /*134: */ 0xDBC2,                   /* adda.l d2, a5                        */
     /*136: */ 0x2B43, 0x0004,           /* move.l d3, 4(a5)  entry->sequence   */
@@ -247,7 +247,7 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[28];    /* max variable region: 4 args + argcount + string w/ null check + valid = 28 words */
+    UWORD var_buf[30];    /* Worst case 28 words (4-arg + string + valid). Buffer 30 for 2 words margin. */
     int var_words;
     int total_bytes;
     int alloc_size;
@@ -296,7 +296,7 @@ int stub_generate_and_install(
         /* NULL check: if a0 == 0, skip to clr.b (displacement = 8 bytes) */
         var_buf[var_words++] = 0x4A88;                /* tst.l a0 */
         var_buf[var_words++] = 0x6708;                /* beq.s +8 (skip to clr.b) */
-        var_buf[var_words++] = 0x7016;                /* moveq #22, d0 */
+        var_buf[var_words++] = 0x703A;                /* moveq #58, d0 */
         var_buf[var_words++] = 0x12D8;                /* move.b (a0)+, (a1)+ */
         var_buf[var_words++] = 0x57C8;                /* dbeq d0, .strcopy */
         var_buf[var_words++] = 0xFFFC;                /* displacement -4 */

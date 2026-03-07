@@ -18,7 +18,7 @@
 unsigned long __stack = 8192;
 
 /* Compile-time struct size verification */
-typedef char assert_event_size [(sizeof(struct atrace_event) == 64) ? 1 : -1];
+typedef char assert_event_size [(sizeof(struct atrace_event) == 128) ? 1 : -1];
 typedef char assert_patch_size [(sizeof(struct atrace_patch) == 40) ? 1 : -1];
 typedef char assert_ringbuf_hdr[(sizeof(struct atrace_ringbuf) == 16) ? 1 : -1];
 typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 84) ? 1 : -1];
@@ -62,6 +62,18 @@ static const char *noise_func_names[] = {
     "ReleaseSemaphore",
     "AllocMem",
     "OpenLibrary",
+    /* Phase 5 additions */
+    "FreeMem",
+    "AllocVec",
+    "FreeVec",
+    "Read",
+    "Write",
+    /* Phase 5 device I/O additions */
+    "DoIO",
+    "SendIO",
+    "WaitIO",
+    "AbortIO",
+    "CheckIO",
     NULL  /* sentinel */
 };
 
@@ -177,7 +189,7 @@ static struct atrace_anchor *find_anchor(void)
 /* ---- Patch name lookup ---- */
 
 /* Search atrace_libs[]/func_info[] for a case-insensitive match on
- * function name. Returns the global patch index (0-29), or -1 if
+ * function name. Returns the global patch index (0-49), or -1 if
  * not found. The global index is computed sequentially through all
  * libraries' functions in order, matching the installation order
  * in do_install(). The anchor parameter is unused but kept for
@@ -379,6 +391,9 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     return RETURN_OK;
 }
 
+/* Short library names for STATUS display, indexed by lib_id */
+static const char *lib_short_names[] = { "exec", "dos", "intuition" };
+
 /* ---- STATUS: print current state ---- */
 
 static int do_status(struct atrace_anchor *anchor)
@@ -417,9 +432,9 @@ static int do_status(struct atrace_anchor *anchor)
             struct lib_info *lib = &atrace_libs[li];
             for (fi = 0; fi < (int)lib->func_count; fi++) {
                 if (idx < (int)anchor->patch_count) {
-                    printf("  Patch %2d: %s.%-18s %s\n",
+                    printf("  Patch %2d: %-10s %-18s %s\n",
                            idx,
-                           li == LIB_EXEC ? "exec" : "dos",
+                           lib_short_names[lib->lib_id],
                            lib->funcs[fi].name,
                            anchor->patches[idx].enabled ?
                                "ENABLED" : "DISABLED");

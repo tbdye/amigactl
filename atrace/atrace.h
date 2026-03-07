@@ -20,9 +20,10 @@
 /* Library IDs (index into lib_info table) */
 #define LIB_EXEC    0
 #define LIB_DOS     1
+#define LIB_INTUITION  2
 
-/* Event entry size -- must be 64 bytes for shift-based indexing */
-#define ATRACE_EVENT_SIZE   64
+/* Event entry size -- must be 128 bytes for shift-based indexing */
+#define ATRACE_EVENT_SIZE   128
 
 /* ---- struct atrace_anchor ----
  *
@@ -95,9 +96,9 @@ struct atrace_ringbuf {
  *   retval:       offset 28,  4 bytes (ULONG)
  *   arg_count:    offset 32,  1 byte  (UBYTE)
  *   padding:      offset 33,  1 byte  (UBYTE)
- *   string_data:  offset 34, 24 bytes (char[24])
- *   reserved:     offset 58,  6 bytes (UBYTE[6])
- *   Total: 64 bytes
+ *   string_data:  offset 34, 60 bytes (char[60])
+ *   reserved:     offset 94, 34 bytes (UBYTE[34])
+ *   Total: 128 bytes
  */
 struct atrace_event {
     volatile UBYTE valid;
@@ -109,8 +110,8 @@ struct atrace_event {
     ULONG retval;
     UBYTE arg_count;
     UBYTE padding;
-    char  string_data[24];
-    UBYTE reserved[6];
+    char  string_data[60];
+    UBYTE reserved[34];
 };
 
 /* ---- struct atrace_patch ----

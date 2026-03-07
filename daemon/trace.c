@@ -40,6 +40,7 @@
 #define ERR_CHECK_NONE      4   /* never an error (GetMsg NULL is normal) */
 #define ERR_CHECK_RC        5   /* return code: error when rc != 0 */
 #define ERR_CHECK_NEGATIVE  6   /* error when (LONG)retval < 0 (GetVar: -1=fail, >=0=count) */
+#define ERR_CHECK_NEG1      7   /* error when retval == 0xFFFFFFFF (-1 unsigned) */
 
 /* Return value semantics -- how to display and classify the result */
 #define RET_PTR         0   /* pointer: NULL=fail, non-zero=hex addr */
@@ -53,7 +54,8 @@
 #define RET_OLD_LOCK    8   /* old lock from CurrentDir: NULL=ok, non-zero=hex */
 #define RET_PTR_OPAQUE  9   /* opaque pointer: OK for non-NULL, NULL for fail */
 #define RET_EXECUTE    10  /* Execute(): show raw value, neutral status */
-/* Next available: 11 */
+#define RET_IO_LEN     11   /* I/O byte count: -1=error, 0=EOF(Read), >0=bytes */
+/* Next available: 12 */
 
 struct trace_func_entry {
     const char *lib_name;
@@ -66,7 +68,7 @@ struct trace_func_entry {
 };
 
 static const struct trace_func_entry func_table[] = {
-    /* exec.library functions (12) */
+    /* exec.library functions (20) */
     { "exec", "FindPort",         LIB_EXEC, -390, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "FindResident",     LIB_EXEC,  -96, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "FindSemaphore",    LIB_EXEC, -594, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
@@ -79,7 +81,15 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "ObtainSemaphore",  LIB_EXEC, -564, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "ReleaseSemaphore", LIB_EXEC, -570, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "AllocMem",         LIB_EXEC, -198, ERR_CHECK_NULL,  0, RET_PTR      },
-    /* dos.library functions (18) */
+    { "exec", "DoIO",             LIB_EXEC, -456, ERR_CHECK_NZERO, 0, RET_NZERO_ERR},
+    { "exec", "SendIO",           LIB_EXEC, -462, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "WaitIO",           LIB_EXEC, -474, ERR_CHECK_NZERO, 0, RET_NZERO_ERR},
+    { "exec", "AbortIO",          LIB_EXEC, -480, ERR_CHECK_ANY,   0, RET_NZERO_ERR},
+    { "exec", "CheckIO",          LIB_EXEC, -468, ERR_CHECK_ANY,   0, RET_PTR      },
+    { "exec", "FreeMem",          LIB_EXEC, -210, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "AllocVec",         LIB_EXEC, -684, ERR_CHECK_NULL,  0, RET_PTR      },
+    { "exec", "FreeVec",          LIB_EXEC, -690, ERR_CHECK_VOID,  0, RET_VOID     },
+    /* dos.library functions (20) */
     { "dos", "Open",              LIB_DOS,   -30, ERR_CHECK_NULL,  1, RET_PTR      },
     { "dos", "Close",             LIB_DOS,   -36, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Lock",              LIB_DOS,   -84, ERR_CHECK_NULL,  1, RET_LOCK     },
@@ -98,6 +108,19 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "SystemTagList",     LIB_DOS,  -606, ERR_CHECK_RC,    1, RET_RC       },
     { "dos", "AddDosEntry",       LIB_DOS,  -678, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "CurrentDir",        LIB_DOS,  -126, ERR_CHECK_VOID,  0, RET_OLD_LOCK },
+    { "dos", "Read",              LIB_DOS,   -42, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
+    { "dos", "Write",             LIB_DOS,   -48, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
+    /* intuition.library functions (10) */
+    { "intuition", "OpenWindow",     LIB_INTUITION, -204, ERR_CHECK_NULL, 0, RET_PTR      },
+    { "intuition", "CloseWindow",    LIB_INTUITION,  -72, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "OpenScreen",     LIB_INTUITION, -198, ERR_CHECK_NULL, 0, RET_PTR      },
+    { "intuition", "CloseScreen",    LIB_INTUITION,  -66, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "ActivateWindow", LIB_INTUITION, -450, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "WindowToFront",  LIB_INTUITION, -312, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "WindowToBack",   LIB_INTUITION, -306, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "ModifyIDCMP",    LIB_INTUITION, -150, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "intuition", "OpenWorkBench",  LIB_INTUITION, -210, ERR_CHECK_ANY,  0, RET_PTR      },
+    { "intuition", "CloseWorkBench", LIB_INTUITION,  -78, ERR_CHECK_ANY,  0, RET_BOOL_DOS },
 };
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
@@ -189,6 +212,18 @@ static const char *noise_func_names[] = {
     "ReleaseSemaphore",
     "AllocMem",
     "OpenLibrary",
+    /* Phase 5 additions */
+    "FreeMem",
+    "AllocVec",
+    "FreeVec",
+    "Read",
+    "Write",
+    /* Phase 5 device I/O additions */
+    "DoIO",
+    "SendIO",
+    "WaitIO",
+    "AbortIO",
+    "CheckIO",
     NULL
 };
 
@@ -286,6 +321,7 @@ static int trace_filter_match(struct trace_state *ts,
 static const char *format_access_mode(LONG mode);
 static const char *format_lock_type(LONG type);
 static void format_memf_flags(ULONG flags, char *buf, int bufsz);
+static void format_idcmp_flags(ULONG flags, char *buf, int bufsz);
 static void format_args(struct atrace_event *ev,
                         const struct trace_func_entry *fe,
                         char *buf, int bufsz);
@@ -304,6 +340,8 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
 static int trace_cmd_enable(struct client *c, const char *args);
 static int trace_cmd_disable(struct client *c, const char *args);
 static void trace_run_cleanup(struct client *c);
+static int emit_trace_header(LONG fd, struct trace_state *ts,
+                              const char *run_command);
 
 /* ---- Initialization / cleanup ---- */
 
@@ -1201,6 +1239,11 @@ static int trace_filter_match(struct trace_state *ts,
                 if ((LONG)ev->retval >= 0)
                     return 0;
                 break;
+            case ERR_CHECK_NEG1:
+                /* Error when retval == -1 (0xFFFFFFFF) */
+                if (ev->retval != 0xFFFFFFFF)
+                    return 0;
+                break;
             }
         }
         /* Unknown function: show unconditionally in ERRORS mode */
@@ -1232,6 +1275,42 @@ static const char *format_lock_type(LONG type)
     }
 }
 
+/* Safe flag-name appender for format_*_flags functions.
+ * Appends "|name" (or just "name" if at start of buffer).
+ * Returns 1 if anything was written, 0 if buffer is full. */
+static int append_flag(char *buf, char **pp, int *rem, const char *name)
+{
+    char *p = *pp;
+    int remaining = *rem;
+
+    if (remaining <= 1)
+        return 0;
+
+    if (p != buf) {
+        *p++ = '|';
+        remaining--;
+        if (remaining <= 1) {
+            *pp = p;
+            *rem = remaining;
+            return 0;
+        }
+    }
+
+    {
+        int n = snprintf(p, remaining, "%s", name);
+        if (n >= remaining)
+            n = remaining - 1;
+        if (n > 0) {
+            p += n;
+            remaining -= n;
+        }
+    }
+
+    *pp = p;
+    *rem = remaining;
+    return 1;
+}
+
 /* Format AllocMem requirements flags */
 static void format_memf_flags(ULONG flags, char *buf, int bufsz)
 {
@@ -1249,9 +1328,7 @@ static void format_memf_flags(ULONG flags, char *buf, int bufsz)
 
 #define MEMF_FLAG(bit, name) \
     if (flags & (bit)) { \
-        if (p != buf) { *p++ = '|'; remaining--; } \
-        p += snprintf(p, remaining, name); \
-        remaining = bufsz - (int)(p - buf); \
+        append_flag(buf, &p, &remaining, name); \
         known |= (bit); \
     }
 
@@ -1270,17 +1347,77 @@ static void format_memf_flags(ULONG flags, char *buf, int bufsz)
 
     /* Show any unknown bits */
     if (flags & ~known) {
-        if (p != buf) { *p++ = '|'; remaining--; }
-        snprintf(p, remaining, "0x%lx", (unsigned long)(flags & ~known));
+        char tmp[20];
+        snprintf(tmp, sizeof(tmp), "0x%lx", (unsigned long)(flags & ~known));
+        append_flag(buf, &p, &remaining, tmp);
+    }
+}
+
+/* Format IDCMP (Intuition Direct Communication Message Port) flags */
+static void format_idcmp_flags(ULONG flags, char *buf, int bufsz)
+{
+    char *p = buf;
+    int remaining = bufsz;
+    ULONG known = 0;
+
+    buf[0] = '\0';
+
+    if (flags == 0) {
+        snprintf(buf, bufsz, "0");
+        return;
+    }
+
+#define IDCMP_FLAG(bit, name) \
+    if (flags & (bit)) { \
+        append_flag(buf, &p, &remaining, name); \
+        known |= (bit); \
+    }
+
+    /* Values from NDK intuition/intuition.h */
+    IDCMP_FLAG(0x00000001, "SIZEVERIFY")
+    IDCMP_FLAG(0x00000002, "NEWSIZE")
+    IDCMP_FLAG(0x00000004, "REFRESHWINDOW")
+    IDCMP_FLAG(0x00000008, "MOUSEBUTTONS")
+    IDCMP_FLAG(0x00000010, "MOUSEMOVE")
+    IDCMP_FLAG(0x00000020, "GADGETDOWN")
+    IDCMP_FLAG(0x00000040, "GADGETUP")
+    IDCMP_FLAG(0x00000080, "REQSET")
+    IDCMP_FLAG(0x00000100, "MENUPICK")
+    IDCMP_FLAG(0x00000200, "CLOSEWINDOW")
+    IDCMP_FLAG(0x00000400, "RAWKEY")
+    IDCMP_FLAG(0x00000800, "REQVERIFY")
+    IDCMP_FLAG(0x00001000, "REQCLEAR")
+    IDCMP_FLAG(0x00002000, "MENUVERIFY")
+    IDCMP_FLAG(0x00004000, "NEWPREFS")
+    IDCMP_FLAG(0x00008000, "DISKINSERTED")
+    IDCMP_FLAG(0x00010000, "DISKREMOVED")
+    IDCMP_FLAG(0x00020000, "WBENCHMESSAGE")
+    IDCMP_FLAG(0x00040000, "ACTIVEWINDOW")
+    IDCMP_FLAG(0x00080000, "INACTIVEWINDOW")
+    IDCMP_FLAG(0x00100000, "DELTAMOVE")
+    IDCMP_FLAG(0x00200000, "VANILLAKEY")
+    IDCMP_FLAG(0x00400000, "INTUITICKS")
+    IDCMP_FLAG(0x00800000, "IDCMPUPDATE")
+    IDCMP_FLAG(0x01000000, "MENUHELP")
+    IDCMP_FLAG(0x02000000, "CHANGEWINDOW")
+    IDCMP_FLAG(0x04000000, "GADGETHELP")
+
+#undef IDCMP_FLAG
+
+    /* Show any unknown bits */
+    if (flags & ~known) {
+        char tmp[20];
+        snprintf(tmp, sizeof(tmp), "0x%lx", (unsigned long)(flags & ~known));
+        append_flag(buf, &p, &remaining, tmp);
     }
 }
 
 /* Check if a string_data value was likely truncated.
- * string_data is 24 bytes; the stub copies at most 23 chars
- * (leaving room for NUL). If strlen == 23, truncation likely. */
+ * string_data is 60 bytes; the stub copies at most 59 chars
+ * (leaving room for NUL). If strlen == 59, truncation likely. */
 static int string_likely_truncated(const char *s)
 {
-    return (strlen(s) >= 23);
+    return (strlen(s) >= 59);
 }
 
 /* Lock-to-path cache: maps BPTR lock values to path strings.
@@ -1300,7 +1437,7 @@ static int string_likely_truncated(const char *s)
 
 struct lock_cache_entry {
     ULONG lock_val;     /* retval from Lock/CreateDir */
-    char  path[64];     /* path string */
+    char  path[64];     /* path string (59 chars + NUL fits in 64) */
 };
 
 static struct lock_cache_entry lock_cache[LOCK_CACHE_SIZE];
@@ -1338,7 +1475,288 @@ static void lock_cache_clear(void)
     lock_cache_next = 0;
 }
 
-/* Generic argument formatter -- dispatches to per-function formatters */
+
+/* ---- Trace log header emission ---- */
+
+/* Convert Amiga DateStamp days (epoch 1978-01-01) to year/month/day.
+ * Simple day-counting algorithm: subtract days per year (accounting
+ * for leap years), then days per month. No external library deps. */
+static void amiga_days_to_ymd(LONG days, int *year, int *month, int *day)
+{
+    static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    int y = 1978;
+    int m, leap, yd;
+
+    /* Find year */
+    for (;;) {
+        leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+        yd = 365 + leap;
+        if (days < yd)
+            break;
+        days -= yd;
+        y++;
+    }
+
+    /* Find month */
+    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+    for (m = 0; m < 12; m++) {
+        int md = mdays[m] + (m == 1 ? leap : 0);
+        if (days < md)
+            break;
+        days -= md;
+    }
+
+    *year = y;
+    *month = m + 1;
+    *day = (int)days + 1;
+}
+
+/* Map a lib_id to its library name string using func_table[].
+ * Returns "?" if not found. */
+static const char *lib_id_to_name(int lib_id)
+{
+    int i;
+    for (i = 0; i < (int)FUNC_TABLE_SIZE; i++) {
+        if (func_table[i].lib_id == (UBYTE)lib_id)
+            return func_table[i].lib_name;
+    }
+    return "?";
+}
+
+/* Emit trace header comment lines as DATA chunks at the start of a
+ * TRACE START or TRACE RUN session. Returns 0 on success, -1 on
+ * send failure (client disconnected).
+ *
+ * Header format:
+ *   # atrace v2, 2026-03-06 19:33:38
+ *   # command: C:atrace_test           (TRACE RUN only)
+ *   # filter: PROC=control LIB=dos ERRORS
+ *   # enabled: GetMsg, PutMsg (normally noise-disabled)
+ *   # disabled: ModifyIDCMP (manually disabled)
+ */
+static int emit_trace_header(LONG fd, struct trace_state *ts,
+                              const char *run_command)
+{
+    char line[512];
+    struct DateStamp ds;
+    int yr, mo, dy, hr, mn, sc;
+    int i;
+
+    /* Line 1: version and timestamp */
+    DateStamp(&ds);
+    amiga_days_to_ymd(ds.ds_Days, &yr, &mo, &dy);
+    hr = ds.ds_Minute / 60;
+    mn = ds.ds_Minute % 60;
+    sc = ds.ds_Tick / TICKS_PER_SECOND;
+
+    snprintf(line, sizeof(line),
+             "# atrace v%d, %04d-%02d-%02d %02d:%02d:%02d",
+             (int)ATRACE_VERSION, yr, mo, dy, hr, mn, sc);
+    if (send_trace_data_chunk(fd, line) < 0)
+        return -1;
+
+    /* Line 2 (TRACE RUN only): command being traced */
+    if (run_command && run_command[0]) {
+        snprintf(line, sizeof(line), "# command: %s", run_command);
+        if (send_trace_data_chunk(fd, line) < 0)
+            return -1;
+    }
+
+    /* Line 3: active filter description */
+    {
+        char filter_desc[384];
+        int flen = 0;
+
+        filter_desc[0] = '\0';
+
+        if (ts->filter_procname[0] != '\0') {
+            flen += snprintf(filter_desc + flen,
+                             sizeof(filter_desc) - flen,
+                             "PROC=%s", ts->filter_procname);
+        }
+
+        if (ts->use_extended_filter) {
+            /* Extended lib filter */
+            if (ts->lib_filter_mode != 0) {
+                int j;
+                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
+                    filter_desc[flen++] = ' ';
+                if (ts->lib_filter_mode == -1) {
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen, "-LIB=");
+                } else {
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen, "LIB=");
+                }
+                for (j = 0; j < ts->lib_filter_count; j++) {
+                    if (j > 0 && flen < (int)sizeof(filter_desc) - 1)
+                        filter_desc[flen++] = ',';
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen,
+                                     "%s",
+                                     lib_id_to_name(ts->lib_filter_ids[j]));
+                }
+            }
+
+            /* Extended func filter */
+            if (ts->func_filter_mode != 0) {
+                int j;
+                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
+                    filter_desc[flen++] = ' ';
+                if (ts->func_filter_mode == -1) {
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen, "-FUNC=");
+                } else {
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen, "FUNC=");
+                }
+                for (j = 0; j < ts->func_filter_count; j++) {
+                    const struct trace_func_entry *fe;
+                    if (j > 0 && flen < (int)sizeof(filter_desc) - 1)
+                        filter_desc[flen++] = ',';
+                    fe = lookup_func(
+                        (UBYTE)ts->func_filter_lib_ids[j],
+                        ts->func_filter_lvos[j]);
+                    flen += snprintf(filter_desc + flen,
+                                     sizeof(filter_desc) - flen,
+                                     "%s", fe ? fe->func_name : "?");
+                }
+            }
+        } else {
+            /* Simple filters */
+            if (ts->filter_lib_id >= 0) {
+                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
+                    filter_desc[flen++] = ' ';
+                flen += snprintf(filter_desc + flen,
+                                 sizeof(filter_desc) - flen,
+                                 "LIB=%s",
+                                 lib_id_to_name(ts->filter_lib_id));
+            }
+
+            if (ts->filter_lvo != 0) {
+                const struct trace_func_entry *fe;
+                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
+                    filter_desc[flen++] = ' ';
+                /* Simple filter uses filter_lib_id + filter_lvo */
+                fe = lookup_func(
+                    (UBYTE)(ts->filter_lib_id >= 0
+                            ? ts->filter_lib_id : 0),
+                    ts->filter_lvo);
+                flen += snprintf(filter_desc + flen,
+                                 sizeof(filter_desc) - flen,
+                                 "FUNC=%s",
+                                 fe ? fe->func_name : "?");
+            }
+        }
+
+        if (ts->filter_errors_only) {
+            if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
+                filter_desc[flen++] = ' ';
+            flen += snprintf(filter_desc + flen,
+                             sizeof(filter_desc) - flen, "ERRORS");
+        }
+
+        filter_desc[sizeof(filter_desc) - 1] = '\0';
+
+        if (flen == 0) {
+            snprintf(line, sizeof(line), "# filter: (none)");
+        } else {
+            snprintf(line, sizeof(line), "# filter: %s", filter_desc);
+        }
+        if (send_trace_data_chunk(fd, line) < 0)
+            return -1;
+    }
+
+    /* Lines 4-5: deviations from default enable/disable state */
+    if (g_anchor && g_anchor->patches) {
+        char enabled_devs[512];
+        char disabled_devs[512];
+        int en_len = 0, dis_len = 0;
+        int en_overflow = 0, dis_overflow = 0;
+        int patch_count = (int)g_anchor->patch_count;
+
+        enabled_devs[0] = '\0';
+        disabled_devs[0] = '\0';
+
+        for (i = 0; i < patch_count && i < (int)FUNC_TABLE_SIZE; i++) {
+            struct atrace_patch *p = &g_anchor->patches[i];
+            const struct trace_func_entry *fe =
+                lookup_func(p->lib_id, p->lvo_offset);
+            int is_noise = 0;
+            const char **np;
+
+            if (!fe)
+                continue;
+
+            for (np = noise_func_names; *np; np++) {
+                if (strcmp(fe->func_name, *np) == 0) {
+                    is_noise = 1;
+                    break;
+                }
+            }
+
+            if (is_noise && p->enabled) {
+                /* Noise function manually enabled -- deviation */
+                int nlen = strlen(fe->func_name);
+                if (en_len + nlen + 2 < (int)sizeof(enabled_devs) - 32) {
+                    if (en_len > 0) {
+                        enabled_devs[en_len++] = ',';
+                        enabled_devs[en_len++] = ' ';
+                    }
+                    memcpy(enabled_devs + en_len, fe->func_name, nlen);
+                    en_len += nlen;
+                    enabled_devs[en_len] = '\0';
+                } else {
+                    en_overflow++;
+                }
+            } else if (!is_noise && !p->enabled) {
+                /* Non-noise function manually disabled -- deviation */
+                int nlen = strlen(fe->func_name);
+                if (dis_len + nlen + 2 < (int)sizeof(disabled_devs) - 32) {
+                    if (dis_len > 0) {
+                        disabled_devs[dis_len++] = ',';
+                        disabled_devs[dis_len++] = ' ';
+                    }
+                    memcpy(disabled_devs + dis_len, fe->func_name, nlen);
+                    dis_len += nlen;
+                    disabled_devs[dis_len] = '\0';
+                } else {
+                    dis_overflow++;
+                }
+            }
+        }
+
+        if (en_overflow > 0) {
+            snprintf(enabled_devs + en_len,
+                     sizeof(enabled_devs) - en_len,
+                     ", ... and %d more", en_overflow);
+        }
+        if (dis_overflow > 0) {
+            snprintf(disabled_devs + dis_len,
+                     sizeof(disabled_devs) - dis_len,
+                     ", ... and %d more", dis_overflow);
+        }
+
+        if (en_len > 0 || en_overflow > 0) {
+            snprintf(line, sizeof(line),
+                     "# enabled: %s (normally noise-disabled)",
+                     enabled_devs);
+            if (send_trace_data_chunk(fd, line) < 0)
+                return -1;
+        }
+        if (dis_len > 0 || dis_overflow > 0) {
+            snprintf(line, sizeof(line),
+                     "# disabled: %s (manually disabled)",
+                     disabled_devs);
+            if (send_trace_data_chunk(fd, line) < 0)
+                return -1;
+        }
+    }
+
+    return 0;
+}
+
+/* Generic argument formatter -- dispatches to per-function formatters. */
 static void format_args(struct atrace_event *ev,
                         const struct trace_func_entry *fe,
                         char *buf, int bufsz)
@@ -1346,22 +1764,29 @@ static void format_args(struct atrace_event *ev,
     int i;
     char *p = buf;
     int remaining = bufsz;
-    const char *trunc;
+    const char *trunc = "";
 
     buf[0] = '\0';
+
+    if (fe && fe->has_string && string_likely_truncated(ev->string_data)) {
+        trunc = "...";
+    }
 
     if (!fe) {
         /* Unknown function -- dump raw args */
         for (i = 0; i < ev->arg_count && i < 4; i++) {
-            if (i > 0) { *p++ = ','; remaining--; }
-            p += snprintf(p, remaining, "0x%lx", (unsigned long)ev->args[i]);
-            remaining = bufsz - (int)(p - buf);
+            int n;
+            if (i > 0) {
+                if (remaining <= 1) break;
+                *p++ = ','; remaining--;
+            }
+            if (remaining <= 1) break;
+            n = snprintf(p, remaining, "0x%lx", (unsigned long)ev->args[i]);
+            if (n >= remaining) n = remaining - 1;
+            if (n > 0) { p += n; remaining -= n; }
         }
         return;
     }
-
-    trunc = (fe->has_string && string_likely_truncated(ev->string_data))
-            ? "..." : "";
 
     /* --- exec.library --- */
 
@@ -1438,12 +1863,57 @@ static void format_args(struct atrace_event *ev,
 
         case -198:  /* AllocMem(byteSize, requirements) */
         {
-            char flags_buf[64];
+            char flags_buf[128];
             format_memf_flags(ev->args[1], flags_buf, sizeof(flags_buf));
             p += snprintf(p, remaining, "%lu,%s",
                           (unsigned long)ev->args[0], flags_buf);
             return;
         }
+
+        case -456:  /* DoIO(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -462:  /* SendIO(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -474:  /* WaitIO(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -480:  /* AbortIO(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -468:  /* CheckIO(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -210:  /* FreeMem(memoryBlock, byteSize) */
+            p += snprintf(p, remaining, "0x%lx,%lu",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -684:  /* AllocVec(byteSize, requirements) */
+        {
+            char flags_buf[128];
+            format_memf_flags(ev->args[1], flags_buf, sizeof(flags_buf));
+            p += snprintf(p, remaining, "%lu,%s",
+                          (unsigned long)ev->args[0], flags_buf);
+            return;
+        }
+
+        case -690:  /* FreeVec(memoryBlock) */
+            p += snprintf(p, remaining, "0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
 
         }  /* end exec switch */
     }
@@ -1622,25 +2092,106 @@ static void format_args(struct atrace_event *ev,
             }
             return;
 
+        case -42:   /* Read(file, buffer, length) */
+            p += snprintf(p, remaining, "fh=0x%lx,len=%lu",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[2]);
+            return;
+
+        case -48:   /* Write(file, buffer, length) */
+            p += snprintf(p, remaining, "fh=0x%lx,len=%lu",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[2]);
+            return;
+
         }  /* end dos switch */
+    }
+
+    /* --- intuition.library --- */
+
+    if (fe->lib_id == LIB_INTUITION) {
+        switch (fe->lvo_offset) {
+
+        case -204:  /* OpenWindow(newWindow) */
+            p += snprintf(p, remaining, "nw=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -72:   /* CloseWindow(window) */
+            p += snprintf(p, remaining, "win=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -198:  /* OpenScreen(newScreen) */
+            p += snprintf(p, remaining, "ns=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -66:   /* CloseScreen(screen) */
+            p += snprintf(p, remaining, "scr=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -450:  /* ActivateWindow(window) */
+            p += snprintf(p, remaining, "win=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -312:  /* WindowToFront(window) */
+            p += snprintf(p, remaining, "win=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -306:  /* WindowToBack(window) */
+            p += snprintf(p, remaining, "win=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -150:  /* ModifyIDCMP(window, flags) */
+        {
+            char idcmp_buf[384];
+            format_idcmp_flags(ev->args[1], idcmp_buf, sizeof(idcmp_buf));
+            p += snprintf(p, remaining, "win=0x%lx,%s",
+                          (unsigned long)ev->args[0], idcmp_buf);
+            return;
+        }
+
+        case -210:  /* OpenWorkBench() -- no args */
+            return;
+
+        case -78:   /* CloseWorkBench() -- no args */
+            return;
+
+        }  /* end intuition switch */
     }
 
     /* Fallback: should not reach here for known functions,
      * but handle gracefully */
     if (fe->has_string && ev->string_data[0] != '\0') {
-        p += snprintf(p, remaining, "\"%s%s\"", ev->string_data, trunc);
-        remaining = bufsz - (int)(p - buf);
+        { int n = snprintf(p, remaining, "\"%s%s\"", ev->string_data, trunc);
+          if (n >= remaining) n = remaining - 1;
+          if (n > 0) { p += n; remaining -= n; }
+        }
         for (i = 1; i < ev->arg_count && i < 4; i++) {
-            p += snprintf(p, remaining, ",%lu",
+            int n;
+            if (remaining <= 1) break;
+            n = snprintf(p, remaining, ",%lu",
                           (unsigned long)ev->args[i]);
-            remaining = bufsz - (int)(p - buf);
+            if (n >= remaining) n = remaining - 1;
+            if (n > 0) { p += n; remaining -= n; }
         }
     } else {
         for (i = 0; i < ev->arg_count && i < 4; i++) {
-            if (i > 0) { *p++ = ','; remaining--; }
-            p += snprintf(p, remaining, "0x%lx",
+            int n;
+            if (i > 0) {
+                if (remaining <= 1) break;
+                *p++ = ','; remaining--;
+            }
+            if (remaining <= 1) break;
+            n = snprintf(p, remaining, "0x%lx",
                           (unsigned long)ev->args[i]);
-            remaining = bufsz - (int)(p - buf);
+            if (n >= remaining) n = remaining - 1;
+            if (n > 0) { p += n; remaining -= n; }
         }
     }
 }
@@ -1754,6 +2305,15 @@ static char format_retval(struct atrace_event *ev,
             snprintf(buf, bufsz, "rc=%ld", (long)srv);
         return '-';   /* Neutral status -- never classified as error */
 
+    case RET_IO_LEN:
+        /* I/O byte count: -1=error, 0=EOF(Read), >0=bytes transferred */
+        if (srv == -1) {
+            snprintf(buf, bufsz, "-1");
+            return 'E';
+        }
+        snprintf(buf, bufsz, "%ld", (long)srv);
+        return 'O';
+
     case RET_OLD_LOCK:
         /* Old lock from CurrentDir: informational */
         if (rv == 0) {
@@ -1797,8 +2357,8 @@ static void trace_format_event(struct atrace_event *ev,
     const char *task_name;
     const char *lib_name;
     const char *func_name;
-    static char args_buf[128];
-    static char retval_buf[32];
+    static char args_buf[384];
+    static char retval_buf[80];
     char status;
 
     task_name = resolve_task_name(ev->caller_task);
@@ -2232,7 +2792,7 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Parse filters from remaining args */
     parse_filters(args, &c->trace);
 
-    /* Clear lock-to-path cache for the new session */
+    /* Clear caches for the new session */
     lock_cache_clear();
 
     /* Enter streaming mode */
@@ -2247,6 +2807,10 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
 
     /* Send OK -- no sentinel (streaming response) */
     send_ok(c->fd, NULL);
+    if (emit_trace_header(c->fd, &c->trace, NULL) < 0) {
+        c->trace.active = 0;
+        return 0;
+    }
     return 0;
 }
 
@@ -2386,7 +2950,7 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
         }
     }
 
-    /* Clear lock-to-path cache for the new session.
+    /* Clear caches for the new session.
      * Must be before process creation -- a timer interrupt between
      * Permit() and a later clear could let the new process call
      * Lock(), caching with stale session data. */
@@ -2558,6 +3122,10 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
 
     sprintf(info, "%d", g_daemon_state->procs[slot].id);
     send_ok(c->fd, info);
+    if (emit_trace_header(c->fd, &c->trace, command) < 0) {
+        trace_run_cleanup(c);
+        return 0;
+    }
     return 0;
 }
 

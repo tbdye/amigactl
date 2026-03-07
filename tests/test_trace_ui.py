@@ -1869,7 +1869,7 @@ class TestGridStatePersistence:
         viewer.discovered_libs = {"exec": 200, "dos": 100}
         # Use non-noise functions only to avoid noise default confusion
         viewer.discovered_funcs = {
-            "exec": {"CreateIORequest": 50, "FreeMem": 30},
+            "exec": {"CreateIORequest": 50, "FindResident": 30},
             "dos": {"Open": 12, "Lock": 8},
         }
         viewer.discovered_procs = {}
@@ -1881,9 +1881,9 @@ class TestGridStatePersistence:
         assert viewer.grid.categories[
             viewer.grid.active_category] == "FUNCTIONS"
 
-        # Disable FreeMem (sorted: CreateIORequest=50, FreeMem=30)
+        # Disable FindResident (sorted: CreateIORequest=50, FindResident=30)
         viewer.grid.cursor_pos[viewer.grid.active_category] = 1
-        viewer.grid.toggle_at_cursor()  # FreeMem
+        viewer.grid.toggle_at_cursor()  # FindResident
 
         # Navigate back to LIBRARIES (left arrow)
         viewer._handle_grid_key(("esc", "[D"))
@@ -1903,16 +1903,16 @@ class TestGridStatePersistence:
         viewer._handle_grid_key("\r")
 
         assert viewer.disabled_funcs == {
-            "exec": {"FreeMem"}, "dos": {"Lock"}}
+            "exec": {"FindResident"}, "dos": {"Lock"}}
 
         # Reopen grid, navigate to exec's FUNCTIONS
         viewer._enter_toggle_grid()
         viewer._handle_grid_key(("esc", "[C"))  # to FUNCTIONS
 
         for item in viewer.grid.func_items:
-            if item["name"] == "FreeMem":
+            if item["name"] == "FindResident":
                 assert not item["enabled"], \
-                    "FreeMem should be disabled for exec"
+                    "FindResident should be disabled for exec"
             elif item["name"] == "CreateIORequest":
                 assert item["enabled"], \
                     "CreateIORequest should be enabled for exec"
@@ -1937,7 +1937,7 @@ class TestGridStatePersistence:
         viewer.discovered_libs = {"exec": 200, "dos": 100}
         # Use non-noise functions to avoid noise default confusion
         viewer.discovered_funcs = {
-            "exec": {"CreateIORequest": 50, "FreeMem": 30},
+            "exec": {"CreateIORequest": 50, "FindResident": 30},
             "dos": {"Open": 12},
         }
         viewer.discovered_procs = {}
@@ -1946,7 +1946,7 @@ class TestGridStatePersistence:
 
         # Navigate to FUNCTIONS for exec
         viewer._handle_grid_key(("esc", "[C"))
-        # Disable CreateIORequest (sorted: CreateIOReq=50, FreeMem=30)
+        # Disable CreateIORequest (sorted: CreateIOReq=50, FindResident=30)
         viewer.grid.cursor_pos[viewer.grid.active_category] = 0
         viewer.grid.toggle_at_cursor()  # CreateIORequest
 

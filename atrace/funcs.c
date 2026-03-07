@@ -1,12 +1,12 @@
 /*
  * atrace -- function table
  *
- * Phase 2: 30 functions (12 exec.library + 18 dos.library).
+ * Phase 5: 50 functions (20 exec.library + 20 dos.library + 10 intuition.library).
  */
 
 #include "atrace.h"
 
-/* exec.library functions (12) */
+/* exec.library functions (20) */
 static struct func_info exec_funcs[] = {
     /* 0: FindPort(a1=name) -> d0=port */
     {
@@ -79,10 +79,58 @@ static struct func_info exec_funcs[] = {
         "AllocMem", -198, 2,
         { REG_D0, REG_D1, 0, 0, 0, 0, 0, 0 },
         REG_D0, 0x00, 0
+    },
+    /* 12: DoIO(a1=ioRequest) -> d0=error */
+    {
+        "DoIO", -456, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0  /* no string args */
+    },
+    /* 13: SendIO(a1=ioRequest) -> void */
+    {
+        "SendIO", -462, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 14: WaitIO(a1=ioRequest) -> d0=error */
+    {
+        "WaitIO", -474, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 15: AbortIO(a1=ioRequest) -> d0=result */
+    {
+        "AbortIO", -480, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 16: CheckIO(a1=ioRequest) -> d0=ioRequest_or_NULL */
+    {
+        "CheckIO", -468, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 17: FreeMem(a1=memoryBlock, d0=byteSize) -> void */
+    {
+        "FreeMem", -210, 2,
+        { REG_A1, REG_D0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 18: AllocVec(d0=byteSize, d1=requirements) -> d0=memoryBlock */
+    {
+        "AllocVec", -684, 2,
+        { REG_D0, REG_D1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 19: FreeVec(a1=memoryBlock) -> void */
+    {
+        "FreeVec", -690, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
     }
 };
 
-/* dos.library functions (18) */
+/* dos.library functions (20) */
 static struct func_info dos_funcs[] = {
     /* 0: Open(d1=name, d2=accessMode) -> d0=fileHandle */
     {
@@ -191,6 +239,82 @@ static struct func_info dos_funcs[] = {
         "CurrentDir", -126, 1,
         { REG_D1, 0, 0, 0, 0, 0, 0, 0 },
         REG_D0, 0x00, 0
+    },
+    /* 18: Read(d1=file, d2=buffer, d3=length) -> d0=actualLength */
+    {
+        "Read", -42, 3,
+        { REG_D1, REG_D2, REG_D3, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0  /* no string args */
+    },
+    /* 19: Write(d1=file, d2=buffer, d3=length) -> d0=actualLength */
+    {
+        "Write", -48, 3,
+        { REG_D1, REG_D2, REG_D3, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    }
+};
+
+/* intuition.library functions (10) */
+static struct func_info intuition_funcs[] = {
+    /* 0: OpenWindow(a0=newWindow) -> d0=window */
+    {
+        "OpenWindow", -204, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 1: CloseWindow(a0=window) -> void */
+    {
+        "CloseWindow", -72, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 2: OpenScreen(a0=newScreen) -> d0=screen */
+    {
+        "OpenScreen", -198, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 3: CloseScreen(a0=screen) -> void */
+    {
+        "CloseScreen", -66, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 4: ActivateWindow(a0=window) -> void */
+    {
+        "ActivateWindow", -450, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 5: WindowToFront(a0=window) -> void */
+    {
+        "WindowToFront", -312, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 6: WindowToBack(a0=window) -> void */
+    {
+        "WindowToBack", -306, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 7: ModifyIDCMP(a0=window, d0=flags) -> void */
+    {
+        "ModifyIDCMP", -150, 2,
+        { REG_A0, REG_D0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 8: OpenWorkBench() -> d0=result */
+    {
+        "OpenWorkBench", -210, 0,
+        { 0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
+    },
+    /* 9: CloseWorkBench() -> d0=result */
+    {
+        "CloseWorkBench", -78, 0,
+        { 0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, 0
     }
 };
 
@@ -199,17 +323,24 @@ struct lib_info atrace_libs[] = {
     {
         "exec.library",     /* name */
         exec_funcs,         /* funcs */
-        12,                 /* func_count */
+        20,                 /* func_count */
         LIB_EXEC,           /* lib_id = 0 */
         0                   /* padding */
     },
     {
         "dos.library",      /* name */
         dos_funcs,          /* funcs */
-        18,                 /* func_count */
+        20,                 /* func_count */
         LIB_DOS,            /* lib_id = 1 */
         0                   /* padding */
+    },
+    {
+        "intuition.library", /* name */
+        intuition_funcs,     /* funcs */
+        10,                  /* func_count */
+        LIB_INTUITION,       /* lib_id = 2 */
+        0                    /* padding */
     }
 };
 
-int atrace_lib_count = 2;
+int atrace_lib_count = 3;

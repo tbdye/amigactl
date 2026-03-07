@@ -236,6 +236,104 @@ class TestHandleResolver:
         annotation = close_ev.get("_handle_annotation")
         assert annotation == "CORRECT_FILE"
 
+    def test_handle_reuse_after_close(self):
+        """Handle reuse: Open A, Close A, Open B (same handle), Close B.
+
+        After track() processes Close A, the handle is evicted from the
+        live cache. Open B reuses the same handle address. Both Close
+        events must annotate with the correct path.
+        """
+        hr = HandleResolver()
+        handle = "0x01c16e23"
+        norm = HandleResolver._normalize_hex(handle)
+
+        # Open file A
+        hr.track({
+            "func": "Open", "retval": handle,
+            "args": '"RAM:file_a",Read', "status": "O", "seq": "1",
+        })
+        # Close file A -- track() snapshots annotation and evicts handle
+        close_a = {"func": "Close", "args": "fh={}".format(norm),
+                   "seq": "2"}
+        hr.track(close_a)
+
+        # Handle evicted from live cache
+        assert norm not in hr._cache
+
+        # Open file B at the SAME handle address
+        hr.track({
+            "func": "Open", "retval": handle,
+            "args": '"RAM:file_b",Write', "status": "O", "seq": "3",
+        })
+        # Close file B
+        close_b = {"func": "Close", "args": "fh={}".format(norm),
+                   "seq": "4"}
+        hr.track(close_b)
+
+        # Both Close events annotate correctly via _close_annotations
+        assert hr.annotate(close_a) == "RAM:file_a"
+        assert hr.annotate(close_b) == "RAM:file_b"
+
+    def test_track_close_evicts_from_cache(self):
+        """track() on Close removes the handle from the live cache."""
+        hr = HandleResolver()
+        hr.track({
+            "func": "Open", "retval": "0x00001234",
+            "args": '"test.txt",Read', "status": "O", "seq": "1",
+        })
+        assert "0x1234" in hr._cache
+
+        hr.track({"func": "Close", "args": "fh=0x1234", "seq": "2"})
+        assert "0x1234" not in hr._cache
+
+        # But annotation is still available via _close_annotations
+        assert hr.annotate(
+            {"func": "Close", "args": "fh=0x1234", "seq": "2"}) == "test.txt"
+
+    def test_close_annotations_fifo_eviction(self):
+        """_close_annotations evicts oldest entries at max_size."""
+        hr = HandleResolver(max_size=2)
+
+        # Open and close 3 files to exceed max_size
+        for i in range(3):
+            handle = "0x{:08x}".format(i + 1)
+            hr.track({
+                "func": "Open", "retval": handle,
+                "args": '"file{}",Read'.format(i), "status": "O",
+                "seq": str(i * 2 + 1),
+            })
+            hr.track({
+                "func": "Close",
+                "args": "fh={}".format(HandleResolver._normalize_hex(handle)),
+                "seq": str(i * 2 + 2),
+            })
+
+        # First close annotation evicted (seq "2")
+        assert hr.annotate(
+            {"func": "Close", "args": "fh=0x1", "seq": "2"}) is None
+        # Second and third still present
+        assert hr.annotate(
+            {"func": "Close", "args": "fh=0x2", "seq": "4"}) == "file1"
+        assert hr.annotate(
+            {"func": "Close", "args": "fh=0x3", "seq": "6"}) == "file2"
+
+    def test_annotate_close_without_track_falls_back_to_cache(self):
+        """Close annotation falls back to live cache if not tracked."""
+        hr = HandleResolver()
+        hr.track({
+            "func": "Open", "retval": "0x00005678",
+            "args": '"legacy.txt",Read', "status": "O", "seq": "1",
+        })
+        # Annotate without having tracked the Close event
+        close_ev = {"func": "Close", "args": "fh=0x5678", "seq": "99"}
+        assert hr.annotate(close_ev) == "legacy.txt"
+
+    def test_close_unknown_handle_not_recorded(self):
+        """Close with an unknown handle does not create a close annotation."""
+        hr = HandleResolver()
+        hr.track({"func": "Close", "args": "fh=0xdeadbeef", "seq": "1"})
+        assert len(hr._close_annotations) == 0
+
 
 # ---------------------------------------------------------------------------
 # SegmentResolver

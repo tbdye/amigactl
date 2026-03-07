@@ -11,9 +11,9 @@
  *
  * The allocation is a single contiguous block:
  *   [struct atrace_ringbuf header (16 bytes)]
- *   [struct atrace_event entries[capacity] (64 * capacity bytes)]
+ *   [struct atrace_event entries[capacity] (128 * capacity bytes)]
  *
- * Total size: 16 + 64 * capacity.
+ * Total size: 16 + 128 * capacity.
  *
  * MEMF_PUBLIC: survives loader process exit.
  * MEMF_CLEAR:  all entries start with valid=0.

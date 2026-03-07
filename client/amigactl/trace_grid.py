@@ -75,8 +75,7 @@ class ToggleGrid:
         self.user_interacted = False
 
     # Noise functions per library, matching noise_func_names[] in
-    # daemon/trace.c line 143. FreeMem is NOT in this list
-    # (it is not a traced function). (M3 fix)
+    # daemon/trace.c and atrace/main.c. (M3 fix)
     # Keyed by library name so noise defaults only apply to the
     # correct library (S2 fix, Wave 5 review).
     _NOISE_FUNCS_BY_LIB = {
@@ -84,6 +83,14 @@ class ToggleGrid:
             "FindPort", "FindSemaphore", "FindTask", "GetMsg",
             "PutMsg", "ObtainSemaphore", "ReleaseSemaphore",
             "AllocMem", "OpenLibrary",
+            # Phase 5 additions
+            "FreeMem", "AllocVec", "FreeVec",
+            # Phase 5 device I/O additions
+            "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+        },
+        "dos": {
+            # Phase 5 additions
+            "Read", "Write",
         },
     }
 

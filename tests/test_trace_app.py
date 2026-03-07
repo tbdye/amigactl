@@ -4,13 +4,14 @@ These tests run the atrace_test binary on the Amiga via TRACE RUN and
 validate that every traced function produces the correct wire format:
 args, retval, and status fields.
 
-The test app (C:atrace_test) calls each of the 30 traced functions
+The test app (C:atrace_test) calls each of the 50 traced functions
 (except AddDosEntry) with distinctive, predictable inputs.  Multiple
 fixtures run the app in different configurations:
 
   trace_events: Module-scoped.  Runs with default settings (noise
-    functions disabled).  Captures the 20 non-noise functions.  Used by
-    TestExecFunctions, TestDosFunctions, TestFieldInvariants, and
+    functions disabled).  Captures the 31 non-noise functions.  Used by
+    TestExecFunctions, TestDosFunctions,
+    TestIntuitionFunctions, TestFieldInvariants, and
     TestPhase4bFeatures.
 
   noise_group1_events: Class-scoped.  Enables FindPort, FindSemaphore,
@@ -25,7 +26,16 @@ fixtures run the app in different configurations:
   noise_group4_events: Class-scoped.  Enables OpenLibrary only.
     Used by TestExecNoiseGroup4.
 
-The noise functions are split into four groups (at most 3 stubs each)
+  noise_group5_events: Class-scoped.  Enables FreeMem, AllocVec,
+    FreeVec only.  Used by TestExecNoiseGroup5.
+
+  noise_group6_events: Class-scoped.  Enables Read, Write only.
+    Used by TestDosNoiseGroup6.
+
+  noise_group7_events: Class-scoped.  Enables DoIO, SendIO, WaitIO,
+    AbortIO, CheckIO only.  Used by TestExecDeviceIO.
+
+The noise functions are split into seven groups (at most 5 stubs each)
 to keep the background OS event rate low enough that the 8192-entry
 ring buffer does not overflow during trace_run.
 
@@ -83,8 +93,8 @@ def trace_events(request, require_atrace_for_app):
     of a clean skip.
 
     Noise functions remain at their default (disabled) state.  Only the
-    20 non-noise functions produce events in this fixture.  Noise
-    function tests use the separate noise_group1/2/3/4_events fixtures.
+    31 non-noise functions produce events in this fixture.  Noise
+    function tests use the separate noise_group1-7_events fixtures.
 
     Uses signal.alarm() for a 60-second external timeout.  This is
     necessary because trace_run() calls settimeout(None) internally,
@@ -212,12 +222,17 @@ def _trace_events_inner(conn):
     return event_entries
 
 
-# The 10 noise functions that are disabled by default due to high
+# The 19 noise functions that are disabled by default due to high
 # event volume from OS-internal activity.
 _NOISE_FUNCS = [
     "FindPort", "FindSemaphore", "FindTask", "GetMsg", "PutMsg",
     "ObtainSemaphore", "ReleaseSemaphore", "AllocMem",
     "OpenLibrary",
+    # Phase 5 additions
+    "FreeMem", "AllocVec", "FreeVec",
+    "Read", "Write",
+    # Phase 5 device I/O additions
+    "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
 ]
 
 
@@ -225,6 +240,9 @@ _NOISE_GROUP1 = ["FindPort", "FindSemaphore", "FindTask"]
 _NOISE_GROUP2 = ["GetMsg", "PutMsg"]
 _NOISE_GROUP3 = ["ObtainSemaphore", "ReleaseSemaphore", "AllocMem"]
 _NOISE_GROUP4 = ["OpenLibrary"]
+_NOISE_GROUP5 = ["FreeMem", "AllocVec", "FreeVec"]
+_NOISE_GROUP6 = ["Read", "Write"]
+_NOISE_GROUP7 = ["DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO"]
 
 
 @pytest.fixture(scope="class")
@@ -238,7 +256,7 @@ def noise_group1_events(request, require_atrace_for_app):
     noise_funcs = _NOISE_GROUP1
     status = conn.trace_status()
     patch_list = status.get("patch_list", [])
-    noise_set = set(_NOISE_FUNCS)   # all 8
+    noise_set = set(_NOISE_FUNCS)   # all 19
     # All non-noise function names -- used for unconditional restore
     all_non_noise = []
     for entry in patch_list:
@@ -390,6 +408,153 @@ def noise_group4_events(request, require_atrace_for_app):
     conn.connect()
 
     noise_funcs = _NOISE_GROUP4
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group5_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 5 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP5
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group6_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 6 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP6
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group7_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 7 noise functions enabled."""
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP7
     status = conn.trace_status()
     patch_list = status.get("patch_list", [])
     noise_set = set(_NOISE_FUNCS)
@@ -1264,8 +1429,8 @@ class TestFieldInvariants:
                         ev.get("seq"), key, ev.get("raw", "")))
 
     def test_lib_names_valid(self, trace_events):
-        """All events have lib in {exec, dos}."""
-        valid_libs = {"exec", "dos"}
+        """All events have lib in {exec, dos, intuition}."""
+        valid_libs = {"exec", "dos", "intuition"}
         bad = [ev for ev in trace_events
                if ev.get("lib") not in valid_libs]
         assert not bad, (
@@ -1356,21 +1521,24 @@ class TestPhase4bFeatures:
                 list({ev.get("task", "") for ev in trace_events[:10]})))
 
     def test_string_truncation_indicator(self, trace_events):
-        """Rename event for the 23-char filename shows truncation indicator.
+        """Rename event for a 23-char filename shows full string without truncation.
 
         The C test app calls Rename("RAM:atrace_test_ren_old", ...)
-        where the old name is 23 characters -- the maximum string_data
-        capacity.  The daemon should detect the truncation and append
-        "..." to the formatted args.
+        where the old name is 23 characters.  With 59-char string_data
+        capacity (Phase 5b event expansion to 128 bytes), this fits
+        easily and no truncation occurs.
         """
         matches = _find_events(trace_events, "Rename", "RAM:atrace_test_ren")
         assert len(matches) >= 1, (
             "No Rename event with 'RAM:atrace_test_ren' found in "
             "{} events".format(len(trace_events)))
         ev = matches[0]
-        assert "..." in ev["args"], (
-            "Rename args should contain '...' truncation indicator, "
+        assert "RAM:atrace_test_ren_old" in ev["args"], (
+            "Rename args should contain full path with 59-char capture, "
             "got: {}".format(ev["args"]))
+        assert "..." not in ev["args"], (
+            "Rename args should not contain '...' truncation indicator "
+            "with 59-char capture, got: {}".format(ev["args"]))
 
     def test_lock_cache_currentdir_path(self, trace_events):
         """CurrentDir event shows quoted path from lock cache, not raw hex.
@@ -1479,3 +1647,265 @@ class TestPhase4bFeatures:
             assert ev["task"] != "", (
                 "Execute event should have a task name: seq={}".format(
                     ev["seq"]))
+
+
+# ---------------------------------------------------------------------------
+# TestExecDeviceIO -- Phase 5: device I/O functions
+# ---------------------------------------------------------------------------
+
+class TestExecDeviceIO:
+    """Tests for exec.library Device I/O functions (noise group 7)."""
+
+    def test_doio(self, noise_group7_events):
+        """DoIO on timer.device -- status O (success, retval=OK)."""
+        matches = _find_events(noise_group7_events, "DoIO")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "io=0x" in ev["args"]
+        assert ev["status"] == "O"
+        assert ev["retval"] == "OK"
+
+    def test_sendio(self, noise_group7_events):
+        """SendIO -- void function, status '-'."""
+        matches = _find_events(noise_group7_events, "SendIO")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "io=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_waitio(self, noise_group7_events):
+        """WaitIO -- status O (success after SendIO completes)."""
+        matches = _find_events(noise_group7_events, "WaitIO")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "io=0x" in ev["args"]
+        assert ev["status"] == "O"
+        assert ev["retval"] == "OK"
+
+    def test_abortio(self, noise_group7_events):
+        """AbortIO -- abort a pending timer request."""
+        matches = _find_events(noise_group7_events, "AbortIO")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "io=0x" in ev["args"]
+        # AbortIO may return 0 (success) or non-zero (already complete)
+        # Don't assert status, just verify format
+
+    def test_checkio(self, noise_group7_events):
+        """CheckIO -- check pending request status."""
+        matches = _find_events(noise_group7_events, "CheckIO")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "io=0x" in ev["args"]
+        # CheckIO returns IORequest ptr or NULL, both valid
+
+
+# ---------------------------------------------------------------------------
+# TestExecNoiseGroup5 -- memory functions (FreeMem, AllocVec, FreeVec)
+# ---------------------------------------------------------------------------
+
+class TestExecNoiseGroup5:
+    """Memory management: FreeMem, AllocVec, FreeVec."""
+
+    def test_freemem(self, noise_group5_events):
+        """FreeMem(ptr, 2345) -- distinctive size from test app."""
+        matches = _find_events(noise_group5_events, "FreeMem", "2345")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "0x" in ev["args"]   # pointer
+        assert "2345" in ev["args"]  # size
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_allocvec(self, noise_group5_events):
+        """AllocVec(3456, MEMF_PUBLIC|MEMF_CLEAR) -- distinctive size."""
+        matches = _find_events(noise_group5_events, "AllocVec", "3456,")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "MEMF_PUBLIC" in ev["args"]
+        assert "MEMF_CLEAR" in ev["args"]
+        assert ev["status"] == "O"
+        assert _HEX_PTR.match(ev["retval"])
+
+    def test_freevec(self, noise_group5_events):
+        """FreeVec(ptr) -- void function."""
+        matches = _find_events(noise_group5_events, "FreeVec")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        assert "0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+
+# ---------------------------------------------------------------------------
+# TestIntuitionFunctions -- Phase 5: intuition.library
+# ---------------------------------------------------------------------------
+
+class TestIntuitionFunctions:
+    """Tests for intuition.library traced functions."""
+
+    def test_openwindow(self, trace_events):
+        """OpenWindow -- returns window pointer, status O."""
+        matches = _find_events(trace_events, "OpenWindow")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "nw=0x" in ev["args"]
+        assert ev["status"] == "O"
+        assert _HEX_PTR.match(ev["retval"])
+
+    def test_closewindow(self, trace_events):
+        """CloseWindow -- void function, status '-'."""
+        matches = _find_events(trace_events, "CloseWindow")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "win=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_openscreen(self, trace_events):
+        """OpenScreen -- returns screen pointer, status O."""
+        matches = _find_events(trace_events, "OpenScreen")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "ns=0x" in ev["args"]
+        assert ev["status"] == "O"
+        assert _HEX_PTR.match(ev["retval"])
+
+    def test_closescreen(self, trace_events):
+        """CloseScreen -- void function."""
+        matches = _find_events(trace_events, "CloseScreen")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "scr=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_activatewindow(self, trace_events):
+        """ActivateWindow -- void function."""
+        matches = _find_events(trace_events, "ActivateWindow")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "win=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_windowtofront(self, trace_events):
+        """WindowToFront -- void function."""
+        matches = _find_events(trace_events, "WindowToFront")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "win=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_windowtoback(self, trace_events):
+        """WindowToBack -- void function."""
+        matches = _find_events(trace_events, "WindowToBack")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert "win=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+    def test_modifyidcmp(self, trace_events):
+        """ModifyIDCMP -- flags contain CLOSEWINDOW."""
+        matches = _find_events(trace_events, "ModifyIDCMP")
+        assert len(matches) >= 1
+        # Filter for our specific CLOSEWINDOW call (Intuition itself calls
+        # ModifyIDCMP with flags=0 during window lifecycle)
+        cw_matches = [ev for ev in matches if "CLOSEWINDOW" in ev["args"]]
+        assert len(cw_matches) >= 1, (
+            "Expected ModifyIDCMP with CLOSEWINDOW flag from atrace_test")
+        ev = cw_matches[0]
+        assert ev["lib"] == "intuition"
+        assert "win=0x" in ev["args"]
+        assert ev["status"] == "-"
+        assert ev["retval"] == "(void)"
+
+
+# ---------------------------------------------------------------------------
+# TestDosNoiseGroup6 -- Read/Write (noise group 6)
+# ---------------------------------------------------------------------------
+
+class TestDosNoiseGroup6:
+    """dos.library Read/Write (noise group 6)."""
+
+    def test_write(self, noise_group6_events):
+        """Write(fh, buf, 42) -- distinctive length from test app."""
+        matches = _find_events(noise_group6_events, "Write", "len=42")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "dos"
+        assert "fh=0x" in ev["args"]
+        assert "len=42" in ev["args"]
+        # Write should return 42 (bytes written)
+        assert ev["status"] == "O"
+        assert ev["retval"] == "42"
+
+    def test_read(self, noise_group6_events):
+        """Read(fh, buf, 42) -- read back the 42 bytes we wrote."""
+        matches = _find_events(noise_group6_events, "Read", "len=42")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["lib"] == "dos"
+        assert "fh=0x" in ev["args"]
+        assert "len=42" in ev["args"]
+        # Read should return 42 (bytes read)
+        assert ev["status"] == "O"
+        assert ev["retval"] == "42"
+
+
+# ---------------------------------------------------------------------------
+# TestPhase5PatchCount -- verify patch count increased to 50
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("require_atrace_for_app")
+class TestPhase5PatchCount:
+    """Verify patch count increased to 50 after Phase 5."""
+
+    def test_status_patch_count(self, request):
+        """TRACE STATUS reports 50 patches."""
+        host = request.config.getoption("--host")
+        port = request.config.getoption("--port")
+        conn = AmigaConnection(host, port)
+        conn.connect()
+        try:
+            status = conn.trace_status()
+            assert status["patches"] == 50, (
+                "Expected 50 patches, got: {}".format(status["patches"]))
+        finally:
+            conn.close()
+
+    def test_status_intuition_patches(self, request):
+        """TRACE STATUS lists intuition.library patches."""
+        host = request.config.getoption("--host")
+        port = request.config.getoption("--port")
+        conn = AmigaConnection(host, port)
+        conn.connect()
+        try:
+            status = conn.trace_status()
+            patch_list = status.get("patch_list", [])
+            intuition_patches = [
+                e for e in patch_list
+                if e.get("name", "").startswith("intuition.")]
+            assert len(intuition_patches) == 10, (
+                "Expected 10 intuition patches, got: {}".format(
+                    len(intuition_patches)))
+        finally:
+            conn.close()

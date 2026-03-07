@@ -406,7 +406,7 @@ class TestTraceStatusParsing:
     def test_loaded_status(self):
         conn = _make_mock_conn()
         conn._send_command.return_value = ("", [
-            "loaded=1", "enabled=1", "patches=30",
+            "loaded=1", "enabled=1", "patches=50",
             "events_produced=1000", "events_consumed=950",
             "events_dropped=50", "buffer_capacity=8192",
             "buffer_used=100",
@@ -414,7 +414,7 @@ class TestTraceStatusParsing:
         result = conn.trace_status()
         assert result["loaded"] is True
         assert result["enabled"] is True
-        assert result["patches"] == 30
+        assert result["patches"] == 50
         assert result["events_produced"] == 1000
         assert result["events_consumed"] == 950
         assert result["events_dropped"] == 50
@@ -483,11 +483,11 @@ class TestTraceStatusParsing:
         conn._send_command.return_value = ("", [
             "loaded=1",
             "enabled=1",
-            "patches=30",
-            "noise_disabled=8",
+            "patches=50",
+            "noise_disabled=19",
         ])
         status = conn.trace_status()
-        assert status["noise_disabled"] == 8
+        assert status["noise_disabled"] == 19
 
     def test_noise_disabled_invalid(self):
         """noise_disabled with non-integer value defaults to 0."""
@@ -583,11 +583,11 @@ class TestShellDoTrace:
     def test_trace_status_loaded(self, capsys):
         shell = _make_shell()
         shell.conn.trace_status.return_value = {
-            "loaded": True, "enabled": True, "patches": 30,
+            "loaded": True, "enabled": True, "patches": 50,
             "events_produced": 100, "events_consumed": 95,
             "events_dropped": 5, "buffer_capacity": 8192,
             "buffer_used": 10,
-            "noise_disabled": 8,
+            "noise_disabled": 19,
             "filter_task": "0x00000000",
         }
         shell.do_trace("status")
@@ -596,11 +596,11 @@ class TestShellDoTrace:
         assert "Enabled:" in out
         assert "yes" in out
         assert "Patches:" in out
-        assert "30" in out
+        assert "50" in out
         assert "Events produced:" in out
         assert "100" in out
         assert "Noise disabled:" in out
-        assert "8" in out
+        assert "19" in out
         # filter_task 0x00000000 should be hidden
         assert "Filter task:" not in out
 
@@ -637,7 +637,7 @@ class TestShellDoTrace:
         """filter_task should display when non-zero."""
         shell = _make_shell()
         shell.conn.trace_status.return_value = {
-            "loaded": True, "enabled": True, "patches": 30,
+            "loaded": True, "enabled": True, "patches": 50,
             "events_produced": 50, "events_consumed": 50,
             "events_dropped": 0, "buffer_capacity": 8192,
             "buffer_used": 0,
@@ -1406,3 +1406,294 @@ class TestReadOneTraceEvent:
 
         with pytest.raises(ProtocolError, match="Expected sentinel"):
             read_one_trace_event(sock)
+
+
+# ---------------------------------------------------------------------------
+# TestPhase5EventFormats -- Phase 5: new event format parsing
+# ---------------------------------------------------------------------------
+
+class TestPhase5EventFormats:
+    """Tests for parsing Phase 5 event formats.
+
+    These verify that the Python client correctly parses events produced
+    by the daemon for Phase 5 functions: device I/O, memory, intuition,
+    and dos Read/Write.  The daemon does all formatting; the client just
+    parses tab-delimited fields.
+    """
+
+    def test_intuition_lib_event(self):
+        """Events with lib='intuition' parse correctly."""
+        text = '100\t14:30:01.000\tintuition.OpenWindow\tShell Process\tnw=0x00234560\t0x00345678\tO'
+        event = _parse_trace_event(text)
+        assert event["lib"] == "intuition"
+        assert event["func"] == "OpenWindow"
+        assert event["args"] == "nw=0x00234560"
+        assert event["retval"] == "0x00345678"
+        assert event["status"] == "O"
+
+    def test_intuition_void_function(self):
+        """Intuition void functions (CloseWindow, etc.) parse correctly."""
+        text = '101\t14:30:02.000\tintuition.CloseWindow\tShell Process\twin=0x00345678\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["lib"] == "intuition"
+        assert event["func"] == "CloseWindow"
+        assert event["retval"] == "(void)"
+        assert event["status"] == "-"
+
+    def test_intuition_idcmp_flags_in_args(self):
+        """ModifyIDCMP event with IDCMP flag names in args parses correctly."""
+        text = '102\t14:30:03.000\tintuition.ModifyIDCMP\tShell Process\twin=0x00345678,CLOSEWINDOW|REFRESHWINDOW\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["func"] == "ModifyIDCMP"
+        assert "CLOSEWINDOW" in event["args"]
+        assert "REFRESHWINDOW" in event["args"]
+        assert event["status"] == "-"
+
+    def test_device_io_ok(self):
+        """DoIO event with status O and retval OK."""
+        text = '103\t14:30:04.000\texec.DoIO\tShell Process\tio=0x00456789\tOK\tO'
+        event = _parse_trace_event(text)
+        assert event["func"] == "DoIO"
+        assert event["retval"] == "OK"
+        assert event["status"] == "O"
+        assert "io=0x" in event["args"]
+
+    def test_device_io_void(self):
+        """SendIO event with void return."""
+        text = '104\t14:30:05.000\texec.SendIO\tShell Process\tio=0x00456789\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["func"] == "SendIO"
+        assert event["retval"] == "(void)"
+        assert event["status"] == "-"
+
+    def test_freemem_void(self):
+        """FreeMem event with void return and size in args."""
+        text = '105\t14:30:06.000\texec.FreeMem\tShell Process\t0x00567890,2345\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["func"] == "FreeMem"
+        assert "2345" in event["args"]
+        assert event["retval"] == "(void)"
+        assert event["status"] == "-"
+
+    def test_allocvec_success(self):
+        """AllocVec event with successful allocation."""
+        text = '106\t14:30:07.000\texec.AllocVec\tShell Process\t3456,MEMF_PUBLIC|MEMF_CLEAR\t0x00678901\tO'
+        event = _parse_trace_event(text)
+        assert event["func"] == "AllocVec"
+        assert "MEMF_PUBLIC" in event["args"]
+        assert "MEMF_CLEAR" in event["args"]
+        assert event["status"] == "O"
+
+    def test_freevec_void(self):
+        """FreeVec event with void return."""
+        text = '107\t14:30:08.000\texec.FreeVec\tShell Process\t0x00678901\t(void)\t-'
+        event = _parse_trace_event(text)
+        assert event["func"] == "FreeVec"
+        assert event["retval"] == "(void)"
+        assert event["status"] == "-"
+
+    def test_ret_io_len_success(self):
+        """Read/Write event with RET_IO_LEN: positive byte count, status O."""
+        text = '108\t14:30:09.000\tdos.Write\tShell Process\tfh=0x00789012,buf=0x00890123,len=42\t42\tO'
+        event = _parse_trace_event(text)
+        assert event["func"] == "Write"
+        assert event["retval"] == "42"
+        assert event["status"] == "O"
+        assert "len=42" in event["args"]
+
+    def test_ret_io_len_zero(self):
+        """Read event with RET_IO_LEN: 0 bytes (EOF), status O."""
+        text = '109\t14:30:10.000\tdos.Read\tShell Process\tfh=0x00789012,buf=0x00890123,len=42\t0\tO'
+        event = _parse_trace_event(text)
+        assert event["func"] == "Read"
+        assert event["retval"] == "0"
+        assert event["status"] == "O"
+
+    def test_ret_io_len_error(self):
+        """Read event with RET_IO_LEN: -1 (error), status E."""
+        text = '110\t14:30:11.000\tdos.Read\tShell Process\tfh=0x00789012,buf=0x00890123,len=42\t-1\tE'
+        event = _parse_trace_event(text)
+        assert event["func"] == "Read"
+        assert event["retval"] == "-1"
+        assert event["status"] == "E"
+
+    def test_err_check_neg1_error(self):
+        """ERR_CHECK_NEG1: retval -1 produces status E (daemon-side)."""
+        # Simulate what the daemon would emit for Read() returning -1
+        text = '111\t14:30:12.000\tdos.Write\tShell Process\tfh=0x00789012,buf=0x00890123,len=100\t-1\tE'
+        event = _parse_trace_event(text)
+        assert event["retval"] == "-1"
+        assert event["status"] == "E"
+
+    def test_err_check_neg1_success(self):
+        """ERR_CHECK_NEG1: retval 0 produces status O (daemon-side)."""
+        text = '112\t14:30:13.000\tdos.Read\tShell Process\tfh=0x00789012,buf=0x00890123,len=100\t0\tO'
+        event = _parse_trace_event(text)
+        assert event["retval"] == "0"
+        assert event["status"] == "O"
+
+
+class TestPhase5FormatTraceEvent:
+    """Tests for format_trace_event() with Phase 5 event types."""
+
+    def _event(self, **overrides):
+        """Build a default event dict with optional overrides."""
+        base = {
+            "seq": 42, "time": "14:30:01.000", "lib": "exec",
+            "func": "OpenLibrary", "task": "Shell Process",
+            "args": '"dos.library",0', "retval": "0x07a3b2c0",
+            "status": "O", "type": "event",
+        }
+        base.update(overrides)
+        return base
+
+    def test_intuition_event_format(self):
+        """Intuition library events format correctly."""
+        cw = ColorWriter(force_color=True)
+        event = self._event(
+            lib="intuition", func="OpenWindow",
+            args="nw=0x00234560", retval="0x00345678", status="O")
+        result = format_trace_event(event, cw)
+        assert "intuition" in result
+        assert "OpenWindow" in result
+        assert "nw=0x00234560" in result
+
+    def test_device_io_event_format(self):
+        """Device I/O events format correctly."""
+        cw = ColorWriter(force_color=True)
+        event = self._event(
+            func="DoIO", args="io=0x00456789",
+            retval="OK", status="O")
+        result = format_trace_event(event, cw)
+        assert "DoIO" in result
+        assert "io=0x00456789" in result
+        assert "OK" in result
+
+    def test_io_len_error_has_red(self):
+        """RET_IO_LEN error (-1) is formatted in red."""
+        cw = ColorWriter(force_color=True)
+        event = self._event(
+            lib="dos", func="Read",
+            args="fh=0x00789012,buf=0x00890123,len=42",
+            retval="-1", status="E")
+        result = format_trace_event(event, cw)
+        assert "\033[31m" in result
+        assert "-1" in result
+
+    def test_io_len_success_has_green(self):
+        """RET_IO_LEN success (42) is formatted in green."""
+        cw = ColorWriter(force_color=True)
+        event = self._event(
+            lib="dos", func="Write",
+            args="fh=0x00789012,buf=0x00890123,len=42",
+            retval="42", status="O")
+        result = format_trace_event(event, cw)
+        assert "\033[32m" in result
+        assert "42" in result
+
+    def test_idcmp_flags_in_formatted_output(self):
+        """IDCMP flag names appear in formatted output."""
+        cw = ColorWriter(force_color=False)
+        event = self._event(
+            lib="intuition", func="ModifyIDCMP",
+            args="win=0x00345678,CLOSEWINDOW|REFRESHWINDOW",
+            retval="(void)", status="-")
+        result = format_trace_event(event, cw)
+        assert "CLOSEWINDOW" in result
+        assert "REFRESHWINDOW" in result
+        assert "ModifyIDCMP" in result
+
+    def test_memory_void_format(self):
+        """Memory void functions format correctly."""
+        cw = ColorWriter(force_color=False)
+        event = self._event(
+            func="FreeMem", args="0x00567890,2345",
+            retval="(void)", status="-")
+        result = format_trace_event(event, cw)
+        assert "FreeMem" in result
+        assert "2345" in result
+        assert "(void)" in result
+
+
+# ---------------------------------------------------------------------------
+# TestPhase5bHeaderComments -- Phase 5b: header comment parsing
+# ---------------------------------------------------------------------------
+
+class TestPhase5bHeaderComments:
+    """Unit tests for Phase 5b header comment parsing.
+
+    Verifies that TraceStreamReader correctly parses #-prefixed DATA
+    chunks as type="comment" events with the expected text content.
+    These are pure unit tests -- no daemon connection needed.
+    """
+
+    def _feed_chunk(self, text):
+        """Feed a text string as a DATA chunk to a TraceStreamReader.
+
+        Simulates a daemon sending a single DATA chunk containing the
+        given text.  Returns the parsed event dict.
+        """
+        data = text.encode(ENCODING)
+        header = "DATA {}\n".format(len(data)).encode(ENCODING)
+        reader = TraceStreamReader(mock.MagicMock())
+        reader._buf = bytearray(header + data)
+        result = reader.drain_buffered()
+        return result
+
+    def test_header_comment_version(self):
+        """Version/timestamp header line is parsed as type='comment'."""
+        result = self._feed_chunk("# atrace v2, 2026-03-06 19:33:38")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == "atrace v2, 2026-03-06 19:33:38"
+
+    def test_header_comment_filter_none(self):
+        """Filter header with (none) is parsed as type='comment'."""
+        result = self._feed_chunk("# filter: (none)")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == "filter: (none)"
+
+    def test_header_comment_with_filter(self):
+        """Filter header with PROC= filter is parsed correctly."""
+        result = self._feed_chunk("# filter: PROC=DirectoryOpus")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == "filter: PROC=DirectoryOpus"
+
+    def test_header_comment_enabled_deviation(self):
+        """Enabled deviation header is parsed correctly."""
+        result = self._feed_chunk(
+            "# enabled: GetMsg (normally noise-disabled)")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert "enabled: GetMsg" in result["text"]
+
+    def test_header_comment_disabled_deviation(self):
+        """Disabled deviation header is parsed correctly."""
+        result = self._feed_chunk(
+            "# disabled: Lock (manually disabled)")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert "disabled: Lock" in result["text"]
+
+    def test_header_comment_command(self):
+        """Command header from TRACE RUN is parsed correctly."""
+        result = self._feed_chunk("# command: C:atrace_test")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == "command: C:atrace_test"
+
+    def test_header_comment_empty_hash(self):
+        """Bare '#' line produces empty text."""
+        result = self._feed_chunk("#")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == ""
+
+    def test_header_comment_hash_space(self):
+        """'# ' (hash + space, no content) produces empty text."""
+        result = self._feed_chunk("# ")
+        assert result is not None
+        assert result["type"] == "comment"
+        assert result["text"] == ""

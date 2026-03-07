@@ -73,7 +73,14 @@ def restore_trace_state(conn):
     # Re-disable noise functions to match post-install defaults
     noise_funcs = ["FindPort", "FindSemaphore", "FindTask",
                    "GetMsg", "PutMsg", "ObtainSemaphore",
-                   "ReleaseSemaphore", "AllocMem"]
+                   "ReleaseSemaphore", "AllocMem",
+                   "OpenLibrary",
+                   # Phase 5 additions
+                   "FreeMem", "AllocVec", "FreeVec",
+                   "Read", "Write",
+                   # Phase 5 device I/O additions
+                   "DoIO", "SendIO", "WaitIO",
+                   "AbortIO", "CheckIO"]
     conn.trace_disable(funcs=noise_funcs)
 
 
@@ -97,20 +104,20 @@ class TestTraceStatus:
         assert "buffer_used" in status
 
     def test_status_field_types(self, conn):
-        """Numeric fields are ints, booleans are bools, patches==30."""
+        """Numeric fields are ints, booleans are bools, patches==50."""
         status = conn.trace_status()
         assert isinstance(status["loaded"], bool)
         assert isinstance(status["enabled"], bool)
         assert isinstance(status["patches"], int)
         assert isinstance(status["events_produced"], int)
-        assert status["patches"] == 30
+        assert status["patches"] == 50
         assert status["buffer_capacity"] > 0
 
     def test_status_patch_list(self, conn):
-        """patch_list has 30 entries, each with name and enabled bool."""
+        """patch_list has 50 entries, each with name and enabled bool."""
         status = conn.trace_status()
         assert "patch_list" in status
-        assert len(status["patch_list"]) == 30
+        assert len(status["patch_list"]) == 50
         for entry in status["patch_list"]:
             assert "name" in entry
             assert "enabled" in entry
@@ -227,7 +234,7 @@ class TestBufferDrain:
     def test_disable_drains_buffer(self, conn, restore_trace_state):
         """After global disable, buffer_used drops to 0."""
         conn.trace_enable()
-        # With 30 patches active, background activity fills the buffer
+        # With 50 patches active, background activity fills the buffer
         conn.trace_disable()
         status = conn.trace_status()
         assert status["buffer_used"] == 0
@@ -338,11 +345,24 @@ class TestTraceStreaming:
                     chunk_len = int(line[5:])
                     data = _recv_exact(trace_sock, chunk_len)
                     text = data.decode("iso-8859-1")
-                    received_data = True
-                    assert "Open" in text, (
-                        "Expected 'Open' in trace event, got: {!r}".format(
-                            text)
-                    )
+                    # Skip header comment lines (Phase 5b)
+                    while text.startswith("#"):
+                        line = _read_line(trace_sock)
+                        if not line.startswith("DATA "):
+                            break
+                        chunk_len = int(line[5:])
+                        data = _recv_exact(trace_sock, chunk_len)
+                        text = data.decode("iso-8859-1")
+                    if text.startswith("#"):
+                        # Loop exited via break (non-DATA line while
+                        # skipping comments) -- no event received.
+                        pass
+                    else:
+                        received_data = True
+                        assert "Open" in text, (
+                            "Expected 'Open' in trace event, got: {!r}".format(
+                                text)
+                        )
             except socket.timeout:
                 pass
 
@@ -603,7 +623,7 @@ class TestTraceRun:
 class TestNoiseDefaults:
     """Tests for noise function auto-disable defaults (Phase 4).
 
-    After loading atrace, 8 high-frequency exec functions should be
+    After loading atrace, 19 high-frequency functions should be
     disabled by default.  These tests verify the default state and
     user override behavior.
     """
@@ -611,7 +631,7 @@ class TestNoiseDefaults:
     def test_noise_funcs_default_disabled(self, conn):
         """Noise functions should be disabled by default after loading."""
         status = conn.trace_status()
-        assert status.get("noise_disabled", 0) >= 8
+        assert status.get("noise_disabled", 0) >= 19
 
         # Check specific functions are disabled
         patches = status.get("patch_list", [])
@@ -619,6 +639,13 @@ class TestNoiseDefaults:
             "exec.FindPort", "exec.FindSemaphore", "exec.FindTask",
             "exec.GetMsg", "exec.PutMsg", "exec.ObtainSemaphore",
             "exec.ReleaseSemaphore", "exec.AllocMem",
+            "exec.OpenLibrary",
+            # Phase 5 additions
+            "exec.FreeMem", "exec.AllocVec", "exec.FreeVec",
+            "dos.Read", "dos.Write",
+            # Phase 5 device I/O additions
+            "exec.DoIO", "exec.SendIO", "exec.WaitIO",
+            "exec.AbortIO", "exec.CheckIO",
         }
         for patch in patches:
             if patch["name"] in noise_names:
@@ -662,7 +689,7 @@ class TestTraceRunPhase4:
             # Check noise functions are disabled before
             status = conn.trace_status()
             pre_noise = status.get("noise_disabled", 0)
-            assert pre_noise >= 8
+            assert pre_noise >= 19
 
             # Start TRACE RUN
             events = []
@@ -675,7 +702,7 @@ class TestTraceRunPhase4:
             # After trace_run returns, noise should still be disabled
             status = conn.trace_status()
             post_noise = status.get("noise_disabled", 0)
-            assert post_noise >= 8, \
+            assert post_noise >= 19, \
                 "Noise functions should remain disabled during TRACE RUN"
         finally:
             conn.close()
@@ -1464,11 +1491,11 @@ class TestTraceFilter:
                             ev["lib"]))
 
                 # Verify exec batch has known atrace_test exec events
-                findport = _find_events(exec_events, "FindPort")
-                openlib = _find_events(exec_events, "OpenLibrary")
-                assert len(findport) + len(openlib) >= 1, (
-                    "Expected atrace_test exec events (FindPort or "
-                    "OpenLibrary) in exec batch")
+                # (noise functions are disabled, use OpenDevice which is not noise)
+                opendev = _find_events(exec_events, "OpenDevice")
+                assert len(opendev) >= 1, (
+                    "Expected atrace_test exec events (OpenDevice) "
+                    "in exec batch")
             finally:
                 conn_trace.close()
                 conn_activity.close()
@@ -1723,9 +1750,10 @@ class TestEventFormatting:
         """exec library events are colored with YELLOW."""
         cw = ColorWriter(force_color=True)
         layout = ColumnLayout(120)
-        exec_events = _find_events(formatting_events, "OpenLibrary")
+        # OpenLibrary and DoIO are noise-disabled; use OpenDevice which is not noise
+        exec_events = _find_events(formatting_events, "OpenDevice")
         assert len(exec_events) >= 1, (
-            "Expected exec.OpenLibrary events from atrace_test")
+            "Expected exec.OpenDevice events from atrace_test")
         for event in exec_events:
             result = layout.format_event(event, cw)
             assert "\033[33m" in result, (
@@ -1824,3 +1852,309 @@ class TestEventFormatting:
             assert "\033[" in result, (
                 "Expected ANSI color codes in output for {}".format(
                     event.get("func", "")))
+
+
+# ---------------------------------------------------------------------------
+# TestTraceHeader -- Phase 5b: trace log header tests
+# ---------------------------------------------------------------------------
+
+def _collect_all_chunks_raw(sock, timeout=10, max_chunks=50):
+    """Collect raw DATA chunks from a trace stream.
+
+    Returns a list of decoded text strings from DATA chunks.  Stops
+    after max_chunks or timeout.  Includes both comment and event text.
+    """
+    chunks = []
+    old_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        for _ in range(max_chunks):
+            try:
+                line = _read_line(sock)
+            except socket.timeout:
+                break
+            if line.startswith("DATA "):
+                chunk_len = int(line[5:])
+                data = _recv_exact(sock, chunk_len)
+                chunks.append(data.decode("iso-8859-1"))
+            elif line == "END":
+                _read_line(sock)  # sentinel
+                break
+            elif line.startswith("ERR"):
+                _read_line(sock)  # sentinel
+                break
+    finally:
+        sock.settimeout(old_timeout)
+    return chunks
+
+
+class TestTraceHeader:
+    """Tests for Phase 5b trace log header emission.
+
+    Verifies that TRACE START and TRACE RUN emit #-prefixed header
+    comments containing version, filter, and deviation information
+    before the first trace event.
+    """
+
+    def test_trace_start_header(self, amiga_host, amiga_port):
+        """TRACE START emits header with version and filter before events."""
+        trace_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        trace_sock.settimeout(10)
+        trace_sock.connect((amiga_host, amiga_port))
+        _read_line(trace_sock)  # banner
+
+        try:
+            send_command(trace_sock, "TRACE START FUNC=Open")
+            status_line = _read_line(trace_sock)
+            assert status_line.startswith("OK"), (
+                "Expected OK, got: {!r}".format(status_line))
+
+            # Collect initial chunks (header + maybe some events)
+            chunks = _collect_all_chunks_raw(trace_sock, timeout=5,
+                                             max_chunks=20)
+
+            # Stop the trace
+            _send_stop_and_drain(trace_sock)
+
+            # Extract comments (# prefixed)
+            comments = [c for c in chunks if c.startswith("#")]
+            assert len(comments) >= 2, (
+                "Expected at least 2 header comments (version + filter), "
+                "got {}: {}".format(len(comments), comments))
+
+            # Version line should be first comment
+            version_comments = [c for c in comments
+                                if "atrace v" in c]
+            assert len(version_comments) >= 1, (
+                "Expected version header (# atrace v...), got: {}".format(
+                    comments))
+
+            # Filter line should be present
+            filter_comments = [c for c in comments
+                               if "filter:" in c]
+            assert len(filter_comments) >= 1, (
+                "Expected filter header, got: {}".format(comments))
+
+            # With FUNC=Open filter, filter line should mention Open
+            assert any("Open" in c for c in filter_comments), (
+                "Expected filter to mention 'Open', got: {}".format(
+                    filter_comments))
+
+            # Header comments should come before any events
+            first_event_idx = None
+            first_comment_idx = None
+            for i, c in enumerate(chunks):
+                if c.startswith("#"):
+                    if first_comment_idx is None:
+                        first_comment_idx = i
+                else:
+                    if first_event_idx is None:
+                        first_event_idx = i
+            if first_event_idx is not None and first_comment_idx is not None:
+                assert first_comment_idx < first_event_idx, (
+                    "Header comments should precede events")
+        finally:
+            trace_sock.close()
+
+    def test_trace_start_header_with_filter(self, amiga_host, amiga_port):
+        """TRACE START with PROC= filter shows filter in header."""
+        trace_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        trace_sock.settimeout(10)
+        trace_sock.connect((amiga_host, amiga_port))
+        _read_line(trace_sock)  # banner
+
+        try:
+            send_command(trace_sock, "TRACE START PROC=someprocess")
+            status_line = _read_line(trace_sock)
+            assert status_line.startswith("OK"), (
+                "Expected OK, got: {!r}".format(status_line))
+
+            chunks = _collect_all_chunks_raw(trace_sock, timeout=5,
+                                             max_chunks=20)
+            _send_stop_and_drain(trace_sock)
+
+            comments = [c for c in chunks if c.startswith("#")]
+            filter_comments = [c for c in comments if "filter:" in c]
+            assert len(filter_comments) >= 1, (
+                "Expected filter header, got: {}".format(comments))
+            assert any("someprocess" in c for c in filter_comments), (
+                "Expected filter to mention 'someprocess', got: {}".format(
+                    filter_comments))
+        finally:
+            trace_sock.close()
+
+    def test_trace_run_header(self, amiga_host, amiga_port):
+        """TRACE RUN emits header with version, command, and filter."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)
+        sock.connect((amiga_host, amiga_port))
+        _read_line(sock)  # banner
+
+        try:
+            send_command(sock, "TRACE RUN -- C:atrace_test")
+            status_line = _read_line(sock)
+            assert status_line.startswith("OK "), (
+                "Expected OK <id>, got: {!r}".format(status_line))
+
+            # Collect all chunks until END
+            chunks = []
+            while True:
+                line = _read_line(sock)
+                if line.startswith("DATA "):
+                    chunk_len = int(line[5:])
+                    data = _recv_exact(sock, chunk_len)
+                    chunks.append(data.decode("iso-8859-1"))
+                elif line == "END":
+                    _read_line(sock)  # sentinel
+                    break
+
+            comments = [c for c in chunks if c.startswith("#")]
+
+            # Should have version header
+            version_comments = [c for c in comments
+                                if "atrace v" in c]
+            assert len(version_comments) >= 1, (
+                "Expected version header in TRACE RUN, got: {}".format(
+                    comments))
+
+            # Should have command header for TRACE RUN
+            command_comments = [c for c in comments
+                                if "command:" in c]
+            assert len(command_comments) >= 1, (
+                "Expected command header in TRACE RUN, got: {}".format(
+                    comments))
+            assert any("atrace_test" in c for c in command_comments), (
+                "Expected command to mention 'atrace_test', got: {}".format(
+                    command_comments))
+        finally:
+            sock.close()
+
+    def test_trace_start_header_with_enabled_noise(self, amiga_host,
+                                                    amiga_port,
+                                                    conn,
+                                                    restore_trace_state):
+        """Header shows noise function when explicitly enabled."""
+        # Enable a noise function
+        conn.trace_enable(funcs=["GetMsg"])
+
+        trace_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        trace_sock.settimeout(10)
+        trace_sock.connect((amiga_host, amiga_port))
+        _read_line(trace_sock)  # banner
+
+        try:
+            send_command(trace_sock, "TRACE START FUNC=Open")
+            status_line = _read_line(trace_sock)
+            assert status_line.startswith("OK"), (
+                "Expected OK, got: {!r}".format(status_line))
+
+            chunks = _collect_all_chunks_raw(trace_sock, timeout=5,
+                                             max_chunks=20)
+            _send_stop_and_drain(trace_sock)
+
+            comments = [c for c in chunks if c.startswith("#")]
+            enabled_comments = [c for c in comments if "enabled:" in c]
+            assert len(enabled_comments) >= 1, (
+                "Expected enabled deviation header when GetMsg is enabled, "
+                "got comments: {}".format(comments))
+            assert any("GetMsg" in c for c in enabled_comments), (
+                "Expected 'GetMsg' in enabled deviation line, got: {}".format(
+                    enabled_comments))
+        finally:
+            trace_sock.close()
+
+    def test_trace_start_header_with_disabled_function(
+            self, amiga_host, amiga_port, conn, restore_trace_state):
+        """Header shows non-noise function when manually disabled."""
+        # Disable a non-noise function
+        conn.trace_disable(funcs=["Lock"])
+
+        trace_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        trace_sock.settimeout(10)
+        trace_sock.connect((amiga_host, amiga_port))
+        _read_line(trace_sock)  # banner
+
+        try:
+            send_command(trace_sock, "TRACE START FUNC=Open")
+            status_line = _read_line(trace_sock)
+            assert status_line.startswith("OK"), (
+                "Expected OK, got: {!r}".format(status_line))
+
+            chunks = _collect_all_chunks_raw(trace_sock, timeout=5,
+                                             max_chunks=20)
+            _send_stop_and_drain(trace_sock)
+
+            comments = [c for c in chunks if c.startswith("#")]
+            disabled_comments = [c for c in comments if "disabled:" in c]
+            assert len(disabled_comments) >= 1, (
+                "Expected disabled deviation header when Lock is disabled, "
+                "got comments: {}".format(comments))
+            assert any("Lock" in c for c in disabled_comments), (
+                "Expected 'Lock' in disabled deviation line, got: {}".format(
+                    disabled_comments))
+        finally:
+            trace_sock.close()
+
+
+# ---------------------------------------------------------------------------
+# TestStringResolution -- Phase 5b: long path string resolution tests
+# ---------------------------------------------------------------------------
+
+class TestStringResolution:
+    """Tests for Phase 5b expanded string capture.
+
+    Verifies that paths longer than 23 characters (but within the
+    59-char expanded string_data capacity) appear fully without
+    truncation.
+    """
+
+    def test_long_path_not_truncated(self, amiga_host, amiga_port):
+        """Lock() with 42-char path fits in 59-char string_data without '...'."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+
+                def collect(ev):
+                    events.append(ev)
+
+                result = conn.trace_run("C:atrace_test", collect)
+                assert result["rc"] == 0, (
+                    "atrace_test exited with rc={}".format(result["rc"]))
+
+                # Find Lock events with the long path from atrace_test
+                long_path = "atrace_test_long_path_verification"
+                lock_events = [
+                    e for e in events
+                    if e.get("type") == "event"
+                    and e.get("func") == "Lock"
+                    and long_path in e.get("args", "")
+                ]
+                assert len(lock_events) >= 1, (
+                    "Expected Lock event with long path '{}', "
+                    "found none in {} events. Lock events: {}".format(
+                        long_path,
+                        len(events),
+                        [e.get("args", "") for e in events
+                         if e.get("func") == "Lock"]))
+
+                # The full path should NOT be truncated with "..."
+                for ev in lock_events:
+                    args = ev.get("args", "")
+                    assert "..." not in args, (
+                        "Long path should not be truncated with '...', "
+                        "got: {}".format(args))
+                    # The full distinctive string should be present
+                    assert long_path in args, (
+                        "Expected full path '{}' in args, got: {}".format(
+                            long_path, args))
+            finally:
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)

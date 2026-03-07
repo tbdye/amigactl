@@ -3164,9 +3164,9 @@ TRACE is a compound command with subcommands: STATUS, START, RUN,
 STOP, ENABLE, and DISABLE.
 
 The atrace module must be loaded on the Amiga (`RUN >NIL: atrace_loader`)
-before TRACE commands will work. atrace patches 30 functions across
-exec.library (12) and dos.library (18), capturing call arguments, return
-values, and the calling task for each invocation.
+before TRACE commands will work. atrace patches 50 functions across
+exec.library (20), dos.library (20), and intuition.library (10), capturing
+call arguments, return values, and the calling task for each invocation.
 
 ### TRACE STATUS
 
@@ -3226,7 +3226,7 @@ C> TRACE STATUS
 S> OK
 S> loaded=1
 S> enabled=1
-S> patches=30
+S> patches=50
 S> events_produced=12345
 S> events_consumed=12340
 S> events_dropped=0
