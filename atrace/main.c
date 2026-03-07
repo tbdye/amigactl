@@ -9,10 +9,15 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <proto/timer.h>
+#include <devices/timer.h>
 
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>  /* offsetof */
+
+/* TimerBase global required by <proto/timer.h> inlines */
+struct Device *TimerBase = NULL;
 
 /* Stack size for libnix */
 unsigned long __stack = 8192;
@@ -21,7 +26,7 @@ unsigned long __stack = 8192;
 typedef char assert_event_size [(sizeof(struct atrace_event) == 128) ? 1 : -1];
 typedef char assert_patch_size [(sizeof(struct atrace_patch) == 40) ? 1 : -1];
 typedef char assert_ringbuf_hdr[(sizeof(struct atrace_ringbuf) == 16) ? 1 : -1];
-typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 84) ? 1 : -1];
+typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 92) ? 1 : -1];
 
 /* ReadArgs template */
 #define TEMPLATE "BUFSZ/K/N,DISABLE/S,STATUS/S,ENABLE/S,QUIT/S,FUNCS/M"
@@ -214,6 +219,26 @@ static int find_patch_by_name(struct atrace_anchor *anchor, const char *name)
     return -1;
 }
 
+/* ---- Open timer.device for ReadEClock access ---- */
+
+/* Uses UNIT_MICROHZ (standard unit for ReadEClock).
+ * The IORequest is allocated on the stack -- only OpenDevice
+ * needs it, and we never close timer.device (persistent). */
+static struct Device *open_timer(void)
+{
+    struct timerequest tr;
+    LONG err;
+
+    memset(&tr, 0, sizeof(tr));
+    err = OpenDevice((STRPTR)"timer.device", UNIT_MICROHZ,
+                     (struct IORequest *)&tr, 0);
+    if (err != 0) {
+        printf("Cannot open timer.device: error %ld\n", (long)err);
+        return NULL;
+    }
+    return tr.tr_node.io_Device;
+}
+
 /* ---- Fresh installation ---- */
 
 static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
@@ -257,7 +282,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
                (unsigned long)capacity,
                (unsigned long)(sizeof(struct atrace_ringbuf) +
                                ATRACE_EVENT_SIZE * capacity));
-        /* anchor is leaked -- acceptable, see shutdown design */
+        FreeMem(anchor, sizeof(struct atrace_anchor));
         return RETURN_FAIL;
     }
 
@@ -269,6 +294,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
         printf("Failed to allocate patch array (%d entries)\n", total_patches);
         FreeMem(ring, sizeof(struct atrace_ringbuf) +
                 ATRACE_EVENT_SIZE * capacity);
+        FreeMem(anchor, sizeof(struct atrace_anchor));
         return RETURN_FAIL;
     }
 
@@ -283,6 +309,10 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
         char *sem_name = (char *)AllocMem(name_len, MEMF_PUBLIC);
         if (!sem_name) {
             printf("Failed to allocate semaphore name\n");
+            FreeMem(patches, sizeof(struct atrace_patch) * total_patches);
+            FreeMem(ring, sizeof(struct atrace_ringbuf) +
+                    ATRACE_EVENT_SIZE * capacity);
+            FreeMem(anchor, sizeof(struct atrace_anchor));
             return RETURN_FAIL;
         }
         CopyMem((APTR)ATRACE_SEM_NAME, (APTR)sem_name, name_len);
@@ -300,6 +330,30 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     anchor->event_sequence = 0;
     anchor->events_consumed = 0;
     anchor->filter_task = NULL;
+
+    /* 4b. Open timer.device for EClock timestamps -- FATAL if it fails.
+     * Timer.device is a core OS component present on every AmigaOS 2.0+
+     * system. Without it, stubs would be patched with NULL TimerBase and
+     * ReadEClock would crash when any traced function is called. */
+    TimerBase = open_timer();
+    if (!TimerBase) {
+        printf("FATAL: Cannot open timer.device "
+               "(required for EClock timestamps)\n");
+        FreeMem(patches, sizeof(struct atrace_patch) * total_patches);
+        FreeMem(ring, sizeof(struct atrace_ringbuf) +
+                ATRACE_EVENT_SIZE * capacity);
+        FreeMem(anchor->sem.ss_Link.ln_Name,
+                strlen(ATRACE_SEM_NAME) + 1);
+        FreeMem(anchor, sizeof(struct atrace_anchor));
+        return RETURN_FAIL;
+    }
+
+    {
+        struct EClockVal ev;
+        anchor->eclock_freq = ReadEClock(&ev);
+    }
+    anchor->timer_base = TimerBase;
+    printf("EClock: %lu Hz\n", (unsigned long)anchor->eclock_freq);
 
     /* Compute entries base address */
     entries = (struct atrace_event *)
@@ -410,6 +464,9 @@ static int do_status(struct atrace_anchor *anchor)
            (unsigned long)anchor->event_sequence);
     printf("  Events consumed:  %lu\n",
            (unsigned long)anchor->events_consumed);
+    if (anchor->version >= 3 && anchor->eclock_freq != 0)
+        printf("  EClock freq:      %lu Hz\n",
+               (unsigned long)anchor->eclock_freq);
 
     if (ring) {
         used = (ring->write_pos - ring->read_pos + ring->capacity)

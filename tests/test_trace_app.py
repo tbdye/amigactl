@@ -1909,3 +1909,81 @@ class TestPhase5PatchCount:
                     len(intuition_patches)))
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestPhase6Timestamps -- Phase 6: EClock timestamps in atrace_test events
+# ---------------------------------------------------------------------------
+
+class TestPhase6Timestamps:
+    """Tests for Phase 6 EClock timestamp features using atrace_test events.
+
+    Uses the module-scoped trace_events fixture to validate that events
+    from atrace_test carry microsecond-precision timestamps.
+    """
+
+    def test_all_events_have_6digit_timestamps(self, trace_events):
+        """Every event has a timestamp in HH:MM:SS.uuuuuu format."""
+        events = trace_events
+        real_events = [e for e in events if e.get("type") == "event"]
+        assert len(real_events) > 0, "No events to check"
+
+        import re
+        us_pattern = re.compile(r'^\d{2}:\d{2}:\d{2}\.\d{6}$')
+        for ev in real_events:
+            time_str = ev.get("time", "")
+            assert us_pattern.match(time_str), (
+                "Expected HH:MM:SS.uuuuuu, got '{}' (seq={}, func={})".format(
+                    time_str, ev.get("seq"), ev.get("func")))
+
+    def test_timestamps_monotonic(self, trace_events):
+        """Event timestamps are monotonically non-decreasing."""
+        from amigactl.trace_ui import TraceViewer
+
+        events = trace_events
+        real_events = [e for e in events if e.get("type") == "event"]
+        assert len(real_events) >= 2
+
+        prev_us = 0
+        for i, ev in enumerate(real_events):
+            us = TraceViewer._parse_time_us(ev.get("time", ""))
+            assert us >= prev_us, (
+                "Timestamp not monotonic at event {}: {} < {} "
+                "(func={}, time='{}')".format(
+                    i, us, prev_us, ev.get("func"), ev.get("time")))
+            prev_us = us
+
+    def test_timestamps_have_nonzero_deltas(self, trace_events):
+        """At least some consecutive events have distinct timestamps."""
+        from amigactl.trace_ui import TraceViewer
+
+        events = trace_events
+        real_events = [e for e in events if e.get("type") == "event"]
+        assert len(real_events) >= 2
+
+        distinct_count = 0
+        for i in range(1, len(real_events)):
+            us_prev = TraceViewer._parse_time_us(
+                real_events[i - 1].get("time", ""))
+            us_curr = TraceViewer._parse_time_us(
+                real_events[i].get("time", ""))
+            if us_curr > us_prev:
+                distinct_count += 1
+
+        # Per-event EClock: most pairs should have distinct timestamps
+        ratio = distinct_count / (len(real_events) - 1)
+        assert ratio > 0.5, (
+            "Only {}/{} pairs have distinct timestamps".format(
+                distinct_count, len(real_events) - 1))
+
+    def test_task_name_present(self, trace_events):
+        """All events have a non-empty task name."""
+        events = trace_events
+        real_events = [e for e in events if e.get("type") == "event"]
+        assert len(real_events) > 0
+
+        for ev in real_events:
+            task = ev.get("task", "")
+            assert len(task) > 0, (
+                "Empty task name in event seq={}, func={}".format(
+                    ev.get("seq"), ev.get("func")))

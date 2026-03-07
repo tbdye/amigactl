@@ -13,7 +13,7 @@
 /* ---- Constants ---- */
 
 #define ATRACE_MAGIC        0x41545243  /* 'ATRC' */
-#define ATRACE_VERSION      2
+#define ATRACE_VERSION      3
 #define ATRACE_SEM_NAME     "atrace_patches"
 #define ATRACE_DEFAULT_BUFSZ 8192
 
@@ -24,6 +24,10 @@
 
 /* Event entry size -- must be 128 bytes for shift-based indexing */
 #define ATRACE_EVENT_SIZE   128
+
+/* Event flags (offset 33) */
+#define FLAG_HAS_ECLOCK     0x01    /* EClock timestamp fields are valid */
+#define FLAG_HAS_IOERR      0x02    /* IoErr field is valid (Phase 8) */
 
 /* ---- struct atrace_anchor ----
  *
@@ -45,7 +49,9 @@
  *   event_sequence:   offset  72,   4 bytes (ULONG)
  *   events_consumed:  offset  76,   4 bytes (ULONG)
  *   filter_task:      offset  80,   4 bytes (volatile APTR)
- *   Total: 84 bytes
+ *   eclock_freq:      offset  84,   4 bytes (ULONG, Hz from ReadEClock)
+ *   timer_base:       offset  88,   4 bytes (struct Device *)
+ *   Total: 92 bytes
  */
 struct atrace_anchor {
     struct SignalSemaphore sem;
@@ -66,6 +72,10 @@ struct atrace_anchor {
      * Set by daemon during TRACE RUN; stubs compare SysBase->ThisTask
      * against this value before writing to the ring buffer. */
     volatile APTR filter_task;
+
+    /* Phase 6: EClock timestamp support */
+    ULONG eclock_freq;            /* EClock frequency in Hz (from ReadEClock) */
+    struct Device *timer_base;    /* timer.device base (for stub ReadEClock calls) */
 };
 
 /* ---- struct atrace_ringbuf ----
@@ -87,17 +97,21 @@ struct atrace_ringbuf {
 
 /* ---- struct atrace_event ----
  *
- *   valid:        offset  0,  1 byte  (volatile UBYTE)
- *   lib_id:       offset  1,  1 byte  (UBYTE)
- *   lvo_offset:   offset  2,  2 bytes (WORD)
- *   sequence:     offset  4,  4 bytes (ULONG)
- *   caller_task:  offset  8,  4 bytes (APTR)
- *   args[4]:      offset 12, 16 bytes (ULONG * 4)
- *   retval:       offset 28,  4 bytes (ULONG)
- *   arg_count:    offset 32,  1 byte  (UBYTE)
- *   padding:      offset 33,  1 byte  (UBYTE)
- *   string_data:  offset 34, 60 bytes (char[60])
- *   reserved:     offset 94, 34 bytes (UBYTE[34])
+ *   valid:        offset   0,  1 byte  (volatile UBYTE)
+ *   lib_id:       offset   1,  1 byte  (UBYTE)
+ *   lvo_offset:   offset   2,  2 bytes (WORD)
+ *   sequence:     offset   4,  4 bytes (ULONG)
+ *   caller_task:  offset   8,  4 bytes (APTR)
+ *   args[4]:      offset  12, 16 bytes (ULONG * 4)
+ *   retval:       offset  28,  4 bytes (ULONG)
+ *   arg_count:    offset  32,  1 byte  (UBYTE)
+ *   flags:        offset  33,  1 byte  (UBYTE, FLAG_HAS_ECLOCK etc.)
+ *   string_data:  offset  34, 64 bytes (char[64])
+ *   ioerr:        offset  98,  1 byte  (UBYTE, reserved for Phase 8)
+ *   reserved1:    offset  99,  1 byte  (UBYTE, alignment)
+ *   eclock_lo:    offset 100,  4 bytes (ULONG, low 32 bits of EClock)
+ *   eclock_hi:    offset 104,  2 bytes (UWORD, low 16 bits of ev_hi)
+ *   task_name:    offset 106, 22 bytes (char[22], 21 chars + NUL)
  *   Total: 128 bytes
  */
 struct atrace_event {
@@ -109,9 +123,13 @@ struct atrace_event {
     ULONG args[4];
     ULONG retval;
     UBYTE arg_count;
-    UBYTE padding;
-    char  string_data[60];
-    UBYTE reserved[34];
+    UBYTE flags;
+    char  string_data[64];
+    UBYTE ioerr;
+    UBYTE reserved1;
+    ULONG eclock_lo;
+    UWORD eclock_hi;
+    char  task_name[22];
 };
 
 /* ---- struct atrace_patch ----

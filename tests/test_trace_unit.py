@@ -138,6 +138,18 @@ class TestParseTraceEvent:
         assert event["retval"] == "0x07a3b2c0"
         assert event["status"] == "-"
 
+    def test_microsecond_timestamp_preserved(self):
+        """6-digit microsecond timestamps are preserved as-is in the time field."""
+        text = '42\t14:30:01.123456\texec.OpenLibrary\tShell Process\t"dos.library",0\t0x07a3b2c0\tO'
+        event = _parse_trace_event(text)
+        assert event["time"] == "14:30:01.123456"
+
+    def test_3digit_timestamp_preserved(self):
+        """3-digit millisecond timestamps are preserved as-is in the time field."""
+        text = '42\t14:30:01.123\texec.OpenLibrary\tShell Process\t"dos.library",0\t0x07a3b2c0\tO'
+        event = _parse_trace_event(text)
+        assert event["time"] == "14:30:01.123"
+
 
 # ---------------------------------------------------------------------------
 # TestFormatTraceEvent

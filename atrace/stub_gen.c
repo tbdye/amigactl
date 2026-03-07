@@ -6,14 +6,15 @@
  * from the patch descriptor.
  *
  * The stub consists of three regions:
- *   1. Prefix (168 bytes): fast-path checks, task filter, register save,
- *      ring buffer slot reservation, event header fields. Identical for
- *      all functions.
+ *   1. Prefix (196 bytes): fast-path checks, task filter, register save,
+ *      ring buffer slot reservation, EClock capture, event header fields.
+ *      Identical for all functions.
  *   2. Variable region: per-function argument copy, arg_count immediate,
- *      and optional string capture. Size varies by function.
- *   3. Suffix (86 bytes): MOVEM restore, trampoline, post-call handler,
- *      disabled path, overflow path. Identical for all functions except
- *      that byte offsets shift based on variable region size.
+ *      flags write, and optional string capture. Size varies by function.
+ *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
+ *      with task name copy, disabled path, overflow path. Identical for
+ *      all functions except that byte offsets shift based on variable
+ *      region size.
  */
 
 #include "atrace.h"
@@ -24,15 +25,16 @@
 #include <stddef.h>  /* offsetof */
 
 /*
- * Prefix template -- bytes 0-167, 84 UWORD values.
+ * Prefix template -- bytes 0-195, 98 UWORD values.
  * Identical for all patched functions.
  *
- * Phase 4: 26-byte task filter check inserted at bytes 30-55,
- * shifting the MOVEM and all subsequent instructions by +26 bytes
- * relative to the Phase 3 prefix (142 -> 168 bytes).
+ * Phase 4: 26-byte task filter check inserted at bytes 30-55.
+ * Phase 6: 28-byte EClock capture block inserted at bytes 136-163,
+ * shifting event fill instructions by +28 bytes (168 -> 196 bytes).
  *
  * Contains placeholder 0x0000 values at PATCH_ADDR, ANCHOR_ADDR,
- * RING_ENTRIES_ADDR, struct displacement, and branch displacement slots.
+ * RING_ENTRIES_ADDR, TIMER_BASE_ADDR, struct displacement, and
+ * branch displacement slots.
  */
 static const UWORD stub_prefix[] = {
     /* === Fast path checks === */
@@ -84,20 +86,31 @@ static const UWORD stub_prefix[] = {
     /*126: */ 0xEF82,                   /* asl.l #7, d2                         */
     /*128: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #RING_ENTRIES_ADDR, a5      */
     /*134: */ 0xDBC2,                   /* adda.l d2, a5                        */
-    /*136: */ 0x2B43, 0x0004,           /* move.l d3, 4(a5)  entry->sequence   */
-    /*140: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [3]       */
-    /*146: */ 0x1B68, 0x0000, 0x0001,   /* move.b 0(a0), 1(a5)  lib_id        */
-    /*152: */ 0x3B68, 0x0002, 0x0002,   /* move.w 2(a0), 2(a5)  lvo_offset    */
-    /*158: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
-    /*162: */ 0x2B6E, 0x0114, 0x0008,   /* move.l 276(a6), 8(a5) caller_task  */
+
+    /* === Phase 6: EClock capture (28 bytes, 14 words) === */
+    /*136: */ 0x2C7C, 0x0000, 0x0000,   /* movea.l #TIMER_BASE, a6             */
+    /*142: */ 0x518F,                   /* subq.l #8, sp                        */
+    /*144: */ 0x204F,                   /* movea.l a7, a0                       */
+    /*146: */ 0x4EAE, 0xFFC4,           /* jsr -60(a6)  (ReadEClock)            */
+    /*150: */ 0x2B6F, 0x0004, 0x0064,   /* move.l 4(sp), 100(a5)  eclock_lo    */
+    /*156: */ 0x3B6F, 0x0002, 0x0068,   /* move.w 2(sp), 104(a5)  eclock_hi    */
+    /*162: */ 0x508F,                   /* addq.l #8, sp                        */
+
+    /* === Event header fill (shifted +28 from original) === */
+    /*164: */ 0x2B43, 0x0004,           /* move.l d3, 4(a5)  entry->sequence   */
+    /*168: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0   [3]       */
+    /*174: */ 0x1B68, 0x0000, 0x0001,   /* move.b 0(a0), 1(a5)  lib_id        */
+    /*180: */ 0x3B68, 0x0002, 0x0002,   /* move.w 2(a0), 2(a5)  lvo_offset    */
+    /*186: */ 0x2C78, 0x0004,           /* movea.l 4.w, a6  (SysBase)          */
+    /*190: */ 0x2B6E, 0x0114, 0x0008,   /* move.l 276(a6), 8(a5) caller_task  */
 };
 
-#define STUB_PREFIX_BYTES  168  /* 84 words */
+#define STUB_PREFIX_BYTES  196  /* 98 words */
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
- * post-call handler, disabled path, and overflow path.
- * 43 UWORD values, 86 bytes.
+ * post-call handler with task name copy, disabled path, and overflow path.
+ * 63 UWORD values, 126 bytes.
  *
  * The trampoline uses a stack-based approach to pass the entry pointer
  * (a5) through the original function call WITHOUT clobbering a0.
@@ -107,6 +120,10 @@ static const UWORD stub_prefix[] = {
  *   3. Pop the duplicate to restore a5
  * This leaves entry_ptr on the stack, accessible after the original
  * function returns via .post_call.
+ *
+ * Phase 6: 40-byte task name copy block inserted at suffix byte 34,
+ * after retval write and before valid=1. Copies ThisTask->tc_Node.ln_Name
+ * into event->task_name with NULL pointer check.
  *
  * All byte offsets below are suffix-relative (0 = first byte of suffix).
  */
@@ -125,61 +142,85 @@ static const UWORD stub_suffix[] = {
     /* 24: */ 0x2F00,                   /* move.l d0, -(sp)     save retval     */
     /* 26: */ 0x206F, 0x0004,           /* movea.l 4(sp), a0    entry ptr       */
     /* 30: */ 0x2140, 0x001C,           /* move.l d0, 28(a0)    entry->retval   */
-    /* 34: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
-    /* 38: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
-    /* 44: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
-    /* 48: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
-    /* 50: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
-    /* 52: */ 0x4E75,                   /* rts                  return to caller*/
 
-    /* === DISABLED fast path === */
-    /* .disabled: (suffix offset 54) */
-    /* 54: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /* 56: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
-    /* 62: */ 0x4E75,                   /* rts                  tail-call orig  */
+    /* === Phase 6: Task name copy with NULL check (40 bytes, 20 words) === */
+    /* 34: */ 0x2F08,                   /* move.l a0, -(sp)     save entry ptr  */
+    /* 36: */ 0x2278, 0x0004,           /* movea.l 4.w, a1      SysBase         */
+    /* 40: */ 0x2269, 0x0114,           /* movea.l 276(a1), a1  ThisTask        */
+    /* 44: */ 0x2269, 0x000A,           /* movea.l 10(a1), a1   ln_Name         */
+    /* 48: */ 0x2009,                   /* move.l a1, d0        NULL test       */
+    /* 50: */ 0x6710,                   /* beq.s .tn_skip (+16 -> byte 68)      */
+    /* 52: */ 0x41E8, 0x006A,           /* lea 106(a0), a0      &task_name      */
+    /* 56: */ 0x7014,                   /* moveq #20, d0        max 20 chars    */
+    /* .tn_copy: */
+    /* 58: */ 0x10D9,                   /* move.b (a1)+, (a0)+                  */
+    /* 60: */ 0x57C8, 0xFFFC,           /* dbeq d0, .tn_copy    (-4)            */
+    /* 64: */ 0x4210,                   /* clr.b (a0)           NUL-terminate   */
+    /* 66: */ 0x6004,                   /* bra.s .tn_done (+4 -> byte 72)       */
+    /* .tn_skip: */
+    /* 68: */ 0x4228, 0x006A,           /* clr.b 106(a0)        NUL empty name  */
+    /* .tn_done: */
+    /* 72: */ 0x205F,                   /* movea.l (sp)+, a0    restore entry   */
 
-    /* === OVERFLOW path === */
-    /* .overflow: (suffix offset 64) */
-    /* 64: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
-    /* 68: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
-    /* 72: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
-    /* 76: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /* 78: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
-    /* 84: */ 0x4E75,                   /* rts                  tail-call orig  */
+    /* === Rest of post_call (shifted +40) === */
+    /* 74: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
+    /* 78: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
+    /* 84: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
+    /* 88: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
+    /* 90: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
+    /* 92: */ 0x4E75,                   /* rts                  return to caller*/
+
+    /* === DISABLED fast path (shifted +40) === */
+    /* .disabled: (suffix offset 94) */
+    /* 94: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /* 96: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
+    /*102: */ 0x4E75,                   /* rts                  tail-call orig  */
+
+    /* === OVERFLOW path (shifted +40) === */
+    /* .overflow: (suffix offset 104) */
+    /*104: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
+    /*108: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
+    /*112: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
+    /*116: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /*118: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
+    /*124: */ 0x4E75,                   /* rts                  tail-call orig  */
 };
 
-#define STUB_SUFFIX_BYTES   86  /* 43 words */
+#define STUB_SUFFIX_BYTES  126  /* 63 words */
 
 /* ---- Suffix-relative byte offsets ---- */
 
 /* PATCH_ADDR occurrence 4 (high word of address in suffix) */
-#define PATCH_SUFFIX_REL            40
+#define PATCH_SUFFIX_REL            80   /* was 40, +40 for task name block */
 
 /* Struct field displacement patches within the suffix */
-#define SUFFIX_DISP_USE_COUNT_DEC   46   /* subq.l #1, OFS_USE_COUNT(a0) */
-#define SUFFIX_DISP_OVERFLOW        66   /* addq.l #1, OFS_OVERFLOW(a0)  */
+#define SUFFIX_DISP_USE_COUNT_DEC   86   /* subq.l #1, OFS_USE_COUNT(a0) (was 46, +40) */
+#define SUFFIX_DISP_OVERFLOW       106   /* addq.l #1, OFS_OVERFLOW(a0)  (was 66, +40) */
 
 /* Label offsets within the suffix (used for branch displacement calc) */
-#define SUFFIX_LABEL_DISABLED       54   /* .disabled label */
-#define SUFFIX_LABEL_OVERFLOW       64   /* .overflow label */
+#define SUFFIX_LABEL_DISABLED       94   /* .disabled label (was 54, +40) */
+#define SUFFIX_LABEL_OVERFLOW      104   /* .overflow label (was 64, +40) */
 
 /* ORIG_ADDR occurrences (suffix-relative high word offsets) */
-#define ORIG_SUFFIX_REL_1           18   /* trampoline push   */
-#define ORIG_SUFFIX_REL_2           58   /* .disabled push    */
-#define ORIG_SUFFIX_REL_3           80   /* .overflow push    */
+#define ORIG_SUFFIX_REL_1           18   /* trampoline push   (unchanged, before insertion) */
+#define ORIG_SUFFIX_REL_2           98   /* .disabled push    (was 58, +40) */
+#define ORIG_SUFFIX_REL_3          120   /* .overflow push    (was 80, +40) */
 
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
 /* PATCH_ADDR -- 3 occurrences in prefix */
 #define PATCH_OFF_1     4    /* per-patch enable check                  */
 #define PATCH_OFF_2   102    /* use_count increment                     */
-#define PATCH_OFF_3   142    /* lib_id/lvo_offset copy                  */
+#define PATCH_OFF_3   170    /* lib_id/lvo_offset copy (was 142, +28 for EClock block) */
 
 /* ANCHOR_ADDR -- 1 occurrence in prefix */
 #define ANCHOR_OFF_1   18    /* global enable check                     */
 
 /* RING_ENTRIES_ADDR -- 1 occurrence in prefix */
 #define ENTRIES_OFF_1  130   /* entry base address                      */
+
+/* TIMER_BASE_ADDR -- 1 occurrence in prefix (Phase 6) */
+#define TIMER_BASE_OFF 138   /* EClock block: movea.l #TIMER_BASE, a6  */
 
 /* ---- Prefix struct field displacement patches ---- */
 
@@ -221,9 +262,11 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
 /* Generate and install a stub for one patched function.
  *
  * The stub is assembled from three pieces:
- *   1. Fixed prefix (168 bytes) - task filter, register save, ring buffer, event header
- *   2. Variable region - argument copy + string capture, built from metadata
- *   3. Fixed suffix (86 bytes) - post-call, disabled path, overflow path
+ *   1. Fixed prefix (196 bytes) - task filter, register save, ring buffer,
+ *      EClock capture, event header
+ *   2. Variable region - argument copy, flags, string capture, built from metadata
+ *   3. Fixed suffix (126 bytes) - post-call with task name copy, disabled path,
+ *      overflow path
  *
  * Parameters:
  *   anchor    -- pointer to the atrace_anchor (already allocated)
@@ -247,7 +290,7 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[30];    /* Worst case 28 words (4-arg + string + valid). Buffer 30 for 2 words margin. */
+    UWORD var_buf[34];    /* Worst case 31 words (4-arg + string + valid + flags). Buffer 34 for margin. */
     int var_words;
     int total_bytes;
     int alloc_size;
@@ -277,6 +320,11 @@ int stub_generate_and_install(
         var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, arg_count);
     }
 
+    /* Phase 6: flags = FLAG_HAS_ECLOCK: move.b #1, 33(a5) */
+    var_buf[var_words++] = 0x1B7C;                    /* move.b #imm, d16(a5) */
+    var_buf[var_words++] = 0x0001;                    /* FLAG_HAS_ECLOCK      */
+    var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, flags);
+
     /* String capture (if any string argument) */
     if (patch->string_args != 0) {
         /* Find the first string argument (lowest set bit) */
@@ -296,7 +344,7 @@ int stub_generate_and_install(
         /* NULL check: if a0 == 0, skip to clr.b (displacement = 8 bytes) */
         var_buf[var_words++] = 0x4A88;                /* tst.l a0 */
         var_buf[var_words++] = 0x6708;                /* beq.s +8 (skip to clr.b) */
-        var_buf[var_words++] = 0x703A;                /* moveq #58, d0 */
+        var_buf[var_words++] = 0x703E;                /* moveq #62, d0 */
         var_buf[var_words++] = 0x12D8;                /* move.b (a0)+, (a1)+ */
         var_buf[var_words++] = 0x57C8;                /* dbeq d0, .strcopy */
         var_buf[var_words++] = 0xFFFC;                /* displacement -4 */
@@ -350,6 +398,9 @@ int stub_generate_and_install(
 
     /* RING_ENTRIES_ADDR -- 1 occurrence (prefix, fixed offset) */
     patch_addr(p, ENTRIES_OFF_1, (ULONG)entries);
+
+    /* TIMER_BASE_ADDR -- 1 occurrence (prefix, EClock block) */
+    patch_addr(p, TIMER_BASE_OFF, (ULONG)anchor->timer_base);
 
     /* Struct field displacements (prefix -- patched from offsetof) */
     p[DISP_ENABLED / 2]       = (UWORD)offsetof(struct atrace_patch, enabled);

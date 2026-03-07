@@ -1235,7 +1235,9 @@ class AmigaConnection:
             events_produced (int), events_consumed (int),
             events_dropped (int), buffer_capacity (int),
             buffer_used (int), filter_task (str or absent),
-            noise_disabled (int or absent).
+            noise_disabled (int or absent),
+            anchor_version (int or absent),
+            eclock_freq (int or absent).
 
         filter_task is a hex string like "0x0e300200" when a task
         filter is active (during TRACE RUN), or "0x00000000" when
@@ -1243,6 +1245,12 @@ class AmigaConnection:
 
         noise_disabled is the count of noise functions currently
         disabled.  Only present when atrace is loaded.
+
+        anchor_version is the atrace kernel module version (e.g. 3
+        for Phase 6+).  Only present when atrace is loaded.
+
+        eclock_freq is the EClock frequency in Hz (e.g. 709379 for
+        PAL).  Only present when anchor_version >= 3.
 
         Integer fields are only present when atrace is loaded.
         """
@@ -1273,6 +1281,16 @@ class AmigaConnection:
                     result["noise_disabled"] = int(val)
                 except ValueError:
                     result["noise_disabled"] = 0
+            elif key == "anchor_version":
+                try:
+                    result["anchor_version"] = int(val)
+                except ValueError:
+                    result["anchor_version"] = 0
+            elif key == "eclock_freq":
+                try:
+                    result["eclock_freq"] = int(val)
+                except ValueError:
+                    result["eclock_freq"] = 0
             elif key.startswith("patch_"):
                 # patch_0=exec.FindPort enabled=1
                 if "patch_list" not in result:

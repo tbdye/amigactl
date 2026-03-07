@@ -495,8 +495,14 @@ class TestTraceViewer:
         assert result == "+1:23.4"
 
     def test_parse_time_valid(self):
-        """Verify _parse_time for a standard timestamp."""
+        """Verify _parse_time for a standard 3-digit timestamp."""
         ms = TraceViewer._parse_time("10:15:23.456")
+        expected = (10 * 3600 + 15 * 60 + 23) * 1000 + 456
+        assert ms == expected
+
+    def test_parse_time_6digit(self):
+        """Verify _parse_time with 6-digit microsecond timestamp."""
+        ms = TraceViewer._parse_time("10:15:23.456789")
         expected = (10 * 3600 + 15 * 60 + 23) * 1000 + 456
         assert ms == expected
 
@@ -506,14 +512,19 @@ class TestTraceViewer:
         assert TraceViewer._parse_time("") == 0
 
     def test_time_diff_normal(self):
-        """Verify normal time difference."""
+        """Verify normal time difference with microsecond precision."""
+        result = TraceViewer._time_diff("10:00:00.000000", "10:00:01.500000")
+        assert result == "+1.500000"
+
+    def test_time_diff_normal_3digit(self):
+        """Verify time difference with 3-digit timestamps (backward compat)."""
         result = TraceViewer._time_diff("10:00:00.000", "10:00:01.500")
-        assert result == "+1.500"
+        assert result == "+1.500000"
 
     def test_time_diff_midnight_wrap(self):
         """Verify midnight wraparound handling."""
-        result = TraceViewer._time_diff("23:59:59.900", "00:00:00.100")
-        assert result == "+0.200"
+        result = TraceViewer._time_diff("23:59:59.900000", "00:00:00.100000")
+        assert result == "+0.200000"
 
     def test_keypress_s_toggles_stats(self):
         """Pressing 's' toggles stats_mode."""
@@ -697,7 +708,7 @@ class TestTraceViewer:
         viewer.timestamp_mode = "relative"
         viewer.start_time = "10:00:00.000"
         event = _make_event(time="10:00:01.500")
-        assert viewer._format_timestamp(event) == "+1.500"
+        assert viewer._format_timestamp(event) == "+1.500000"
 
     def test_format_timestamp_delta(self):
         """Delta mode returns offset from previous event."""
@@ -705,15 +716,15 @@ class TestTraceViewer:
         viewer.timestamp_mode = "delta"
         viewer.last_event_time = "10:00:00.000"
         event = _make_event(time="10:00:00.250")
-        assert viewer._format_timestamp(event) == "+0.250"
+        assert viewer._format_timestamp(event) == "+0.250000"
 
     def test_format_timestamp_delta_no_previous(self):
-        """Delta mode with no previous event returns +0.000."""
+        """Delta mode with no previous event returns +0.000000."""
         viewer = _make_viewer()
         viewer.timestamp_mode = "delta"
         viewer.last_event_time = None
         event = _make_event(time="10:00:00.250")
-        assert viewer._format_timestamp(event) == "+0.000"
+        assert viewer._format_timestamp(event) == "+0.000000"
 
     def test_pause_buffer_limit(self):
         """Verify buffer stops growing at pause_buffer_limit."""
@@ -1351,7 +1362,7 @@ class TestTimestamp:
         viewer.timestamp_mode = "relative"
         viewer.start_time = "10:00:00.000"
         event = _make_event(time="10:00:01.500")
-        assert viewer._format_timestamp(event) == "+1.500"
+        assert viewer._format_timestamp(event) == "+1.500000"
 
     def test_delta_between_events(self):
         """Delta mode returns offset from previous event."""
@@ -1359,7 +1370,23 @@ class TestTimestamp:
         viewer.timestamp_mode = "delta"
         viewer.last_event_time = "10:00:00.000"
         event = _make_event(time="10:00:00.250")
-        assert viewer._format_timestamp(event) == "+0.250"
+        assert viewer._format_timestamp(event) == "+0.250000"
+
+    def test_relative_microsecond_precision(self):
+        """Relative mode preserves microsecond precision."""
+        viewer = _make_viewer()
+        viewer.timestamp_mode = "relative"
+        viewer.start_time = "10:00:00.000000"
+        event = _make_event(time="10:00:01.123456")
+        assert viewer._format_timestamp(event) == "+1.123456"
+
+    def test_delta_microsecond_precision(self):
+        """Delta mode preserves microsecond precision."""
+        viewer = _make_viewer()
+        viewer.timestamp_mode = "delta"
+        viewer.last_event_time = "10:00:00.000000"
+        event = _make_event(time="10:00:00.001234")
+        assert viewer._format_timestamp(event) == "+0.001234"
 
     def test_time_parse_valid(self):
         """Verify _parse_time for a standard timestamp."""
@@ -1375,8 +1402,8 @@ class TestTimestamp:
     def test_time_diff_midnight_wrap(self):
         """Verify midnight wraparound handling."""
         result = TraceViewer._time_diff(
-            "23:59:59.900", "00:00:00.100")
-        assert result == "+0.200"
+            "23:59:59.900000", "00:00:00.100000")
+        assert result == "+0.200000"
 
     def test_cycle_through_modes(self):
         """Pressing t cycles absolute -> relative -> delta -> absolute."""
@@ -1393,20 +1420,162 @@ class TestTimestamp:
         assert viewer.timestamp_mode == "absolute"
 
     def test_relative_no_start_time(self):
-        """Relative mode with no start_time returns +0.000."""
+        """Relative mode with no start_time returns +0.000000."""
         viewer = _make_viewer()
         viewer.timestamp_mode = "relative"
         viewer.start_time = None
         event = _make_event(time="10:00:00.250")
-        assert viewer._format_timestamp(event) == "+0.000"
+        assert viewer._format_timestamp(event) == "+0.000000"
 
     def test_delta_no_previous(self):
-        """Delta mode with no previous event returns +0.000."""
+        """Delta mode with no previous event returns +0.000000."""
         viewer = _make_viewer()
         viewer.timestamp_mode = "delta"
         viewer.last_event_time = None
         event = _make_event(time="10:00:00.250")
-        assert viewer._format_timestamp(event) == "+0.000"
+        assert viewer._format_timestamp(event) == "+0.000000"
+
+    # -- Phase 6: Microsecond timestamp parsing tests --
+
+    def test_parse_time_us_6digit(self):
+        """_parse_time_us parses HH:MM:SS.uuuuuu to microseconds."""
+        us = TraceViewer._parse_time_us("12:34:56.123456")
+        expected = ((12 * 3600 + 34 * 60 + 56) * 1000000) + 123456
+        assert us == expected
+
+    def test_parse_time_us_3digit_padded(self):
+        """_parse_time_us pads 3-digit ms to 6-digit us (backward compat)."""
+        us = TraceViewer._parse_time_us("12:34:56.123")
+        expected = ((12 * 3600 + 34 * 60 + 56) * 1000000) + 123000
+        assert us == expected
+
+    def test_parse_time_us_no_fraction(self):
+        """_parse_time_us handles timestamps with no fractional part."""
+        us = TraceViewer._parse_time_us("12:34:56")
+        expected = (12 * 3600 + 34 * 60 + 56) * 1000000
+        assert us == expected
+
+    def test_parse_time_us_zero(self):
+        """_parse_time_us handles midnight (00:00:00.000000)."""
+        assert TraceViewer._parse_time_us("00:00:00.000000") == 0
+
+    def test_parse_time_us_one_microsecond(self):
+        """_parse_time_us handles smallest non-zero microsecond."""
+        us = TraceViewer._parse_time_us("00:00:00.000001")
+        assert us == 1
+
+    def test_parse_time_us_999999(self):
+        """_parse_time_us handles 999999 microseconds."""
+        us = TraceViewer._parse_time_us("00:00:00.999999")
+        assert us == 999999
+
+    def test_parse_time_us_malformed(self):
+        """_parse_time_us returns 0 for malformed input."""
+        assert TraceViewer._parse_time_us("bad") == 0
+        assert TraceViewer._parse_time_us("") == 0
+        assert TraceViewer._parse_time_us("not:a:time") == 0
+
+    def test_parse_time_us_4digit(self):
+        """_parse_time_us pads 4-digit fraction to 6 digits."""
+        us = TraceViewer._parse_time_us("00:00:01.1234")
+        assert us == 1000000 + 123400
+
+    def test_parse_time_us_7digit_truncated(self):
+        """_parse_time_us truncates fractions longer than 6 digits."""
+        us = TraceViewer._parse_time_us("00:00:01.1234567")
+        assert us == 1000000 + 123456
+
+    def test_parse_time_backward_compat_6digit(self):
+        """_parse_time (ms wrapper) correctly truncates 6-digit timestamps."""
+        ms = TraceViewer._parse_time("12:34:56.123456")
+        expected = (12 * 3600 + 34 * 60 + 56) * 1000 + 123
+        assert ms == expected
+
+    def test_time_diff_microsecond_precision(self):
+        """_time_diff produces microsecond-precision delta strings."""
+        result = TraceViewer._time_diff(
+            "10:00:00.000000", "10:00:00.001234")
+        assert result == "+0.001234"
+
+    def test_time_diff_3digit_backward_compat(self):
+        """_time_diff works with 3-digit timestamps (padded to us)."""
+        result = TraceViewer._time_diff("10:00:00.000", "10:00:01.500")
+        assert result == "+1.500000"
+
+    def test_time_diff_midnight_wrap_microsecond(self):
+        """_time_diff handles midnight wraparound with microseconds."""
+        result = TraceViewer._time_diff(
+            "23:59:59.999000", "00:00:00.001000")
+        assert result == "+0.002000"
+
+    def test_elapsed_str_microsecond_input(self):
+        """_elapsed_str works correctly with 6-digit timestamps."""
+        viewer = _make_viewer()
+        viewer.start_time = "10:00:00.000000"
+        viewer.last_event_time = "10:01:23.456789"
+        result = viewer._elapsed_str()
+        assert result == "+1:23.4"
+
+    def test_format_timestamp_for_scroll_delta_microsecond(self):
+        """_format_timestamp_for_scroll delta uses microsecond precision."""
+        viewer = _make_viewer()
+        viewer.timestamp_mode = "delta"
+        event = _make_event(time="10:00:00.123456")
+        result = viewer._format_timestamp_for_scroll(
+            event, "10:00:00.000000")
+        assert result == "+0.123456"
+
+    def test_format_timestamp_for_scroll_relative_microsecond(self):
+        """_format_timestamp_for_scroll relative uses microsecond precision."""
+        viewer = _make_viewer()
+        viewer.timestamp_mode = "relative"
+        viewer.start_time = "10:00:00.000000"
+        event = _make_event(time="10:00:01.234567")
+        result = viewer._format_timestamp_for_scroll(event, None)
+        assert result == "+1.234567"
+
+
+# ---------------------------------------------------------------------------
+# TestCommentMetadata (Phase 6)
+# ---------------------------------------------------------------------------
+
+class TestCommentMetadata:
+    """Tests for header comment metadata parsing (Phase 6)."""
+
+    def test_eclock_freq_parsed_from_comment(self):
+        """eclock_freq is extracted from header comment."""
+        viewer = _make_viewer()
+        comment = {"type": "comment", "text": "eclock_freq: 709379 Hz"}
+        viewer._display_comment(comment)
+        assert viewer.eclock_freq == 709379
+
+    def test_timestamp_precision_parsed_from_comment(self):
+        """timestamp_precision is extracted from header comment."""
+        viewer = _make_viewer()
+        comment = {"type": "comment",
+                   "text": "timestamp_precision: microsecond"}
+        viewer._display_comment(comment)
+        assert viewer.timestamp_precision == "microsecond"
+
+    def test_eclock_freq_ntsc(self):
+        """NTSC EClock frequency is parsed correctly."""
+        viewer = _make_viewer()
+        comment = {"type": "comment", "text": "eclock_freq: 715909 Hz"}
+        viewer._display_comment(comment)
+        assert viewer.eclock_freq == 715909
+
+    def test_eclock_freq_malformed_ignored(self):
+        """Malformed eclock_freq comment is silently ignored."""
+        viewer = _make_viewer()
+        comment = {"type": "comment", "text": "eclock_freq: notanumber Hz"}
+        viewer._display_comment(comment)
+        assert viewer.eclock_freq == 0
+
+    def test_metadata_defaults(self):
+        """Metadata fields default to zero/empty."""
+        viewer = _make_viewer()
+        assert viewer.eclock_freq == 0
+        assert viewer.timestamp_precision == ""
 
 
 # ---------------------------------------------------------------------------
@@ -2725,12 +2894,12 @@ class TestScrollback:
         viewer.term.write_at = capture_write_at
         viewer._scroll_pause_buffer(0)
 
-        # Row 3 should be first event (delta = +0.000 since no prev)
-        assert "+0.000" in written_rows.get(3, "")
+        # Row 3 should be first event (delta = +0.000000 since no prev)
+        assert "+0.000000" in written_rows.get(3, "")
         # Row 4 should be second event (delta from 01.000 to 01.100)
-        assert "+0.100" in written_rows.get(4, "")
+        assert "+0.100000" in written_rows.get(4, "")
         # Row 5 should be third event (delta from 01.100 to 01.300)
-        assert "+0.200" in written_rows.get(5, "")
+        assert "+0.200000" in written_rows.get(5, "")
 
     def test_last_event_time_updated_after_grid_replay(self):
         """Grid close replay updates last_event_time."""

@@ -2158,3 +2158,185 @@ class TestStringResolution:
         finally:
             sig.alarm(0)
             sig.signal(sig.SIGALRM, old_handler)
+
+
+# ---------------------------------------------------------------------------
+# TestPhase6EClock -- Phase 6: EClock timestamps and metadata
+# ---------------------------------------------------------------------------
+
+class TestPhase6EClock:
+    """Tests for Phase 6 EClock timestamp features.
+
+    Validates microsecond timestamps, monotonicity, per-event resolution,
+    embedded task names, EClock frequency in STATUS, and anchor version.
+    """
+
+    def test_status_anchor_version(self, conn):
+        """TRACE STATUS reports anchor_version >= 3 (Phase 6)."""
+        status = conn.trace_status()
+        assert "anchor_version" in status, (
+            "anchor_version not in TRACE STATUS response")
+        assert status["anchor_version"] >= 3, (
+            "Expected anchor_version >= 3, got {}".format(
+                status["anchor_version"]))
+
+    def test_status_eclock_freq(self, conn):
+        """TRACE STATUS reports a non-zero eclock_freq."""
+        status = conn.trace_status()
+        assert "eclock_freq" in status, (
+            "eclock_freq not in TRACE STATUS response")
+        assert status["eclock_freq"] > 0, (
+            "Expected positive eclock_freq, got {}".format(
+                status["eclock_freq"]))
+        # Sanity: typical PAL=709379, NTSC=715909, emulated may vary
+        # but should be in a reasonable range (100kHz - 10MHz)
+        assert 100000 <= status["eclock_freq"] <= 10000000, (
+            "eclock_freq {} outside reasonable range".format(
+                status["eclock_freq"]))
+
+    def test_timestamps_microsecond_format(self, amiga_host, amiga_port):
+        """Events from TRACE RUN have 6-digit fractional timestamps."""
+        import re
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(30)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+                result = conn.trace_run("C:atrace_test",
+                                        lambda e: events.append(e))
+                assert result["rc"] == 0
+
+                real_events = [e for e in events
+                               if e.get("type") == "event"]
+                assert len(real_events) > 0, "No events collected"
+
+                # Check that timestamps have 6-digit fractional part
+                us_pattern = re.compile(
+                    r'^\d{2}:\d{2}:\d{2}\.\d{6}$')
+                for ev in real_events:
+                    time_str = ev.get("time", "")
+                    assert us_pattern.match(time_str), (
+                        "Expected HH:MM:SS.uuuuuu format, got '{}' "
+                        "(seq={})".format(time_str, ev.get("seq")))
+            finally:
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_timestamps_monotonic(self, amiga_host, amiga_port):
+        """Event timestamps are monotonically increasing within a session."""
+        import signal as sig
+        from amigactl.trace_ui import TraceViewer
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(30)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+                result = conn.trace_run("C:atrace_test",
+                                        lambda e: events.append(e))
+                assert result["rc"] == 0
+
+                real_events = [e for e in events
+                               if e.get("type") == "event"]
+                assert len(real_events) >= 2, (
+                    "Need >= 2 events for monotonicity check")
+
+                prev_us = 0
+                for i, ev in enumerate(real_events):
+                    us = TraceViewer._parse_time_us(ev.get("time", ""))
+                    assert us >= prev_us, (
+                        "Timestamp not monotonic at event {}: {} < {} "
+                        "(time='{}')".format(
+                            i, us, prev_us, ev.get("time")))
+                    prev_us = us
+            finally:
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_timestamps_distinct(self, amiga_host, amiga_port):
+        """Consecutive events have distinct (non-zero-delta) timestamps."""
+        import signal as sig
+        from amigactl.trace_ui import TraceViewer
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(30)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+                result = conn.trace_run("C:atrace_test",
+                                        lambda e: events.append(e))
+                assert result["rc"] == 0
+
+                real_events = [e for e in events
+                               if e.get("type") == "event"]
+                assert len(real_events) >= 2, (
+                    "Need >= 2 events for distinctness check")
+
+                # At least some consecutive pairs should have different
+                # timestamps (per-event EClock, not batch-shared)
+                distinct_count = 0
+                for i in range(1, len(real_events)):
+                    us_prev = TraceViewer._parse_time_us(
+                        real_events[i - 1].get("time", ""))
+                    us_curr = TraceViewer._parse_time_us(
+                        real_events[i].get("time", ""))
+                    if us_curr > us_prev:
+                        distinct_count += 1
+
+                # With per-event EClock timestamps, the vast majority
+                # of consecutive pairs should be distinct
+                ratio = distinct_count / (len(real_events) - 1)
+                assert ratio > 0.5, (
+                    "Only {}/{} consecutive event pairs have distinct "
+                    "timestamps (expected >50% with per-event EClock)".format(
+                        distinct_count, len(real_events) - 1))
+            finally:
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_task_name_embedded(self, amiga_host, amiga_port):
+        """Events from TRACE RUN atrace_test contain the task name."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(30)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+                result = conn.trace_run("C:atrace_test",
+                                        lambda e: events.append(e))
+                assert result["rc"] == 0
+
+                real_events = [e for e in events
+                               if e.get("type") == "event"]
+                assert len(real_events) > 0, "No events collected"
+
+                # The task field should contain the process name.
+                # atrace_test runs as a separate process; its task name
+                # should be non-empty for all events.
+                for ev in real_events:
+                    task = ev.get("task", "")
+                    assert len(task) > 0, (
+                        "Empty task name in event seq={}".format(
+                            ev.get("seq")))
+            finally:
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)

@@ -143,6 +143,21 @@ static char trace_cmd_buf[MAX_CMD_LEN + 1];
 /* Event formatting buffer (static, single-threaded) */
 static char trace_line_buf[512];
 
+/* ---- EClock session epoch ----
+ * Captured at TRACE START / TRACE RUN to convert per-event EClock
+ * ticks into wall-clock timestamps.  Only valid when g_anchor->version >= 3
+ * and g_anchor->eclock_freq != 0. */
+static int g_eclock_valid = 0;       /* 1 = epoch captured, EClock available */
+static int g_eclock_baseline_set = 0; /* 1 = baseline captured from first event */
+static ULONG g_eclock_freq = 0;     /* EClock frequency in Hz */
+static ULONG g_start_eclock_lo = 0; /* EClock lo at session start */
+static WORD  g_start_eclock_hi = 0; /* EClock hi at session start */
+static LONG  g_start_secs = 0;      /* wall-clock seconds since midnight */
+static LONG  g_start_us = 0;        /* wall-clock microseconds */
+/* Precomputed constants for 48-bit EClock conversion */
+static ULONG g_secs_per_hi = 0;     /* (2^32 - 1) / freq */
+static ULONG g_rem_per_hi = 0;      /* (2^32 - 1) % freq */
+
 /* Drain stale events from ring buffer and clear valid flags.
  * Must be called under Forbid(). */
 static void drain_stale_events(void)
@@ -330,6 +345,7 @@ static char format_retval(struct atrace_event *ev,
                            char *buf, int bufsz);
 static void trace_format_event(struct atrace_event *ev,
                                 const char *timestr,
+                                const char *resolved_name,
                                 char *buf, int bufsz);
 static int send_trace_data_chunk(LONG fd, const char *line);
 static int trace_cmd_status(struct client *c);
@@ -342,6 +358,9 @@ static int trace_cmd_disable(struct client *c, const char *args);
 static void trace_run_cleanup(struct client *c);
 static int emit_trace_header(LONG fd, struct trace_state *ts,
                               const char *run_command);
+static void eclock_capture_epoch(void);
+static int eclock_format_time(struct atrace_event *ev,
+                               char *buf, int bufsz);
 
 /* ---- Initialization / cleanup ---- */
 
@@ -376,6 +395,8 @@ void trace_cleanup(void)
     g_events_dropped = 0;
     task_cache_count = 0;
     task_cache_polls = 0;
+    g_eclock_valid = 0;
+    g_eclock_freq = 0;
 }
 
 /* ---- Lazy discovery helper ---- */
@@ -1413,11 +1434,11 @@ static void format_idcmp_flags(ULONG flags, char *buf, int bufsz)
 }
 
 /* Check if a string_data value was likely truncated.
- * string_data is 60 bytes; the stub copies at most 59 chars
- * (leaving room for NUL). If strlen == 59, truncation likely. */
+ * string_data is 64 bytes; the stub copies at most 63 chars
+ * (leaving room for NUL). If strlen == 63, truncation likely. */
 static int string_likely_truncated(const char *s)
 {
-    return (strlen(s) >= 59);
+    return (strlen(s) >= 63);
 }
 
 /* Lock-to-path cache: maps BPTR lock values to path strings.
@@ -1551,9 +1572,20 @@ static int emit_trace_header(LONG fd, struct trace_state *ts,
 
     snprintf(line, sizeof(line),
              "# atrace v%d, %04d-%02d-%02d %02d:%02d:%02d",
-             (int)ATRACE_VERSION, yr, mo, dy, hr, mn, sc);
+             (int)(g_anchor ? g_anchor->version : ATRACE_VERSION),
+             yr, mo, dy, hr, mn, sc);
     if (send_trace_data_chunk(fd, line) < 0)
         return -1;
+
+    /* EClock info (v3+ only) */
+    if (g_eclock_valid && g_eclock_freq != 0) {
+        snprintf(line, sizeof(line), "# eclock_freq: %lu Hz",
+                 (unsigned long)g_eclock_freq);
+        if (send_trace_data_chunk(fd, line) < 0)
+            return -1;
+        if (send_trace_data_chunk(fd, "# timestamp_precision: microsecond") < 0)
+            return -1;
+    }
 
     /* Line 2 (TRACE RUN only): command being traced */
     if (run_command && run_command[0]) {
@@ -2341,16 +2373,145 @@ static char format_retval(struct atrace_event *ev,
 
 /* Format a single trace event as a text line.
  *
+ * ---- EClock timestamp support ---- */
+
+/* Capture the EClock epoch at trace session start.
+ * Must be called with g_anchor valid and version >= 3.
+ * Captures both wall-clock (DateStamp) and EClock values. */
+static void eclock_capture_epoch(void)
+{
+    struct DateStamp ds;
+    LONG ds_secs;
+
+    if (!g_anchor || g_anchor->version < 3 ||
+        g_anchor->eclock_freq == 0) {
+        g_eclock_valid = 0;
+        return;
+    }
+
+    g_eclock_freq = g_anchor->eclock_freq;
+
+    /* Capture wall-clock time */
+    DateStamp(&ds);
+    ds_secs = ds.ds_Minute * 60 + ds.ds_Tick / TICKS_PER_SECOND;
+    g_start_secs = ds_secs;
+    g_start_us = (ds.ds_Tick % TICKS_PER_SECOND) * (1000000 / TICKS_PER_SECOND);
+
+    /* The daemon cannot call ReadEClock() (no timer.device open), so
+     * the EClock baseline is captured lazily from the first event with
+     * FLAG_HAS_ECLOCK.  Setting start_eclock_lo/hi to 0 signals
+     * eclock_format_time() to grab the baseline from that first event.
+     * Elapsed ticks from the baseline are then added to the wall-clock
+     * epoch captured above. */
+    g_start_eclock_lo = 0;
+    g_start_eclock_hi = 0;
+    g_eclock_baseline_set = 0;
+
+    /* Precompute hi-unit conversion constants */
+    g_secs_per_hi = 0xFFFFFFFFUL / g_eclock_freq;
+    g_rem_per_hi = 0xFFFFFFFFUL % g_eclock_freq;
+
+    g_eclock_valid = 1;
+}
+
+/* Format an EClock timestamp as HH:MM:SS.uuuuuu wall-clock time.
+ * Uses the session epoch (g_start_*) and the event's eclock_lo/hi.
+ *
+ * On the first event with FLAG_HAS_ECLOCK after session start, captures
+ * the baseline EClock value.  Subsequent events compute elapsed ticks
+ * relative to this baseline and add them to the wall-clock epoch.
+ *
+ * Returns 1 if EClock timestamp was formatted, 0 if caller should
+ * fall back to DateStamp. */
+static int eclock_format_time(struct atrace_event *ev,
+                               char *buf, int bufsz)
+{
+    ULONG elapsed_lo;
+    WORD  elapsed_hi;
+    ULONG elapsed_secs;
+    ULONG remainder;
+    ULONG elapsed_us;
+    LONG  total_secs;
+    LONG  total_us;
+    LONG  hours, mins, secs;
+
+    if (!g_eclock_valid || g_eclock_freq == 0)
+        return 0;
+
+    if (!(ev->flags & FLAG_HAS_ECLOCK))
+        return 0;
+
+    /* Capture baseline from first EClock event */
+    if (!g_eclock_baseline_set) {
+        g_start_eclock_lo = ev->eclock_lo;
+        g_start_eclock_hi = (WORD)ev->eclock_hi;
+        g_eclock_baseline_set = 1;
+    }
+
+    /* 48-bit subtraction: elapsed = event - start */
+    elapsed_lo = ev->eclock_lo - g_start_eclock_lo;
+    elapsed_hi = (WORD)ev->eclock_hi - g_start_eclock_hi;
+    if (ev->eclock_lo < g_start_eclock_lo)
+        elapsed_hi--;  /* borrow from lo */
+
+    /* Convert elapsed ticks to seconds + remainder.
+     * elapsed = elapsed_hi * 2^32 + elapsed_lo ticks.
+     * For hi contribution: each hi unit = (2^32 / freq) seconds. */
+    elapsed_secs = elapsed_lo / g_eclock_freq;
+    remainder = elapsed_lo % g_eclock_freq;
+
+    if (elapsed_hi > 0) {
+        ULONG hi_secs = (ULONG)elapsed_hi * g_secs_per_hi;
+        ULONG hi_rem  = (ULONG)elapsed_hi * g_rem_per_hi;
+        elapsed_secs += hi_secs;
+        remainder += hi_rem;
+    }
+
+    /* Handle carry from remainder overflow */
+    if (remainder >= g_eclock_freq) {
+        elapsed_secs += remainder / g_eclock_freq;
+        remainder = remainder % g_eclock_freq;
+    }
+
+    /* Convert remainder to microseconds.
+     * remainder * 1000000 could overflow 32 bits, so split:
+     * elapsed_us = (remainder * 1000) / (freq / 1000)
+     * For freq ~710000: freq/1000 = 710, remainder < 710000.
+     * remainder * 1000 < 710000000, fits in 32 bits. */
+    elapsed_us = (remainder * 1000) / (g_eclock_freq / 1000);
+
+    /* Add elapsed to wall-clock epoch */
+    total_secs = g_start_secs + (LONG)elapsed_secs;
+    total_us = g_start_us + (LONG)elapsed_us;
+    if (total_us >= 1000000) {
+        total_secs++;
+        total_us -= 1000000;
+    }
+
+    hours = total_secs / 3600;
+    mins = (total_secs % 3600) / 60;
+    secs = total_secs % 60;
+
+    snprintf(buf, bufsz, "%02ld:%02ld:%02ld.%06ld",
+             (long)hours, (long)mins, (long)secs, (long)total_us);
+    return 1;
+}
+
+/* ---- Event formatting ----
+ *
  * Format (7 tab-separated fields):
  *   <seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>\t<status>
  *
  * The status field is a single character from format_retval():
  *   'O' = OK (success), 'E' = Error, '-' = Neutral/void.
  *
- * The time field comes from DateStamp at poll time (not per-event).
- * The caller pre-computes the timestamp once per poll batch. */
+ * For v3 events with FLAG_HAS_ECLOCK, the time field uses per-event
+ * EClock timestamps with microsecond precision (HH:MM:SS.uuuuuu).
+ * For v2 events or when EClock is unavailable, falls back to per-batch
+ * DateStamp timestamps (HH:MM:SS.mmm). */
 static void trace_format_event(struct atrace_event *ev,
                                 const char *timestr,
+                                const char *resolved_name,
                                 char *buf, int bufsz)
 {
     const struct trace_func_entry *fe;
@@ -2359,9 +2520,26 @@ static void trace_format_event(struct atrace_event *ev,
     const char *func_name;
     static char args_buf[384];
     static char retval_buf[80];
+    static char eclock_timestr[20];
     char status;
+    const char *effective_timestr;
 
-    task_name = resolve_task_name(ev->caller_task);
+    /* Determine timestamp: per-event EClock or batch DateStamp */
+    if (eclock_format_time(ev, eclock_timestr, sizeof(eclock_timestr)))
+        effective_timestr = eclock_timestr;
+    else
+        effective_timestr = timestr;
+
+    /* Use caller-provided resolved name.  If the caller got a generic
+     * "<task 0x...>" string and the event has an embedded task_name
+     * (v3 events), prefer the embedded name (the process may have
+     * exited since the task cache was last refreshed). */
+    if (resolved_name[0] == '<' &&
+        g_anchor && g_anchor->version >= 3 && ev->task_name[0] != '\0') {
+        task_name = ev->task_name;
+    } else {
+        task_name = resolved_name;
+    }
 
     fe = lookup_func(ev->lib_id, ev->lvo_offset);
     if (fe) {
@@ -2392,7 +2570,7 @@ static void trace_format_event(struct atrace_event *ev,
 
     snprintf(buf, bufsz, "%lu\t%s\t%s.%s\t%s\t%s\t%s\t%c",
              (unsigned long)ev->sequence,
-             timestr,
+             effective_timestr,
              lib_name, func_name,
              task_name,
              args_buf,
@@ -2510,7 +2688,7 @@ void trace_poll_events(struct daemon_state *d)
         task_name = resolve_task_name(ev->caller_task);
 
         /* Format event */
-        trace_format_event(ev, timestr, trace_line_buf,
+        trace_format_event(ev, timestr, task_name, trace_line_buf,
                            sizeof(trace_line_buf));
 
         /* Broadcast to all tracing clients (with per-client filtering) */
@@ -2714,6 +2892,17 @@ static int trace_cmd_status(struct client *c)
         send_payload_line(c->fd, line);
     }
 
+    /* Phase 6: anchor version and EClock info */
+    snprintf(line, sizeof(line), "anchor_version=%d",
+             (int)g_anchor->version);
+    send_payload_line(c->fd, line);
+
+    if (g_anchor->version >= 3 && g_anchor->eclock_freq != 0) {
+        snprintf(line, sizeof(line), "eclock_freq=%lu",
+                 (unsigned long)g_anchor->eclock_freq);
+        send_payload_line(c->fd, line);
+    }
+
     /* Count noise-disabled functions */
     {
         int noise_disabled = 0;
@@ -2804,6 +2993,9 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     Forbid();
     drain_stale_events();
     Permit();
+
+    /* Capture EClock epoch for per-event timestamps (v3+) */
+    eclock_capture_epoch();
 
     /* Send OK -- no sentinel (streaming response) */
     send_ok(c->fd, NULL);
@@ -3114,6 +3306,9 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
     /* Parse trace filters (after successful process creation) */
     parse_filters(filter_buf, &c->trace);
 
+    /* Capture EClock epoch for per-event timestamps (v3+) */
+    eclock_capture_epoch();
+
     /* Enter TRACE RUN streaming mode. */
     c->trace.mode = TRACE_MODE_RUN;
     c->trace.run_proc_slot = slot;
@@ -3231,7 +3426,7 @@ void trace_check_run_completed(struct daemon_state *d)
                        g_ring_entries[pos].valid) {
                     ev = &g_ring_entries[pos];
                     task_name = resolve_task_name(ev->caller_task);
-                    trace_format_event(ev, drain_timestr,
+                    trace_format_event(ev, drain_timestr, task_name,
                                        trace_line_buf,
                                        sizeof(trace_line_buf));
 

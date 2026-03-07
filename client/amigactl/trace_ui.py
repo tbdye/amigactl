@@ -826,6 +826,10 @@ class TraceViewer:
         # Segment/filename annotation (Fix 9)
         self.segment_resolver = SegmentResolver()
 
+        # Trace session metadata from header comments (Phase 6)
+        self.eclock_freq = 0          # EClock frequency in Hz
+        self.timestamp_precision = ""  # "microsecond" or ""
+
     def _prepopulate_from_status(self, status):
         """Pre-populate discovered_libs and discovered_funcs from TRACE STATUS.
 
@@ -1444,8 +1448,23 @@ class TraceViewer:
 
         Comments are always shown regardless of filters or pause
         state. They are formatted in warning color (yellow).
+
+        Also parses metadata from header comments (Phase 6):
+        - "eclock_freq: NNN Hz" -> self.eclock_freq
+        - "timestamp_precision: microsecond" -> self.timestamp_precision
         """
         text = event.get("text", "")
+
+        # Parse metadata from header comments
+        if text.startswith("eclock_freq: "):
+            try:
+                freq_str = text.split(":")[1].strip().split()[0]
+                self.eclock_freq = int(freq_str)
+            except (ValueError, IndexError):
+                pass
+        elif text.startswith("timestamp_precision: "):
+            self.timestamp_precision = text.split(":", 1)[1].strip()
+
         self.term.write_event(self.cw.warning("# {}".format(text)))
 
     # ---- Status and hotkey bars ----
@@ -2143,14 +2162,14 @@ class TraceViewer:
         """
         raw_time = event.get("time", "")
         if self.timestamp_mode == "absolute":
-            return raw_time
+            return raw_time[:12]
         elif self.timestamp_mode == "relative":
             if self.start_time is None:
-                return "+0.000"
+                return "+0.000000"
             return self._time_diff(self.start_time, raw_time)
         elif self.timestamp_mode == "delta":
             if self.last_event_time is None:
-                return "+0.000"
+                return "+0.000000"
             return self._time_diff(self.last_event_time, raw_time)
             # Note: last_event_time is updated to raw_time by
             # _process_event_result() after _display_event() returns.
@@ -2171,14 +2190,14 @@ class TraceViewer:
         """
         raw_time = event.get("time", "")
         if self.timestamp_mode == "absolute":
-            return raw_time
+            return raw_time[:12]
         elif self.timestamp_mode == "relative":
             if self.start_time is None:
-                return "+0.000"
+                return "+0.000000"
             return self._time_diff(self.start_time, raw_time)
         elif self.timestamp_mode == "delta":
             if prev_time is None:
-                return "+0.000"
+                return "+0.000000"
             return self._time_diff(prev_time, raw_time)
         return raw_time
 
@@ -2652,48 +2671,68 @@ class TraceViewer:
     # ---- Utility methods ----
 
     def _elapsed_str(self):
-        """Format elapsed time since the first event as +M:SS.m.
+        """Format elapsed time since the first event as +M:SS.t.
 
         Returns a string like "+0:05.2" or "+1:23.4".
         If no events have been received, returns "+0:00.0".
+        Uses microsecond precision internally for correct arithmetic.
         """
         if self.start_time is None or self.last_event_time is None:
             return "+0:00.0"
-        ms = TraceViewer._parse_time(self.last_event_time) - \
-            TraceViewer._parse_time(self.start_time)
-        if ms < 0:
-            ms += 24 * 3600 * 1000  # midnight wraparound
-        total_secs = ms // 1000
-        tenths = (ms % 1000) // 100
+        us = TraceViewer._parse_time_us(self.last_event_time) - \
+            TraceViewer._parse_time_us(self.start_time)
+        if us < 0:
+            us += 24 * 3600 * 1000000  # midnight wraparound
+        total_secs = us // 1000000
+        tenths = (us % 1000000) // 100000
         mins = total_secs // 60
         secs = total_secs % 60
         return "+{}:{:02d}.{}".format(mins, secs, tenths)
 
     @staticmethod
-    def _parse_time(timestr):
-        """Parse HH:MM:SS.mmm to total milliseconds."""
+    def _parse_time_us(timestr):
+        """Parse HH:MM:SS.ffffff to total microseconds.
+
+        Handles variable-precision fractional seconds:
+        - 6 digits (us): "12:34:56.123456" -> 123456 us
+        - 3 digits (ms): "12:34:56.123" -> padded to 123000 us
+        - No fraction: "12:34:56" -> 0 us
+        """
         try:
             parts = timestr.split(":")
-            h, m = int(parts[0]), int(parts[1])
+            h = int(parts[0])
+            m = int(parts[1])
             sec_parts = parts[2].split(".")
             s = int(sec_parts[0])
-            ms = int(sec_parts[1]) if len(sec_parts) > 1 else 0
-            return ((h * 3600 + m * 60 + s) * 1000) + ms
+            if len(sec_parts) > 1:
+                frac = sec_parts[1].ljust(6, '0')[:6]
+                us = int(frac)
+            else:
+                us = 0
+            return ((h * 3600 + m * 60 + s) * 1000000) + us
         except (ValueError, IndexError):
             return 0
 
     @staticmethod
+    def _parse_time(timestr):
+        """Parse HH:MM:SS.fff... to total milliseconds (backward compat).
+
+        Delegates to _parse_time_us() and truncates to milliseconds.
+        """
+        return TraceViewer._parse_time_us(timestr) // 1000
+
+    @staticmethod
     def _time_diff(t1, t2):
-        """Compute time difference as +S.mmm string.
+        """Compute time difference as +S.uuuuuu string.
 
         Handles midnight wraparound (C4 fix): if the difference is
-        negative, add 24 hours.
+        negative, add 24 hours. Uses microsecond precision.
         """
-        ms1 = TraceViewer._parse_time(t1)
-        ms2 = TraceViewer._parse_time(t2)
-        diff = ms2 - ms1
+        us1 = TraceViewer._parse_time_us(t1)
+        us2 = TraceViewer._parse_time_us(t2)
+        diff = us2 - us1
         if diff < 0:
-            diff += 24 * 3600 * 1000  # midnight wraparound
-        secs = diff // 1000
-        millis = diff % 1000
-        return "+{}.{:03d}".format(secs, millis)
+            diff += 24 * 3600 * 1000000  # midnight wraparound
+        secs = diff // 1000000
+        micros = diff % 1000000
+        return "+{}.{:06d}".format(secs, micros)
