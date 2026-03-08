@@ -11,10 +11,9 @@
  *      Identical for all functions.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
- *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
- *      with task name copy, disabled path, overflow path. Identical for
- *      all functions except that byte offsets shift based on variable
- *      region size.
+ *   3. Suffix (86 bytes): MOVEM restore, trampoline, post-call handler,
+ *      disabled path, overflow path. Identical for all functions except
+ *      that byte offsets shift based on variable region size.
  */
 
 #include "atrace.h"
@@ -109,8 +108,8 @@ static const UWORD stub_prefix[] = {
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
- * post-call handler with task name copy, disabled path, and overflow path.
- * 63 UWORD values, 126 bytes.
+ * post-call handler, disabled path, overflow path.
+ * 43 UWORD values, 86 bytes.
  *
  * The trampoline uses a stack-based approach to pass the entry pointer
  * (a5) through the original function call WITHOUT clobbering a0.
@@ -120,10 +119,6 @@ static const UWORD stub_prefix[] = {
  *   3. Pop the duplicate to restore a5
  * This leaves entry_ptr on the stack, accessible after the original
  * function returns via .post_call.
- *
- * Phase 6: 40-byte task name copy block inserted at suffix byte 34,
- * after retval write and before valid=1. Copies ThisTask->tc_Node.ln_Name
- * into event->task_name with NULL pointer check.
  *
  * All byte offsets below are suffix-relative (0 = first byte of suffix).
  */
@@ -143,68 +138,48 @@ static const UWORD stub_suffix[] = {
     /* 26: */ 0x206F, 0x0004,           /* movea.l 4(sp), a0    entry ptr       */
     /* 30: */ 0x2140, 0x001C,           /* move.l d0, 28(a0)    entry->retval   */
 
-    /* === Phase 6: Task name copy with NULL check (40 bytes, 20 words) === */
-    /* 34: */ 0x2F08,                   /* move.l a0, -(sp)     save entry ptr  */
-    /* 36: */ 0x2278, 0x0004,           /* movea.l 4.w, a1      SysBase         */
-    /* 40: */ 0x2269, 0x0114,           /* movea.l 276(a1), a1  ThisTask        */
-    /* 44: */ 0x2269, 0x000A,           /* movea.l 10(a1), a1   ln_Name         */
-    /* 48: */ 0x2009,                   /* move.l a1, d0        NULL test       */
-    /* 50: */ 0x6710,                   /* beq.s .tn_skip (+16 -> byte 68)      */
-    /* 52: */ 0x41E8, 0x006A,           /* lea 106(a0), a0      &task_name      */
-    /* 56: */ 0x7014,                   /* moveq #20, d0        max 20 chars    */
-    /* .tn_copy: */
-    /* 58: */ 0x10D9,                   /* move.b (a1)+, (a0)+                  */
-    /* 60: */ 0x57C8, 0xFFFC,           /* dbeq d0, .tn_copy    (-4)            */
-    /* 64: */ 0x4210,                   /* clr.b (a0)           NUL-terminate   */
-    /* 66: */ 0x6004,                   /* bra.s .tn_done (+4 -> byte 72)       */
-    /* .tn_skip: */
-    /* 68: */ 0x4228, 0x006A,           /* clr.b 106(a0)        NUL empty name  */
-    /* .tn_done: */
-    /* 72: */ 0x205F,                   /* movea.l (sp)+, a0    restore entry   */
+    /* 34: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
+    /* 38: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
+    /* 44: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
+    /* 48: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
+    /* 50: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
+    /* 52: */ 0x4E75,                   /* rts                  return to caller*/
 
-    /* === Rest of post_call (shifted +40) === */
-    /* 74: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
-    /* 78: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
-    /* 84: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
-    /* 88: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
-    /* 90: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
-    /* 92: */ 0x4E75,                   /* rts                  return to caller*/
+    /* === DISABLED fast path === */
+    /* .disabled: (suffix offset 54) */
+    /* 54: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /* 56: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
+    /* 62: */ 0x4E75,                   /* rts                  tail-call orig  */
 
-    /* === DISABLED fast path (shifted +40) === */
-    /* .disabled: (suffix offset 94) */
-    /* 94: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /* 96: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
-    /*102: */ 0x4E75,                   /* rts                  tail-call orig  */
-
-    /* === OVERFLOW path (shifted +40) === */
-    /* .overflow: (suffix offset 104) */
-    /*104: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
-    /*108: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
-    /*112: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
-    /*116: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /*118: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
-    /*124: */ 0x4E75,                   /* rts                  tail-call orig  */
+    /* === OVERFLOW path === */
+    /* .overflow: (suffix offset 64) */
+    /* 64: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
+    /* 68: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
+    /* 72: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
+    /* 76: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /* 78: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
+    /* 84: */ 0x4E75,                   /* rts                  tail-call orig  */
 };
 
-#define STUB_SUFFIX_BYTES  126  /* 63 words */
+#define STUB_SUFFIX_BYTES   86  /* 43 words */
 
 /* ---- Suffix-relative byte offsets ---- */
 
 /* PATCH_ADDR occurrence 4 (high word of address in suffix) */
-#define PATCH_SUFFIX_REL            80   /* was 40, +40 for task name block */
+#define PATCH_SUFFIX_REL            40
 
 /* Struct field displacement patches within the suffix */
-#define SUFFIX_DISP_USE_COUNT_DEC   86   /* subq.l #1, OFS_USE_COUNT(a0) (was 46, +40) */
-#define SUFFIX_DISP_OVERFLOW       106   /* addq.l #1, OFS_OVERFLOW(a0)  (was 66, +40) */
+#define SUFFIX_DISP_USE_COUNT_DEC   46   /* subq.l #1, OFS_USE_COUNT(a0) */
+#define SUFFIX_DISP_OVERFLOW        66   /* addq.l #1, OFS_OVERFLOW(a0)  */
 
 /* Label offsets within the suffix (used for branch displacement calc) */
-#define SUFFIX_LABEL_DISABLED       94   /* .disabled label (was 54, +40) */
-#define SUFFIX_LABEL_OVERFLOW      104   /* .overflow label (was 64, +40) */
+#define SUFFIX_LABEL_DISABLED       54   /* .disabled label */
+#define SUFFIX_LABEL_OVERFLOW       64   /* .overflow label */
 
 /* ORIG_ADDR occurrences (suffix-relative high word offsets) */
-#define ORIG_SUFFIX_REL_1           18   /* trampoline push   (unchanged, before insertion) */
-#define ORIG_SUFFIX_REL_2           98   /* .disabled push    (was 58, +40) */
-#define ORIG_SUFFIX_REL_3          120   /* .overflow push    (was 80, +40) */
+#define ORIG_SUFFIX_REL_1           18   /* trampoline push   */
+#define ORIG_SUFFIX_REL_2           58   /* .disabled push    */
+#define ORIG_SUFFIX_REL_3           80   /* .overflow push    */
 
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
@@ -265,7 +240,7 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *   1. Fixed prefix (196 bytes) - task filter, register save, ring buffer,
  *      EClock capture, event header
  *   2. Variable region - argument copy, flags, string capture, built from metadata
- *   3. Fixed suffix (126 bytes) - post-call with task name copy, disabled path,
+ *   3. Fixed suffix (86 bytes) - post-call handler, disabled path,
  *      overflow path
  *
  * Parameters:
@@ -290,7 +265,7 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[34];    /* Worst case 31 words (4-arg + string + valid + flags). Buffer 34 for margin. */
+    UWORD var_buf[50];    /* Worst case: 4-arg(12) + arg_count(3) + flags(3) + string(11) + task_name(16) + valid(2) = 47 */
     int var_words;
     int total_bytes;
     int alloc_size;
@@ -350,6 +325,26 @@ int stub_generate_and_install(
         var_buf[var_words++] = 0xFFFC;                /* displacement -4 */
         var_buf[var_words++] = 0x4211;                /* clr.b (a1) */
     }
+
+    /* Task name capture: copy ThisTask->tc_Node.ln_Name into entry->task_name.
+     * a6 = SysBase (from prefix byte 186), a5 = entry pointer.
+     * Uses a0, a1, d0 as scratch (all saved by MOVEM). */
+    var_buf[var_words++] = 0x206E;  /* movea.l 276(a6), a0  ThisTask         */
+    var_buf[var_words++] = 0x0114;
+    var_buf[var_words++] = 0x2068;  /* movea.l 10(a0), a0   ln_Name          */
+    var_buf[var_words++] = 0x000A;
+    var_buf[var_words++] = 0x2008;  /* move.l a0, d0        NULL test         */
+    var_buf[var_words++] = 0x6710;  /* beq.s +16 (.tn_skip -> clr.b 106(a5)) */
+    var_buf[var_words++] = 0x43ED;  /* lea 106(a5), a1      &entry->task_name */
+    var_buf[var_words++] = 0x006A;
+    var_buf[var_words++] = 0x7014;  /* moveq #20, d0        max 20 chars      */
+    var_buf[var_words++] = 0x12D8;  /* move.b (a0)+, (a1)+  .tn_copy          */
+    var_buf[var_words++] = 0x57C8;  /* dbeq d0, .tn_copy                      */
+    var_buf[var_words++] = 0xFFFC;  /* displacement -4                        */
+    var_buf[var_words++] = 0x4211;  /* clr.b (a1)           NUL terminate     */
+    var_buf[var_words++] = 0x6004;  /* bra.s +4 (.tn_done)                    */
+    var_buf[var_words++] = 0x422D;  /* clr.b 106(a5)        NUL empty name    */
+    var_buf[var_words++] = 0x006A;
 
     /* Set valid=1 BEFORE the suffix's trampoline calls the original function.
      * This must happen pre-call because blocking functions (e.g. dos.RunCommand)

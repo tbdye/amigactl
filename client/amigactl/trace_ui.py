@@ -390,7 +390,7 @@ class ColumnLayout:
 
         parts = [_pad(seq_colored, self.seq_width)]
         if self.time_width > 0:
-            parts.append(time_str.rjust(self.time_width))
+            parts.append(time_str[:self.time_width].rjust(self.time_width))
         parts.append(_pad(lib_func_colored, self.func_width))
         parts.append(_pad(proc_colored, self.proc_width))
         parts.append(_pad(args, self.args_width))
