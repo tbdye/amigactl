@@ -580,6 +580,13 @@ void async_wrapper(void)
     BPTR old_out;
     LONG rc;
     int i;
+    /* cli_CommandName BSTR for RunCommand identification.
+     * BSTR format: byte 0 = length, bytes 1..N = string data.
+     * LONG array ensures the 4-byte alignment MKBADDR requires. */
+    LONG cmd_bstr_buf[(128 + 4 + 3) / 4];
+    UBYTE *cmd_bstr;
+    struct CommandLineInterface *cli;
+    BPTR old_cli_cmdname;
 
     me = FindTask(NULL);
 
@@ -665,6 +672,23 @@ void async_wrapper(void)
      * process terminates without cleanup.  The slot remains PROC_RUNNING.
      * This is inherent to RunCommand -- the same risk exists with
      * SystemTags if the child shell exits abnormally. */
+    /* Set cli_CommandName before RunCommand so resolve_cli_name()
+     * can identify this process by command name during tracing.
+     * The AmigaOS shell does this before each RunCommand call.
+     * Without it, processes created with NP_Cli show as
+     * "Background CLI" instead of the command basename. */
+    cli = NULL;
+    old_cli_cmdname = 0;
+    if (((struct Process *)me)->pr_CLI) {
+        cli = (struct CommandLineInterface *)
+              BADDR(((struct Process *)me)->pr_CLI);
+        cmd_bstr = (UBYTE *)cmd_bstr_buf;
+        cmd_bstr[0] = (UBYTE)cmdlen;
+        memcpy(&cmd_bstr[1], cmdname, cmdlen);
+        old_cli_cmdname = cli->cli_CommandName;
+        cli->cli_CommandName = MKBADDR(cmd_bstr);
+    }
+
     used_runcommand = 0;
     seg = find_command_segment(cmdname, &is_resident);
     if (seg) {
@@ -684,6 +708,10 @@ void async_wrapper(void)
                         SYS_Output, nil_out,
                         TAG_DONE);
     }
+
+    /* Restore cli_CommandName after execution completes */
+    if (cli)
+        cli->cli_CommandName = old_cli_cmdname;
 
     /* Restore directory and release the lock */
     if (cd_lock) {

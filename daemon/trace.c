@@ -256,6 +256,66 @@ static struct task_cache_entry task_cache[TASK_CACHE_SIZE];
 static int task_cache_count = 0;
 static int task_cache_polls = 0;
 
+/* ---- Task name history (for exited processes) ----
+ *
+ * The task cache is rebuilt from scratch on each refresh, so entries
+ * for exited processes are lost.  The history cache preserves the last
+ * resolved name for each task pointer so that events from short-lived
+ * processes (e.g., CLI commands launched via SystemTags) can still be
+ * matched by PROC= filters and displayed correctly after the process
+ * exits.  This is a simple ring buffer; older entries are overwritten
+ * when full. */
+
+#define TASK_HISTORY_SIZE  32
+
+static struct task_cache_entry task_history[TASK_HISTORY_SIZE];
+static int task_history_count = 0;
+static int task_history_next = 0;   /* next write slot (ring) */
+
+/* Record a resolved task name in the history cache.
+ * Called when resolve_task_name() successfully resolves a name
+ * (not a generic "<task 0x...>" fallback). */
+static void task_history_record(APTR task_ptr, const char *name)
+{
+    int i;
+
+    /* Don't record generic fallback names */
+    if (name[0] == '<')
+        return;
+
+    /* Check if already recorded with same name */
+    for (i = 0; i < task_history_count; i++) {
+        if (task_history[i].task_ptr == task_ptr) {
+            /* Update if name changed (e.g., CLI ran a new command) */
+            if (strcmp(task_history[i].name, name) != 0) {
+                strncpy(task_history[i].name, name, 63);
+                task_history[i].name[63] = '\0';
+            }
+            return;
+        }
+    }
+
+    /* New entry: write to ring slot */
+    task_history[task_history_next].task_ptr = task_ptr;
+    strncpy(task_history[task_history_next].name, name, 63);
+    task_history[task_history_next].name[63] = '\0';
+    task_history_next = (task_history_next + 1) % TASK_HISTORY_SIZE;
+    if (task_history_count < TASK_HISTORY_SIZE)
+        task_history_count++;
+}
+
+/* Look up a task pointer in the history cache.
+ * Returns the last-known name, or NULL if not found. */
+static const char *task_history_lookup(APTR task_ptr)
+{
+    int i;
+    for (i = 0; i < task_history_count; i++) {
+        if (task_history[i].task_ptr == task_ptr)
+            return task_history[i].name;
+    }
+    return NULL;
+}
+
 /* Extract the CLI command name for a Process, if available.
  * Returns 1 if a command name was extracted, 0 if falling back to
  * tc_Node.ln_Name is needed.
@@ -356,6 +416,7 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
 static int trace_cmd_enable(struct client *c, const char *args);
 static int trace_cmd_disable(struct client *c, const char *args);
 static void trace_run_cleanup(struct client *c);
+static int build_filter_desc(struct trace_state *ts, char *buf, int bufsz);
 static int emit_trace_header(LONG fd, struct trace_state *ts,
                               const char *run_command);
 static void eclock_capture_epoch(void);
@@ -632,8 +693,10 @@ static const char *resolve_task_name(APTR task_ptr)
 
     /* Search cache */
     for (i = 0; i < task_cache_count; i++) {
-        if (task_cache[i].task_ptr == task_ptr)
+        if (task_cache[i].task_ptr == task_ptr) {
+            task_history_record(task_ptr, task_cache[i].name);
             return task_cache[i].name;
+        }
     }
 
     /* Cache miss -- attempt on-demand refresh.
@@ -650,8 +713,10 @@ static const char *resolve_task_name(APTR task_ptr)
 
         /* Re-search after refresh */
         for (i = 0; i < task_cache_count; i++) {
-            if (task_cache[i].task_ptr == task_ptr)
+            if (task_cache[i].task_ptr == task_ptr) {
+                task_history_record(task_ptr, task_cache[i].name);
                 return task_cache[i].name;
+            }
         }
     }
 
@@ -684,10 +749,19 @@ static const char *resolve_task_name(APTR task_ptr)
             fallback[sizeof(fallback) - 1] = '\0';
         }
     } else {
+        /* ln_Name is NULL -- task memory may have been freed.
+         * Check the history cache for the last-known name before
+         * falling back to the generic "<task 0x...>" string. */
+        const char *hist = task_history_lookup(task_ptr);
+        if (hist) {
+            Permit();
+            return hist;
+        }
         sprintf(fallback, "<task 0x%08lx>", (unsigned long)task_ptr);
     }
     Permit();
 
+    task_history_record(task_ptr, fallback);
     return fallback;
 }
 
@@ -798,22 +872,44 @@ static int parse_filters(const char *args, struct trace_state *ts)
             /* Extract function name, look up LVO and lib_id.
              * Setting both filter_lvo AND filter_lib_id prevents
              * cross-library LVO collisions (e.g. exec.OpenDevice and
-             * dos.MakeLink both have LVO -444). */
+             * dos.MakeLink both have LVO -444).
+             *
+             * Supports library-scoped syntax: FUNC=dos.Open
+             * (dot separator between library name and function name).
+             * Plain FUNC=Open still works (global search). */
             char fname[32];
             int fi = 0;
             int found = 0;
+            char *dot;
             args += 5;
             while (*args && *args != ' ' && *args != '\t' &&
                    fi < (int)sizeof(fname) - 1)
                 fname[fi++] = *args++;
             fname[fi] = '\0';
 
-            for (fi = 0; fi < (int)FUNC_TABLE_SIZE; fi++) {
-                if (stricmp(fname, func_table[fi].func_name) == 0) {
-                    ts->filter_lvo = func_table[fi].lvo_offset;
-                    ts->filter_lib_id = func_table[fi].lib_id;
-                    found = 1;
-                    break;
+            dot = strchr(fname, '.');
+            if (dot) {
+                /* Library-scoped: split at dot, match both fields */
+                const char *fn = dot + 1;
+                *dot = '\0';
+                for (fi = 0; fi < (int)FUNC_TABLE_SIZE; fi++) {
+                    if (stricmp(fname, func_table[fi].lib_name) == 0 &&
+                        stricmp(fn, func_table[fi].func_name) == 0) {
+                        ts->filter_lvo = func_table[fi].lvo_offset;
+                        ts->filter_lib_id = func_table[fi].lib_id;
+                        found = 1;
+                        break;
+                    }
+                }
+            } else {
+                /* Global search by function name only */
+                for (fi = 0; fi < (int)FUNC_TABLE_SIZE; fi++) {
+                    if (stricmp(fname, func_table[fi].func_name) == 0) {
+                        ts->filter_lvo = func_table[fi].lvo_offset;
+                        ts->filter_lib_id = func_table[fi].lib_id;
+                        found = 1;
+                        break;
+                    }
                 }
             }
             if (!found) {
@@ -923,6 +1019,10 @@ static void parse_name_list_lib(const char *csv,
  * Looks up (lib_id, lvo) pairs in func_table. Populates
  * out_lib_ids[] and out_lvos[].
  *
+ * Supports library-scoped names: "dos.Open,exec.AllocMem"
+ * (dot separator between library and function name).
+ * Plain names "Open,Lock" also work (global search).
+ *
  * Unknown names are silently skipped (robust against typos).
  * Parsing stops at space, tab, or NUL. */
 static void parse_name_list_func(const char *csv,
@@ -944,26 +1044,55 @@ static void parse_name_list_func(const char *csv,
         if (*csv == ',')
             csv++;
 
-        /* Look up (lib_id, lvo) pair from func_table */
+        /* Look up (lib_id, lvo) pair from func_table.
+         * Check for dot-separator (library-scoped syntax). */
         {
             int idx;
-            for (idx = 0; idx < (int)FUNC_TABLE_SIZE; idx++) {
-                if (stricmp(name, func_table[idx].func_name) == 0) {
-                    /* Deduplicate: skip if (lib_id, lvo) already present */
-                    int dup = 0, j;
-                    for (j = 0; j < *count; j++) {
-                        if (out_lib_ids[j] == func_table[idx].lib_id &&
-                            out_lvos[j] == func_table[idx].lvo_offset) {
-                            dup = 1;
-                            break;
+            char *dot = strchr(name, '.');
+            if (dot) {
+                /* Library-scoped: split at dot, match both fields */
+                const char *fn = dot + 1;
+                *dot = '\0';
+                for (idx = 0; idx < (int)FUNC_TABLE_SIZE; idx++) {
+                    if (stricmp(name, func_table[idx].lib_name) == 0 &&
+                        stricmp(fn, func_table[idx].func_name) == 0) {
+                        /* Deduplicate: skip if (lib_id, lvo) already present */
+                        int dup = 0, j;
+                        for (j = 0; j < *count; j++) {
+                            if (out_lib_ids[j] == func_table[idx].lib_id &&
+                                out_lvos[j] == func_table[idx].lvo_offset) {
+                                dup = 1;
+                                break;
+                            }
                         }
+                        if (!dup) {
+                            out_lib_ids[*count] = func_table[idx].lib_id;
+                            out_lvos[*count] = func_table[idx].lvo_offset;
+                            (*count)++;
+                        }
+                        break;
                     }
-                    if (!dup) {
-                        out_lib_ids[*count] = func_table[idx].lib_id;
-                        out_lvos[*count] = func_table[idx].lvo_offset;
-                        (*count)++;
+                }
+            } else {
+                /* Global search by function name only */
+                for (idx = 0; idx < (int)FUNC_TABLE_SIZE; idx++) {
+                    if (stricmp(name, func_table[idx].func_name) == 0) {
+                        /* Deduplicate: skip if (lib_id, lvo) already present */
+                        int dup = 0, j;
+                        for (j = 0; j < *count; j++) {
+                            if (out_lib_ids[j] == func_table[idx].lib_id &&
+                                out_lvos[j] == func_table[idx].lvo_offset) {
+                                dup = 1;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            out_lib_ids[*count] = func_table[idx].lib_id;
+                            out_lvos[*count] = func_table[idx].lvo_offset;
+                            (*count)++;
+                        }
+                        break;
                     }
-                    break;
                 }
             }
             /* Unknown function: silently skip */
@@ -1555,6 +1684,110 @@ static const char *lib_id_to_name(int lib_id)
  *   # enabled: GetMsg, PutMsg (normally noise-disabled)
  *   # disabled: ModifyIDCMP (manually disabled)
  */
+
+/* Build a human-readable filter description string from trace_state.
+ * Returns the length written to buf (0 if no filters active).
+ * Used by emit_trace_header() and by the FILTER command handler to
+ * emit a filter comment after mid-stream filter changes. */
+static int build_filter_desc(struct trace_state *ts, char *buf, int bufsz)
+{
+    int flen = 0;
+
+    buf[0] = '\0';
+
+    if (ts->filter_procname[0] != '\0') {
+        flen += snprintf(buf + flen, bufsz - flen,
+                         "PROC=%s", ts->filter_procname);
+    }
+
+    if (ts->use_extended_filter) {
+        /* Extended lib filter */
+        if (ts->lib_filter_mode != 0) {
+            int j;
+            if (flen > 0 && flen < bufsz - 1)
+                buf[flen++] = ' ';
+            if (ts->lib_filter_mode == -1) {
+                flen += snprintf(buf + flen, bufsz - flen, "-LIB=");
+            } else {
+                flen += snprintf(buf + flen, bufsz - flen, "LIB=");
+            }
+            for (j = 0; j < ts->lib_filter_count; j++) {
+                if (j > 0 && flen < bufsz - 1)
+                    buf[flen++] = ',';
+                flen += snprintf(buf + flen, bufsz - flen,
+                                 "%s",
+                                 lib_id_to_name(ts->lib_filter_ids[j]));
+            }
+        }
+
+        /* Extended func filter -- emit lib.func format */
+        if (ts->func_filter_mode != 0) {
+            int j;
+            if (flen > 0 && flen < bufsz - 1)
+                buf[flen++] = ' ';
+            if (ts->func_filter_mode == -1) {
+                flen += snprintf(buf + flen, bufsz - flen, "-FUNC=");
+            } else {
+                flen += snprintf(buf + flen, bufsz - flen, "FUNC=");
+            }
+            for (j = 0; j < ts->func_filter_count; j++) {
+                const struct trace_func_entry *fe;
+                if (j > 0 && flen < bufsz - 1)
+                    buf[flen++] = ',';
+                fe = lookup_func(
+                    (UBYTE)ts->func_filter_lib_ids[j],
+                    ts->func_filter_lvos[j]);
+                if (fe) {
+                    flen += snprintf(buf + flen, bufsz - flen,
+                                     "%s.%s",
+                                     fe->lib_name, fe->func_name);
+                } else {
+                    flen += snprintf(buf + flen, bufsz - flen,
+                                     "?");
+                }
+            }
+        }
+    } else {
+        /* Simple filters */
+        if (ts->filter_lib_id >= 0) {
+            if (flen > 0 && flen < bufsz - 1)
+                buf[flen++] = ' ';
+            flen += snprintf(buf + flen, bufsz - flen,
+                             "LIB=%s",
+                             lib_id_to_name(ts->filter_lib_id));
+        }
+
+        if (ts->filter_lvo != 0) {
+            const struct trace_func_entry *fe;
+            if (flen > 0 && flen < bufsz - 1)
+                buf[flen++] = ' ';
+            /* Simple filter uses filter_lib_id + filter_lvo.
+             * Always emit lib.func format for unambiguous display. */
+            fe = lookup_func(
+                (UBYTE)(ts->filter_lib_id >= 0
+                        ? ts->filter_lib_id : 0),
+                ts->filter_lvo);
+            if (fe) {
+                flen += snprintf(buf + flen, bufsz - flen,
+                                 "FUNC=%s.%s",
+                                 fe->lib_name, fe->func_name);
+            } else {
+                flen += snprintf(buf + flen, bufsz - flen,
+                                 "FUNC=?");
+            }
+        }
+    }
+
+    if (ts->filter_errors_only) {
+        if (flen > 0 && flen < bufsz - 1)
+            buf[flen++] = ' ';
+        flen += snprintf(buf + flen, bufsz - flen, "ERRORS");
+    }
+
+    buf[bufsz - 1] = '\0';
+    return flen;
+}
+
 static int emit_trace_header(LONG fd, struct trace_state *ts,
                               const char *run_command)
 {
@@ -1597,99 +1830,9 @@ static int emit_trace_header(LONG fd, struct trace_state *ts,
     /* Line 3: active filter description */
     {
         char filter_desc[384];
-        int flen = 0;
+        int flen;
 
-        filter_desc[0] = '\0';
-
-        if (ts->filter_procname[0] != '\0') {
-            flen += snprintf(filter_desc + flen,
-                             sizeof(filter_desc) - flen,
-                             "PROC=%s", ts->filter_procname);
-        }
-
-        if (ts->use_extended_filter) {
-            /* Extended lib filter */
-            if (ts->lib_filter_mode != 0) {
-                int j;
-                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
-                    filter_desc[flen++] = ' ';
-                if (ts->lib_filter_mode == -1) {
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen, "-LIB=");
-                } else {
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen, "LIB=");
-                }
-                for (j = 0; j < ts->lib_filter_count; j++) {
-                    if (j > 0 && flen < (int)sizeof(filter_desc) - 1)
-                        filter_desc[flen++] = ',';
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen,
-                                     "%s",
-                                     lib_id_to_name(ts->lib_filter_ids[j]));
-                }
-            }
-
-            /* Extended func filter */
-            if (ts->func_filter_mode != 0) {
-                int j;
-                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
-                    filter_desc[flen++] = ' ';
-                if (ts->func_filter_mode == -1) {
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen, "-FUNC=");
-                } else {
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen, "FUNC=");
-                }
-                for (j = 0; j < ts->func_filter_count; j++) {
-                    const struct trace_func_entry *fe;
-                    if (j > 0 && flen < (int)sizeof(filter_desc) - 1)
-                        filter_desc[flen++] = ',';
-                    fe = lookup_func(
-                        (UBYTE)ts->func_filter_lib_ids[j],
-                        ts->func_filter_lvos[j]);
-                    flen += snprintf(filter_desc + flen,
-                                     sizeof(filter_desc) - flen,
-                                     "%s", fe ? fe->func_name : "?");
-                }
-            }
-        } else {
-            /* Simple filters */
-            if (ts->filter_lib_id >= 0) {
-                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
-                    filter_desc[flen++] = ' ';
-                flen += snprintf(filter_desc + flen,
-                                 sizeof(filter_desc) - flen,
-                                 "LIB=%s",
-                                 lib_id_to_name(ts->filter_lib_id));
-            }
-
-            if (ts->filter_lvo != 0) {
-                const struct trace_func_entry *fe;
-                if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
-                    filter_desc[flen++] = ' ';
-                /* Simple filter uses filter_lib_id + filter_lvo */
-                fe = lookup_func(
-                    (UBYTE)(ts->filter_lib_id >= 0
-                            ? ts->filter_lib_id : 0),
-                    ts->filter_lvo);
-                flen += snprintf(filter_desc + flen,
-                                 sizeof(filter_desc) - flen,
-                                 "FUNC=%s",
-                                 fe ? fe->func_name : "?");
-            }
-        }
-
-        if (ts->filter_errors_only) {
-            if (flen > 0 && flen < (int)sizeof(filter_desc) - 1)
-                filter_desc[flen++] = ' ';
-            flen += snprintf(filter_desc + flen,
-                             sizeof(filter_desc) - flen, "ERRORS");
-        }
-
-        filter_desc[sizeof(filter_desc) - 1] = '\0';
-
+        flen = build_filter_desc(ts, filter_desc, sizeof(filter_desc));
         if (flen == 0) {
             snprintf(line, sizeof(line), "# filter: (none)");
         } else {
@@ -2681,11 +2824,26 @@ void trace_poll_events(struct daemon_state *d)
     total_consumed = 0;
 
     while (batch < 512 && g_ring_entries[pos].valid) {
+        const char *filter_name;
         ev = &g_ring_entries[pos];
 
-        /* Resolve task name once per event (used by both formatting
-         * and PROC filter matching) */
+        /* Resolve task name for formatting and PROC filter matching.
+         * resolve_task_name() uses resolve_cli_name() to extract the
+         * CLI command basename (e.g. "atrace_test") for CLI processes,
+         * which is what PROC= filters need to match against.
+         *
+         * The embedded ev->task_name (from tc_Node.ln_Name captured by
+         * the stub) contains the raw process name (e.g. "Background CLI")
+         * which is NOT the command name.  Only use it as fallback when
+         * resolve_task_name() returns a generic "<task 0x...>" string
+         * (process already exited and not in cache). */
         task_name = resolve_task_name(ev->caller_task);
+        if (task_name[0] == '<' &&
+            g_anchor->version >= 3 && ev->task_name[0] != '\0') {
+            filter_name = ev->task_name;
+        } else {
+            filter_name = task_name;
+        }
 
         /* Format event */
         trace_format_event(ev, timestr, task_name, trace_line_buf,
@@ -2704,7 +2862,7 @@ void trace_poll_events(struct daemon_state *d)
                 if (ev->sequence < c->trace.run_start_seq)
                     continue;
             }
-            if (!trace_filter_match(&c->trace, ev, task_name))
+            if (!trace_filter_match(&c->trace, ev, filter_name))
                 continue;
             sent_any = 1;
             if (send_trace_data_chunk(c->fd, trace_line_buf) < 0) {
@@ -3424,8 +3582,21 @@ void trace_check_run_completed(struct daemon_state *d)
                  * (can't have more valid entries than capacity). */
                 while (batch < (int)ring->capacity &&
                        g_ring_entries[pos].valid) {
+                    const char *filter_name;
                     ev = &g_ring_entries[pos];
+
+                    /* Use resolved name for PROC filter matching
+                     * (same logic as trace_poll_events).
+                     * resolve_task_name() gets CLI command basename;
+                     * ev->task_name is raw tc_Node.ln_Name fallback. */
                     task_name = resolve_task_name(ev->caller_task);
+                    if (task_name[0] == '<' &&
+                        g_anchor->version >= 3 &&
+                        ev->task_name[0] != '\0') {
+                        filter_name = ev->task_name;
+                    } else {
+                        filter_name = task_name;
+                    }
                     trace_format_event(ev, drain_timestr, task_name,
                                        trace_line_buf,
                                        sizeof(trace_line_buf));
@@ -3434,7 +3605,7 @@ void trace_check_run_completed(struct daemon_state *d)
                     if (run_client_ok &&
                         ev->caller_task == c->trace.run_task_ptr &&
                         ev->sequence >= c->trace.run_start_seq) {
-                        if (trace_filter_match(&c->trace, ev, task_name)) {
+                        if (trace_filter_match(&c->trace, ev, filter_name)) {
                             if (send_trace_data_chunk(c->fd, trace_line_buf) < 0)
                                 run_client_ok = 0;  /* Client disconnected */
                         }
@@ -3454,7 +3625,7 @@ void trace_check_run_completed(struct daemon_state *d)
                             if (ev->sequence < oc->trace.run_start_seq)
                                 continue;
                         }
-                        if (!trace_filter_match(&oc->trace, ev, task_name))
+                        if (!trace_filter_match(&oc->trace, ev, filter_name))
                             continue;
                         if (send_trace_data_chunk(oc->fd, trace_line_buf) < 0) {
                             trace_run_cleanup(oc);
@@ -3747,7 +3918,23 @@ int trace_handle_input(struct daemon_state *d, int idx)
              * parse_filters() for backward compatibility. Resets
              * all filter fields including extended state. */
             parse_extended_filter(filter_args, &c->trace);
-            /* Fire-and-forget: no response sent */
+
+            /* Emit filter comment so the client sees the change */
+            if (c->trace.active) {
+                char filter_desc[384];
+                char fline[512];
+                int flen;
+                flen = build_filter_desc(&c->trace, filter_desc,
+                                          sizeof(filter_desc));
+                if (flen > 0) {
+                    snprintf(fline, sizeof(fline),
+                             "# filter: %s", filter_desc);
+                } else {
+                    snprintf(fline, sizeof(fline),
+                             "# filter: (none)");
+                }
+                send_trace_data_chunk(c->fd, fline);
+            }
             continue;
         }
 

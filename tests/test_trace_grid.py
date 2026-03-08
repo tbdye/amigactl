@@ -188,23 +188,31 @@ class TestToggleGrid:
         assert cmd == ""
 
     def test_build_filter_func_blacklist(self):
-        """Function blacklist when fewer disabled than enabled."""
+        """Function blacklist when fewer disabled than enabled.
+
+        Uses lib.func dotted format (Phase 7b, 8b.1).
+        """
         grid = _make_grid(
             funcs={"Open": 12, "Lock": 8, "Close": 6,
-                   "Execute": 4, "LoadSeg": 3})
+                   "Execute": 4, "LoadSeg": 3},
+            initial_lib="dos")
         # Disable just one
         grid.active_category = 1  # FUNCTIONS
         grid.cursor_pos[1] = 0
         grid.toggle_at_cursor()  # Open (highest count)
 
         cmd = grid.build_filter_command()
-        assert "-FUNC=Open" in cmd
+        assert "-FUNC=dos.Open" in cmd
 
     def test_build_filter_combined(self):
-        """Combined LIB and FUNC filters in one command."""
+        """Combined LIB and FUNC filters in one command.
+
+        FUNC= entries use lib.func dotted format (Phase 7b, 8b.1).
+        """
         grid = _make_grid(
             libs={"exec": 200, "dos": 100, "icon": 50},
-            funcs={"Open": 12, "Lock": 8, "Close": 6})
+            funcs={"Open": 12, "Lock": 8, "Close": 6},
+            initial_lib="dos")
         # Disable one lib
         grid.cursor_pos[0] = 2
         grid.toggle_at_cursor()  # icon (in LIBRARIES)
@@ -215,7 +223,7 @@ class TestToggleGrid:
 
         cmd = grid.build_filter_command()
         assert "-LIB=icon" in cmd
-        assert "-FUNC=Close" in cmd
+        assert "-FUNC=dos.Close" in cmd
 
     def test_proc_not_in_filter_command(self):
         """Processes are NOT included in build_filter_command() output.
@@ -269,6 +277,12 @@ class TestToggleGrid:
         grid = _make_grid()
         grid.active_category = 2
         assert grid._active_items() is grid.proc_items
+
+    def test_active_items_noise(self):
+        """Active items returns noise_items when NOISE selected."""
+        grid = _make_grid()
+        grid.active_category = 3
+        assert grid._active_items() is grid.noise_items
 
     def test_build_filter_all_libs_disabled(self):
         """All libs disabled produces a filter that blocks all (M1 fix)."""
@@ -440,6 +454,87 @@ class TestToggleGrid:
         names = {i["name"] for i in grid.func_items}
         assert "FindPort" in names
         assert "FindTask" in names
+
+    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= filtering ---
+
+    def test_build_filter_func_blacklist_dotted(self):
+        """Function blacklist uses lib.func dotted format (8b.1)."""
+        grid = _make_grid(
+            funcs={"Open": 12, "Lock": 8, "Close": 6,
+                   "Execute": 4, "LoadSeg": 3},
+            initial_lib="dos")
+        # Disable just one
+        grid.active_category = 1  # FUNCTIONS
+        grid.cursor_pos[1] = 0
+        grid.toggle_at_cursor()  # Open (highest count)
+
+        cmd = grid.build_filter_command()
+        assert "-FUNC=dos.Open" in cmd
+
+    def test_build_filter_func_whitelist_dotted(self):
+        """Function whitelist uses lib.func dotted format (8b.1)."""
+        grid = _make_grid(
+            funcs={"Open": 12, "Lock": 8, "Close": 6},
+            initial_lib="dos")
+        # Disable two of three, leaving one enabled -> whitelist
+        grid.active_category = 1  # FUNCTIONS
+        grid.cursor_pos[1] = 1
+        grid.toggle_at_cursor()  # Lock
+        grid.cursor_pos[1] = 2
+        grid.toggle_at_cursor()  # Close
+
+        cmd = grid.build_filter_command()
+        assert "FUNC=dos.Open" in cmd
+
+    def test_build_filter_func_dotted_with_exec_lib(self):
+        """Dotted func names use the selected_lib (exec)."""
+        grid = _make_grid(
+            funcs={"FindPort": 30, "Open": 12, "Lock": 8},
+            initial_lib="exec")
+        grid.active_category = 1
+        grid.cursor_pos[1] = 2
+        grid.toggle_at_cursor()  # Lock (lowest count)
+
+        cmd = grid.build_filter_command()
+        # Noise defaults (FindPort) also contribute to disabled set
+        # The key assertion: all FUNC= entries have exec. prefix
+        parts = cmd.split()
+        for part in parts:
+            if part.startswith("-FUNC=") or part.startswith("FUNC="):
+                prefix = part.split("=", 1)[1]
+                for fn in prefix.split(","):
+                    assert "." in fn, \
+                        "Expected dotted lib.func, got: {}".format(fn)
+
+    def test_build_filter_all_funcs_disabled_no_dotted(self):
+        """All funcs disabled uses __NONE__ sentinel, no dotted names."""
+        grid = _make_grid(funcs={"Open": 12, "Lock": 8},
+                          initial_lib="dos")
+        grid.active_category = 1
+        grid.cursor_pos[1] = 0
+        grid.toggle_at_cursor()  # Open off
+        grid.cursor_pos[1] = 1
+        grid.toggle_at_cursor()  # Lock off
+        cmd = grid.build_filter_command()
+        assert "FUNC=__NONE__" in cmd
+
+    def test_build_filter_combined_lib_and_dotted_func(self):
+        """Combined LIB and FUNC filters with dotted func names."""
+        grid = _make_grid(
+            libs={"exec": 200, "dos": 100, "icon": 50},
+            funcs={"Open": 12, "Lock": 8, "Close": 6},
+            initial_lib="dos")
+        # Disable one lib
+        grid.cursor_pos[0] = 2
+        grid.toggle_at_cursor()  # icon
+        # Disable one func
+        grid.active_category = 1
+        grid.cursor_pos[1] = 2
+        grid.toggle_at_cursor()  # Close
+
+        cmd = grid.build_filter_command()
+        assert "-LIB=icon" in cmd
+        assert "-FUNC=dos.Close" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -1001,6 +1096,93 @@ class TestToggleGridIntegration:
 
         assert viewer.grid.focused_lib_index == 1
 
+    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= in _apply_grid_filters ---
+
+    def test_apply_grid_filters_dotted_func_names(self):
+        """_apply_grid_filters() sends dotted lib.func in -FUNC= (8b.1)."""
+        from amigactl.trace_ui import TraceViewer
+        conn = mock.MagicMock()
+        session = mock.MagicMock()
+        session.sock = mock.MagicMock()
+        session.reader = mock.MagicMock()
+        cw = ColorWriter(force_color=False)
+        viewer = TraceViewer(conn, session, cw)
+
+        viewer.discovered_libs = {"dos": 100}
+        viewer.discovered_funcs = {
+            "dos": {"Open": 12, "Lock": 8, "Close": 6}
+        }
+        viewer.discovered_procs = {}
+
+        term, output = _make_terminal_state(rows=24, cols=120)
+        viewer.term = term
+
+        viewer._enter_toggle_grid()
+
+        # Disable one function
+        viewer.grid.active_category = 1  # FUNCTIONS
+        viewer.grid.cursor_pos[1] = 2
+        viewer.grid.toggle_at_cursor()  # Close (lowest count)
+
+        viewer._save_func_state()
+        viewer._apply_grid_filters()
+
+        # Verify send_filter was called with dotted names
+        conn.send_filter.assert_called_once()
+        call_args = conn.send_filter.call_args
+        raw = call_args[1].get("raw", "")
+        # The comprehensive blacklist from disabled_funcs should have
+        # dotted lib.func format
+        assert "dos.Close" in raw
+
+    def test_apply_grid_filters_multi_lib_dotted(self):
+        """_apply_grid_filters() collects dotted names from all libs (8b.1).
+
+        When disabled_funcs has entries for multiple libraries, the
+        comprehensive -FUNC= blacklist should use lib.func format for
+        each, avoiding cross-library name collisions.
+        """
+        from amigactl.trace_ui import TraceViewer
+        conn = mock.MagicMock()
+        session = mock.MagicMock()
+        session.sock = mock.MagicMock()
+        session.reader = mock.MagicMock()
+        cw = ColorWriter(force_color=False)
+        viewer = TraceViewer(conn, session, cw)
+
+        viewer.discovered_libs = {"dos": 100, "exec": 200}
+        viewer.discovered_funcs = {
+            "dos": {"Open": 12, "Lock": 8},
+            "exec": {"FindPort": 30, "OpenLibrary": 5},
+        }
+        viewer.discovered_procs = {}
+
+        term, output = _make_terminal_state(rows=24, cols=120)
+        viewer.term = term
+
+        # Pre-populate disabled_funcs with entries from both libraries
+        # (simulating the user having navigated to each library's
+        # FUNCTIONS panel and disabled items)
+        viewer.disabled_funcs = {
+            "dos": {"Lock"},
+            "exec": {"FindPort"},
+        }
+
+        viewer._enter_toggle_grid()
+        # Force user interaction so filter sends
+        viewer.grid.toggle_at_cursor()
+        viewer.grid.toggle_at_cursor()  # toggle back
+
+        viewer._save_func_state()
+        viewer._apply_grid_filters()
+
+        # Verify the filter command has dotted names from both libs
+        conn.send_filter.assert_called_once()
+        call_args = conn.send_filter.call_args
+        raw = call_args[1].get("raw", "")
+        assert "dos.Lock" in raw
+        assert "exec.FindPort" in raw
+
 
 # ---------------------------------------------------------------------------
 # TestActiveColumnReverse (Bug 13)
@@ -1035,3 +1217,718 @@ class TestActiveColumnReverse:
         lines = grid._render_stacked(60, cw)
         header = lines[0]
         assert "\033[7m" in header
+
+
+# ---------------------------------------------------------------------------
+# NOISE category tests (Phase 7b, Feature 8b.3)
+# ---------------------------------------------------------------------------
+
+
+class TestNoiseCategory:
+    """Tests for the NOISE category in the toggle grid."""
+
+    def test_noise_category_exists(self):
+        """NOISE is the 4th category in the grid."""
+        grid = _make_grid()
+        assert "NOISE" in grid.categories
+        assert grid.categories[3] == "NOISE"
+        assert len(grid.categories) == 4
+
+    def test_noise_items_default_disabled(self):
+        """All noise items start with enabled=False (suppressed)."""
+        grid = _make_grid()
+        assert len(grid.noise_items) == 9
+        for item in grid.noise_items:
+            assert item["enabled"] is False, \
+                "{} should start disabled".format(item["name"])
+
+    def test_noise_items_have_none_count(self):
+        """Noise items have count=None (rendered as '-')."""
+        grid = _make_grid()
+        for item in grid.noise_items:
+            assert item["count"] is None, \
+                "{} should have count=None".format(item["name"])
+
+    def test_noise_items_names(self):
+        """Noise items include all expected shell variable names."""
+        grid = _make_grid()
+        names = {item["name"] for item in grid.noise_items}
+        expected = {
+            "process", "echo", "debug", "oldredirect",
+            "interactive", "simpleshell",
+            "RC", "Result2", "LV_ALIAS",
+        }
+        assert names == expected
+
+    def test_noise_toggle(self):
+        """Toggle a noise item and verify get_noise_state()."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        grid.cursor_pos[3] = 0
+        grid.toggle_at_cursor()  # Enable first noise item
+
+        noise_enabled = grid.get_noise_state()
+        assert grid.noise_items[0]["name"] in noise_enabled
+
+    def test_noise_all_on(self):
+        """all_on() on NOISE category enables all noise items."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        grid.all_on()
+
+        for item in grid.noise_items:
+            assert item["enabled"] is True
+        assert grid.get_noise_state() == {
+            "process", "echo", "debug", "oldredirect",
+            "interactive", "simpleshell",
+            "RC", "Result2", "LV_ALIAS",
+        }
+
+    def test_noise_none(self):
+        """none() on NOISE category disables all noise items."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        # First enable all, then disable all
+        grid.all_on()
+        grid.none()
+
+        for item in grid.noise_items:
+            assert item["enabled"] is False
+        assert grid.get_noise_state() == set()
+
+    def test_noise_not_in_filter_command(self):
+        """Noise items do not affect build_filter_command() output."""
+        grid = _make_grid(funcs={"Open": 10, "Lock": 5})
+        # Enable all noise items
+        grid.active_category = 3
+        grid.all_on()
+
+        cmd = grid.build_filter_command()
+        # Filter command should not mention any noise items
+        assert "NOISE" not in cmd
+        assert "process" not in cmd
+        assert "LV_ALIAS" not in cmd
+
+    def test_noise_toggle_does_not_trigger_has_user_changes(self):
+        """Toggling only noise items doesn't cause has_user_changes()=True.
+
+        Noise changes are client-side only and don't need a FILTER command.
+        """
+        grid = _make_grid(funcs={"Open": 10, "Lock": 5})
+        grid.active_category = 3  # NOISE
+        grid.toggle_at_cursor()  # Enable first noise item
+
+        # user_interacted is True, but build_filter_command() unchanged
+        assert grid.user_interacted is True
+        assert grid.has_user_changes() is False
+
+    def test_noise_cursor_pos_initialized(self):
+        """Cursor position for NOISE category (index 3) starts at 0."""
+        grid = _make_grid()
+        assert 3 in grid.cursor_pos
+        assert grid.cursor_pos[3] == 0
+
+    def test_noise_clamp_cursor(self):
+        """clamp_cursor works for the NOISE category."""
+        grid = _make_grid()
+        grid.cursor_pos[3] = 100  # out of bounds
+        grid.clamp_cursor(3)
+        assert grid.cursor_pos[3] == len(grid.noise_items) - 1
+
+    def test_format_item_none_count(self):
+        """_format_item renders count=None as '-'."""
+        grid = _make_grid()
+        cw = ColorWriter(force_color=False)
+        item = {"name": "process", "count": None, "enabled": False}
+        text = grid._format_item(item, cw, 30)
+        assert "-" in text
+        # Should not contain "None"
+        assert "None" not in text
+
+    def test_get_noise_state_empty_when_all_disabled(self):
+        """get_noise_state() returns empty set when all disabled."""
+        grid = _make_grid()
+        assert grid.get_noise_state() == set()
+
+    def test_get_noise_state_partial(self):
+        """get_noise_state() returns only enabled items."""
+        grid = _make_grid()
+        # Enable just "RC" and "Result2"
+        for item in grid.noise_items:
+            if item["name"] in ("RC", "Result2"):
+                item["enabled"] = True
+        assert grid.get_noise_state() == {"RC", "Result2"}
+
+
+class TestNoiseCategoryRendering:
+    """Tests for rendering the NOISE category at various widths."""
+
+    def test_three_column_noise_active(self):
+        """When NOISE is active, three-column shows LIB, PROC, NOISE."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_three_column(120, cw)
+
+        header = lines[0]
+        assert "LIBRARIES" in header
+        assert "PROCESSES" in header
+        assert "NOISE" in header
+        # FUNCTIONS should NOT be visible when NOISE is active
+        assert "FUNCTIONS" not in header
+
+    def test_three_column_default_no_noise(self):
+        """Default three-column layout shows LIB, FUNC, PROC (not NOISE)."""
+        grid = _make_grid()
+        grid.active_category = 0
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_three_column(120, cw)
+
+        header = lines[0]
+        assert "LIBRARIES" in header
+        assert "FUNCTIONS" in header
+        assert "PROCESSES" in header
+        assert "NOISE" not in header
+
+    def test_two_column_noise_active(self):
+        """When NOISE is active, two-column shows PROC + NOISE."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_two_column(100, cw)
+
+        header = lines[0]
+        assert "PROCESSES" in header
+        assert "NOISE" in header
+
+    def test_stacked_noise_active(self):
+        """Stacked layout shows only NOISE when active."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_stacked(60, cw)
+
+        assert "NOISE" in lines[0]
+        # Should have items rendered
+        assert len(lines) >= 11  # header + blank + 9 items
+
+    def test_noise_items_rendered_with_dash_count(self):
+        """Noise items show '-' as count in rendered output."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_stacked(60, cw)
+
+        # Item lines start after header + blank line
+        for line in lines[2:]:
+            if line.strip():
+                assert "-" in line  # count rendered as "-"
+
+    def test_noise_reverse_video_header(self):
+        """NOISE category header is in reverse video when active."""
+        grid = _make_grid()
+        grid.active_category = 3  # NOISE
+        cw = ColorWriter(force_color=True)
+        lines = grid._render_stacked(60, cw)
+        header = lines[0]
+        assert "\033[7m" in header
+
+
+# ---------------------------------------------------------------------------
+# Viewport scrolling tests (scroll offset fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_large_grid(num_funcs=30):
+    """Create a grid with many functions to trigger scrolling."""
+    libs = {"exec": 500, "dos": 300}
+    funcs = {"Func{}".format(i): 100 - i for i in range(num_funcs)}
+    procs = {"Proc{}".format(i): 50 - i for i in range(10)}
+    return ToggleGrid(libs, funcs, procs)
+
+
+class TestViewportScrolling:
+    """Tests for per-category viewport scrolling."""
+
+    def test_scroll_offset_initialized(self):
+        """scroll_offset dict is initialized to zero for all categories."""
+        grid = _make_grid()
+        assert grid.scroll_offset == {0: 0, 1: 0, 2: 0, 3: 0}
+
+    def test_available_item_rows(self):
+        """_available_item_rows() computes correct row count."""
+        grid = _make_grid()
+        # 24 rows: rows 3-22 scroll region = 20 lines, minus 2 headers = 18
+        assert grid._available_item_rows(24) == 18
+        # 10 rows: rows 3-8 scroll region = 6 lines, minus 2 = 4
+        assert grid._available_item_rows(10) == 4
+        # Minimum: 7 rows -> 1 item row
+        assert grid._available_item_rows(7) == 1
+        # Very small: returns at least 1
+        assert grid._available_item_rows(5) == 1
+
+    def test_cursor_down_scrolls_viewport(self):
+        """Moving cursor below viewport scrolls down.
+
+        With visible=5 and indicator overhead of 2, effective window
+        is 3 items. Scroll triggers when cursor reaches offset + 3.
+        """
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1  # FUNCTIONS
+        visible = 5
+
+        # effective = max(1, 5 - 2) = 3
+        # Move cursor to last visible row before scroll (index 2)
+        for _ in range(2):
+            grid.move_cursor(1, visible_rows=visible)
+        assert grid.cursor_pos[1] == 2
+        assert grid.scroll_offset[1] == 0
+
+        # Move one more -- should scroll (pos 3 >= offset 0 + effective 3)
+        grid.move_cursor(1, visible_rows=visible)
+        assert grid.cursor_pos[1] == 3
+        assert grid.scroll_offset[1] == 1
+
+    def test_cursor_up_scrolls_viewport(self):
+        """Moving cursor above viewport scrolls up."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1
+        visible = 5
+
+        # Start scrolled down
+        grid.cursor_pos[1] = 10
+        grid.scroll_offset[1] = 8
+
+        # Move up past scroll_offset
+        grid.move_cursor(-1, visible_rows=visible)
+        grid.move_cursor(-1, visible_rows=visible)
+        assert grid.cursor_pos[1] == 8
+        assert grid.scroll_offset[1] == 8
+
+        # Move one more up -- scrolls up
+        grid.move_cursor(-1, visible_rows=visible)
+        assert grid.cursor_pos[1] == 7
+        assert grid.scroll_offset[1] == 7
+
+    def test_page_down(self):
+        """Page-down moves cursor by visible_rows items."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1
+        visible = 5
+
+        grid.move_cursor(visible, visible_rows=visible)
+        assert grid.cursor_pos[1] == 5
+        # effective = max(1, 5 - 2) = 3
+        # Scroll offset: pos(5) - effective(3) + 1 = 3
+        assert grid.scroll_offset[1] == 3
+
+    def test_page_up(self):
+        """Page-up moves cursor up by visible_rows items."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1
+        visible = 5
+
+        # Start near the bottom
+        grid.cursor_pos[1] = 20
+        grid.scroll_offset[1] = 16
+
+        grid.move_cursor(-visible, visible_rows=visible)
+        assert grid.cursor_pos[1] == 15
+        assert grid.scroll_offset[1] == 15
+
+    def test_page_down_clamps_at_end(self):
+        """Page-down clamps cursor at last item."""
+        grid = _make_large_grid(num_funcs=8)
+        grid.active_category = 1
+        visible = 5
+
+        grid.cursor_pos[1] = 6
+        grid.move_cursor(visible, visible_rows=visible)
+        assert grid.cursor_pos[1] == 7  # last item (0-indexed, 8 items)
+
+    def test_page_up_clamps_at_start(self):
+        """Page-up clamps cursor at first item."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1
+        visible = 5
+
+        grid.cursor_pos[1] = 2
+        grid.scroll_offset[1] = 0
+        grid.move_cursor(-visible, visible_rows=visible)
+        assert grid.cursor_pos[1] == 0
+        assert grid.scroll_offset[1] == 0
+
+    def test_scroll_indicators_appear(self):
+        """Scroll indicators show when items are hidden."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1  # FUNCTIONS
+        cw = ColorWriter(force_color=False)
+
+        # max_visible_rows=5, 20 items total -> indicators needed
+        lines = grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=5)
+        # First line should NOT be an indicator (scroll_offset=0)
+        # Last line should be a "down" indicator
+        assert "more down" in lines[-1]
+
+    def test_scroll_indicator_up(self):
+        """Up indicator shows when items are hidden above."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        grid.scroll_offset[1] = 5
+        cw = ColorWriter(force_color=False)
+
+        lines = grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=5)
+        assert "more up" in lines[0]
+
+    def test_scroll_indicator_both(self):
+        """Both indicators show when items are hidden above and below."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        grid.scroll_offset[1] = 5
+        cw = ColorWriter(force_color=False)
+
+        lines = grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=5)
+        assert "more up" in lines[0]
+        assert "more down" in lines[-1]
+
+    def test_no_scroll_indicators_when_all_visible(self):
+        """No indicators when all items fit in viewport."""
+        grid = _make_grid()  # 3 funcs
+        grid.active_category = 1
+        cw = ColorWriter(force_color=False)
+
+        lines = grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=10)
+        for line in lines:
+            assert "more up" not in line
+            assert "more down" not in line
+
+    def test_category_switch_preserves_scroll(self):
+        """Switching categories preserves each category's scroll offset."""
+        grid = _make_large_grid(num_funcs=30)
+        visible = 5
+
+        # Scroll LIBRARIES down
+        grid.active_category = 0
+        grid.cursor_pos[0] = 1
+        grid.scroll_offset[0] = 0
+
+        # Scroll FUNCTIONS down
+        grid.active_category = 1
+        grid.cursor_pos[1] = 15
+        grid.scroll_offset[1] = 11
+
+        # Switch back to LIBRARIES -- its scroll should be preserved
+        grid.active_category = 0
+        assert grid.scroll_offset[0] == 0
+        assert grid.cursor_pos[0] == 1
+
+        # Switch to FUNCTIONS -- its scroll should be preserved
+        grid.active_category = 1
+        assert grid.scroll_offset[1] == 11
+        assert grid.cursor_pos[1] == 15
+
+    def test_clamp_cursor_clamps_scroll_offset(self):
+        """clamp_cursor also clamps scroll_offset when items shrink."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.cursor_pos[1] = 25
+        grid.scroll_offset[1] = 20
+
+        # Shrink to 5 items
+        grid.func_items = grid.func_items[:5]
+        grid.clamp_cursor(1)
+
+        assert grid.cursor_pos[1] == 4  # last valid index
+        assert grid.scroll_offset[1] == 4  # clamped to max valid
+
+    def test_clamp_cursor_empty_resets_scroll_offset(self):
+        """clamp_cursor resets scroll_offset to 0 for empty list."""
+        grid = _make_grid()
+        grid.scroll_offset[1] = 10
+        grid.cursor_pos[1] = 5
+        grid.func_items = []
+        grid.clamp_cursor(1)
+        assert grid.cursor_pos[1] == 0
+        assert grid.scroll_offset[1] == 0
+
+    def test_render_respects_max_visible_rows(self):
+        """render() limits output lines to fit the terminal."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1
+        term, output = _make_terminal_state(rows=12, cols=120)
+        cw = ColorWriter(force_color=False)
+
+        grid.render(term, cw)
+        rendered = output.getvalue()
+
+        # With 12 rows: avail = 12-6 = 6 item rows
+        # Total lines = 2 (headers) + items (capped at 6)
+        # All should fit in scroll region (rows 3-10, 8 lines)
+        assert len(rendered) > 0
+
+    def test_stacked_scroll(self):
+        """Stacked layout (narrow terminal) scrolls correctly."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        cw = ColorWriter(force_color=False)
+
+        # Scroll down in stacked mode
+        grid.scroll_offset[1] = 5
+        grid.cursor_pos[1] = 7
+
+        lines = grid._render_stacked(60, cw, max_visible_rows=5)
+        # Should have header + blank + at most 5 item lines
+        # (some may be indicators)
+        item_lines = lines[2:]  # skip header + blank
+        assert len(item_lines) <= 5
+
+    def test_three_column_independent_scroll(self):
+        """Three-column mode: each column scrolls independently."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 1  # FUNCTIONS
+
+        # Scroll FUNCTIONS column independently
+        grid.scroll_offset[1] = 10
+        grid.cursor_pos[1] = 12
+
+        # LIBRARIES column stays at 0
+        assert grid.scroll_offset[0] == 0
+
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_three_column(120, cw, max_visible_rows=5)
+
+        # Header and blank
+        assert len(lines) >= 2
+        # The item rows should reflect independent scrolling
+        # LIBRARIES items should start from index 0
+        # FUNCTIONS items should start from index 10
+        item_lines = lines[2:]
+        assert len(item_lines) > 0
+
+    def test_two_column_independent_scroll(self):
+        """Two-column mode: each column scrolls independently."""
+        grid = _make_large_grid(num_funcs=30)
+        grid.active_category = 0  # LIBRARIES
+
+        # Scroll FUNCTIONS column independently
+        grid.scroll_offset[1] = 10
+        grid.cursor_pos[0] = 0
+
+        cw = ColorWriter(force_color=False)
+        lines = grid._render_two_column(100, cw, max_visible_rows=5)
+
+        # Should render without error
+        item_lines = lines[2:]
+        assert len(item_lines) > 0
+
+    def test_move_cursor_without_visible_rows(self):
+        """move_cursor without visible_rows still works (backward compat)."""
+        grid = _make_grid()
+        grid.move_cursor(1)
+        assert grid.cursor_pos[0] == 1
+        # scroll_offset should not change without visible_rows
+        assert grid.scroll_offset[0] == 0
+
+    def test_build_lines_without_max_visible(self):
+        """_build_lines without max_visible_rows renders all items."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        cw = ColorWriter(force_color=False)
+
+        lines = grid._build_lines(120, cw)
+        # Should have header + blank + all 20 func items (max across cols)
+        # 3 columns: LIB(2), FUNC(20), PROC(10) -> max=20 item rows
+        item_lines = lines[2:]
+        assert len(item_lines) == 20
+
+    def test_footer_text_includes_pgupdn(self):
+        """GRID_FOOTER_TEXT includes PgUp/PgDn hint."""
+        from amigactl.trace_grid import GRID_FOOTER_TEXT
+        assert "PgUp" in GRID_FOOTER_TEXT or "PgDn" in GRID_FOOTER_TEXT
+
+    def test_handle_grid_key_page_down(self):
+        """PgDn escape sequence pages down in the grid."""
+        viewer = _make_viewer()
+        viewer.discovered_libs = {"exec": 200, "dos": 100}
+        viewer.discovered_funcs = {
+            "exec": {"Func{}".format(i): 100 - i for i in range(30)},
+        }
+        viewer.discovered_procs = {}
+
+        viewer._enter_toggle_grid()
+        viewer.grid.active_category = 1  # FUNCTIONS
+
+        # Get available rows for this terminal
+        avail = viewer.grid._available_item_rows(viewer.term.rows)
+
+        # Press PgDn
+        viewer._handle_grid_key(("esc", "[6~"))
+
+        # Cursor should have moved by avail rows (clamped to max)
+        assert viewer.grid.cursor_pos[1] == min(avail, 29)
+
+    def test_handle_grid_key_page_up(self):
+        """PgUp escape sequence pages up in the grid."""
+        viewer = _make_viewer()
+        viewer.discovered_libs = {"exec": 200, "dos": 100}
+        viewer.discovered_funcs = {
+            "exec": {"Func{}".format(i): 100 - i for i in range(30)},
+        }
+        viewer.discovered_procs = {}
+
+        viewer._enter_toggle_grid()
+        viewer.grid.active_category = 1  # FUNCTIONS
+        viewer.grid.cursor_pos[1] = 20
+        viewer.grid.scroll_offset[1] = 15
+
+        avail = viewer.grid._available_item_rows(viewer.term.rows)
+
+        # Press PgUp
+        viewer._handle_grid_key(("esc", "[5~"))
+
+        # Cursor should have moved up by avail rows
+        assert viewer.grid.cursor_pos[1] == 20 - avail
+
+    def test_render_small_terminal(self):
+        """Grid renders correctly on a very small terminal."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        term, output = _make_terminal_state(rows=8, cols=120)
+        cw = ColorWriter(force_color=False)
+
+        # Should not raise
+        grid.render(term, cw)
+        rendered = output.getvalue()
+        assert len(rendered) > 0
+
+    def test_scroll_offset_not_negative(self):
+        """Scroll offset never goes negative."""
+        grid = _make_large_grid(num_funcs=20)
+        grid.active_category = 1
+        grid.cursor_pos[1] = 0
+        grid.scroll_offset[1] = 0
+
+        grid.move_cursor(-5, visible_rows=5)
+        assert grid.cursor_pos[1] == 0
+        assert grid.scroll_offset[1] == 0
+
+    @pytest.mark.parametrize("total,mvr,offset", [
+        (20, 1, 5),   # MF1: tiny viewport, items above and below
+        (20, 1, 0),   # tiny viewport, items only below
+        (20, 1, 19),  # tiny viewport, items only above
+        (20, 2, 5),   # 2-row viewport, items above and below
+        (20, 2, 0),   # 2-row viewport, items only below
+        (20, 2, 18),  # 2-row viewport, items only above
+        (20, 3, 0),   # 3-row viewport, items only below
+        (20, 3, 5),   # 3-row viewport, items above and below
+        (20, 5, 0),   # normal viewport, start
+        (20, 5, 15),  # normal viewport, near end
+        (5, 5, 0),    # all items fit exactly
+        (3, 5, 0),    # fewer items than viewport
+        (1, 1, 0),    # single item, single row
+        (3, 2, 1),    # 3 items, 2 rows, offset in middle
+    ])
+    def test_column_lines_length_invariant(self, total, mvr, offset):
+        """_column_lines output never exceeds max_visible_rows."""
+        grid = _make_large_grid(num_funcs=total)
+        grid.active_category = 1
+        grid.scroll_offset[1] = offset
+        cw = ColorWriter(force_color=False)
+        lines = grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=mvr)
+        assert len(lines) <= mvr
+
+    def test_column_lines_writeback_scroll_offset(self):
+        """_column_lines writes corrected scroll_offset back (SF2 fix)."""
+        grid = _make_large_grid(num_funcs=10)
+        grid.active_category = 1
+        # Set scroll_offset past the valid range for a 3-row viewport.
+        # With mvr=3, offset=9, total=10:
+        #   has_above=True -> 1 indicator row, item_rows=2
+        #   end=9+2=11 > 10, so end=10, offset corrected to max(0,10-2)=8
+        # The corrected offset=8 is valid: shows items[8..9] + up indicator.
+        grid.scroll_offset[1] = 9
+        cw = ColorWriter(force_color=False)
+        grid._column_lines(
+            grid.func_items, 1, 30, cw, max_visible_rows=3)
+        # After rendering, stored offset should be corrected from 9 to 8
+        assert grid.scroll_offset[1] == 8
+
+    def test_cursor_always_within_rendered_items(self):
+        """Cursor never moves to a position hidden by scroll indicators.
+
+        Regression test for the indicator-desync bug: with avail=4 and
+        15 items, _column_lines shows at most 3 items (4 - 1 down
+        indicator), but old _ensure_cursor_visible allowed cursor at
+        position offset+3 which was the indicator row, not an item.
+
+        After the fix, effective = max(1, avail - 2) = 2, so cursor
+        stays within the actually-rendered items at all scroll positions.
+        """
+        grid = _make_large_grid(num_funcs=15)
+        grid.active_category = 1  # FUNCTIONS
+        avail = 4
+        cw = ColorWriter(force_color=False)
+
+        # Walk cursor through all items, checking at each step that
+        # the cursor position is within the rendered item range.
+        for step in range(15):
+            grid.move_cursor(1, visible_rows=avail)
+
+            offset = grid.scroll_offset[1]
+            pos = grid.cursor_pos[1]
+
+            # Render to get the actual items shown
+            lines = grid._column_lines(
+                grid.func_items, 1, 30, cw, max_visible_rows=avail)
+
+            # Count how many lines are items (not indicators)
+            item_indices = []
+            for idx, line in enumerate(lines):
+                if "more up" not in line and "more down" not in line:
+                    item_indices.append(idx)
+
+            # The cursor must be within the range [offset, offset + len(item_indices))
+            rendered_item_count = len(item_indices)
+            assert pos >= offset, (
+                "step {}: cursor {} below scroll_offset {}".format(
+                    step, pos, offset))
+            assert pos < offset + rendered_item_count, (
+                "step {}: cursor {} at/beyond last rendered item "
+                "(offset={}, rendered={})".format(
+                    step, pos, offset, rendered_item_count))
+
+    def test_cursor_walk_up_within_rendered_items(self):
+        """Walking cursor upward also stays within rendered items."""
+        grid = _make_large_grid(num_funcs=15)
+        grid.active_category = 1
+        avail = 4
+        cw = ColorWriter(force_color=False)
+
+        # Start at bottom
+        grid.cursor_pos[1] = 14
+        grid.scroll_offset[1] = 12
+
+        for step in range(15):
+            grid.move_cursor(-1, visible_rows=avail)
+
+            offset = grid.scroll_offset[1]
+            pos = grid.cursor_pos[1]
+
+            lines = grid._column_lines(
+                grid.func_items, 1, 30, cw, max_visible_rows=avail)
+
+            item_count = sum(1 for l in lines
+                             if "more up" not in l
+                             and "more down" not in l)
+
+            assert pos >= offset, (
+                "step {}: cursor {} below scroll_offset {}".format(
+                    step, pos, offset))
+            assert pos < offset + item_count, (
+                "step {}: cursor {} beyond rendered items "
+                "(offset={}, count={})".format(
+                    step, pos, offset, item_count))

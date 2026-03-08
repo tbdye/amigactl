@@ -1503,6 +1503,353 @@ class TestTraceFilter:
             sig.alarm(0)
             sig.signal(sig.SIGALRM, old_handler)
 
+    def test_filter_func_lib_scoped(self, amiga_host, amiga_port):
+        """FILTER FUNC=dos.Open passes only dos.Open (no exec functions)."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn_trace = AmigaConnection(amiga_host, amiga_port)
+            conn_trace.connect()
+            conn_activity = AmigaConnection(amiga_host, amiga_port)
+            conn_activity.connect()
+
+            try:
+                session = conn_trace.trace_start_raw()
+                with session:
+                    conn_trace.send_filter(raw="FUNC=dos.Open")
+                    time.sleep(0.5)
+                    _drain_pre_filter_events(session)
+
+                    conn_activity.execute("C:atrace_test", timeout=60)
+
+                    events = _collect_events_raw(session, timeout=5.0)
+
+                    _stop_raw_session(session)
+
+                # Should have events (atrace_test calls dos.Open many times)
+                assert len(events) > 0, (
+                    "No events received with FUNC=dos.Open")
+
+                # All events must be dos.Open
+                for ev in events:
+                    assert ev["func"] == "Open", (
+                        "Expected func='Open', got func={!r}".format(
+                            ev["func"]))
+                    assert ev["lib"] == "dos", (
+                        "Expected lib='dos', got lib={!r}".format(
+                            ev["lib"]))
+
+                # Verify distinctive atrace_test Open events are present
+                test_opens = _find_events(events, "Open", "atrace_test")
+                assert len(test_opens) >= 2, (
+                    "Expected at least 2 atrace_test Open events, "
+                    "found {} in {} total Open events".format(
+                        len(test_opens), len(events)))
+
+                # Verify no exec events leaked through
+                exec_funcs = {"FindPort", "FindResident", "FindSemaphore",
+                              "FindTask", "OpenDevice", "OpenLibrary",
+                              "OpenResource", "GetMsg", "PutMsg",
+                              "ObtainSemaphore", "ReleaseSemaphore",
+                              "AllocMem"}
+                for ev in events:
+                    assert ev["func"] not in exec_funcs, (
+                        "exec func {!r} should not appear with "
+                        "FUNC=dos.Open filter".format(ev["func"]))
+            finally:
+                conn_trace.close()
+                conn_activity.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_filter_func_global_still_works(self, amiga_host, amiga_port):
+        """FILTER FUNC=Open (no dot) still matches globally."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn_trace = AmigaConnection(amiga_host, amiga_port)
+            conn_trace.connect()
+            conn_activity = AmigaConnection(amiga_host, amiga_port)
+            conn_activity.connect()
+
+            try:
+                session = conn_trace.trace_start_raw()
+                with session:
+                    conn_trace.send_filter(raw="FUNC=Open")
+                    time.sleep(0.5)
+                    _drain_pre_filter_events(session)
+
+                    conn_activity.execute("C:atrace_test", timeout=60)
+
+                    events = _collect_events_raw(session, timeout=5.0)
+
+                    _stop_raw_session(session)
+
+                # Should have events
+                assert len(events) > 0, (
+                    "No events received with FUNC=Open (global)")
+
+                # All events must be Open (global match applies to all
+                # libraries that have an Open function -- dos.Open is
+                # the primary one exercised by atrace_test)
+                for ev in events:
+                    assert ev["func"] == "Open", (
+                        "Expected func='Open', got func={!r}".format(
+                            ev["func"]))
+
+                # Verify distinctive atrace_test Open events are present
+                test_opens = _find_events(events, "Open", "atrace_test")
+                assert len(test_opens) >= 2, (
+                    "Expected at least 2 atrace_test Open events with "
+                    "global FUNC=Open, found {} in {} total".format(
+                        len(test_opens), len(events)))
+            finally:
+                conn_trace.close()
+                conn_activity.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_filter_proc_daemon_side(self, amiga_host, amiga_port):
+        """FILTER PROC=atrace_test passes only events from that process.
+
+        Uses EXEC ASYNC so the daemon's main loop keeps running while
+        atrace_test executes.  This lets trace_poll_events() process
+        events while the process is alive, ensuring the task name is
+        resolvable.  EXEC ASYNC creates a wrapper process via
+        CreateNewProcTags(NP_Cli, TRUE) which sets cli_CommandName
+        to the command path before RunCommand.  resolve_cli_name()
+        extracts the basename ("atrace_test") for PROC filter matching.
+        """
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn_trace = AmigaConnection(amiga_host, amiga_port)
+            conn_trace.connect()
+            conn_activity = AmigaConnection(amiga_host, amiga_port)
+            conn_activity.connect()
+
+            try:
+                # Phase 1: PROC=atrace_test should pass events
+                session = conn_trace.trace_start_raw()
+                with session:
+                    conn_trace.send_filter(raw="PROC=atrace_test")
+                    time.sleep(0.5)
+                    _drain_pre_filter_events(session)
+
+                    # Use EXEC ASYNC so the daemon main loop is not
+                    # blocked and can poll events while the process
+                    # is alive.
+                    proc_id = conn_activity.execute_async(
+                        "C:atrace_test")
+
+                    # Wait for the async process to finish
+                    for _ in range(120):
+                        time.sleep(0.5)
+                        stat = conn_activity.procstat(proc_id)
+                        if stat.get("status") == "EXITED":
+                            break
+                    else:
+                        raise AssertionError(
+                            "atrace_test did not exit within timeout")
+
+                    # Allow final events to be polled and delivered
+                    time.sleep(1.0)
+
+                    matched_events = _collect_events_raw(
+                        session, timeout=5.0)
+
+                    # Phase 2: PROC=nonexistent should pass no events
+                    conn_trace.send_filter(raw="PROC=nonexistent")
+                    time.sleep(0.5)
+                    _drain_pre_filter_events(session)
+
+                    proc_id2 = conn_activity.execute_async(
+                        "C:atrace_test")
+
+                    for _ in range(120):
+                        time.sleep(0.5)
+                        stat = conn_activity.procstat(proc_id2)
+                        if stat.get("status") == "EXITED":
+                            break
+
+                    time.sleep(1.0)
+
+                    unmatched_events = _collect_events_raw(
+                        session, timeout=5.0)
+
+                    _stop_raw_session(session)
+
+                # Phase 1 assertions: events should arrive, and task
+                # names should contain "atrace_test"
+                assert len(matched_events) > 0, (
+                    "No events received with PROC=atrace_test")
+                for ev in matched_events:
+                    task = ev.get("task", "")
+                    assert "atrace_test" in task, (
+                        "Expected task containing 'atrace_test', "
+                        "got task={!r}".format(task))
+
+                # Phase 2 assertions: no events from nonexistent process
+                assert len(unmatched_events) == 0, (
+                    "Expected 0 events with PROC=nonexistent, "
+                    "got {}".format(len(unmatched_events)))
+            finally:
+                conn_trace.close()
+                conn_activity.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+
+# ---------------------------------------------------------------------------
+# TestTraceFilterComment -- Phase 7b: filter comment emission tests
+# ---------------------------------------------------------------------------
+
+def _collect_results_raw(session, timeout=5.0, max_results=200):
+    """Collect trace results (events AND comments) from a RawTraceSession.
+
+    Like _collect_events_raw but returns all result types, not just events.
+    Returns a list of dicts (both type="event" and type="comment").
+    """
+    import select
+
+    results = []
+
+    # Drain buffered data first
+    while session.reader.has_buffered_data():
+        result = session.reader.drain_buffered()
+        if result is False:
+            return results
+        if result is None:
+            break
+        if isinstance(result, dict):
+            results.append(result)
+
+    for _ in range(max_results * 2):
+        r, _, _ = select.select([session.sock], [], [], timeout)
+        if not r:
+            break
+        result = session.reader.try_read_event()
+        if result is False:
+            break
+        if result is None:
+            continue
+        if isinstance(result, dict):
+            results.append(result)
+        # Drain remaining buffered
+        while session.reader.has_buffered_data():
+            result = session.reader.drain_buffered()
+            if result is False:
+                return results
+            if result is None:
+                break
+            if isinstance(result, dict):
+                results.append(result)
+    return results
+
+
+class TestTraceFilterComment:
+    """Tests for filter comment emission after FILTER command (Phase 7b)."""
+
+    def test_filter_emits_comment(self, amiga_host, amiga_port):
+        """FILTER LIB=dos emits a '# filter: LIB=dos' comment."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn_trace = AmigaConnection(amiga_host, amiga_port)
+            conn_trace.connect()
+
+            try:
+                session = conn_trace.trace_start_raw()
+                with session:
+                    # Drain header comments
+                    _collect_results_raw(session, timeout=1.0)
+
+                    # Send a filter command
+                    conn_trace.send_filter(raw="LIB=dos")
+                    time.sleep(0.3)
+
+                    # Collect results -- should include a filter comment
+                    results = _collect_results_raw(session, timeout=2.0)
+
+                    _stop_raw_session(session)
+
+                comments = [r for r in results
+                            if r.get("type") == "comment"]
+                filter_comments = [c for c in comments
+                                   if c.get("text", "").startswith(
+                                       "filter:")]
+
+                assert len(filter_comments) >= 1, (
+                    "Expected a '# filter:' comment after FILTER "
+                    "LIB=dos, got comments: {}".format(
+                        [c.get("text") for c in comments]))
+
+                # Verify the comment text contains LIB=dos
+                text = filter_comments[0]["text"]
+                assert "LIB=dos" in text, (
+                    "Expected 'LIB=dos' in filter comment, "
+                    "got: {!r}".format(text))
+            finally:
+                conn_trace.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_filter_clear_emits_none_comment(self, amiga_host, amiga_port):
+        """Empty FILTER emits a '# filter: (none)' comment."""
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn_trace = AmigaConnection(amiga_host, amiga_port)
+            conn_trace.connect()
+
+            try:
+                session = conn_trace.trace_start_raw()
+                with session:
+                    # Drain header
+                    _collect_results_raw(session, timeout=1.0)
+
+                    # First set a filter, then clear it
+                    conn_trace.send_filter(raw="LIB=dos")
+                    time.sleep(0.3)
+                    _collect_results_raw(session, timeout=1.0)
+
+                    # Now clear the filter
+                    conn_trace.send_filter(raw="")
+                    time.sleep(0.3)
+
+                    results = _collect_results_raw(session, timeout=2.0)
+
+                    _stop_raw_session(session)
+
+                comments = [r for r in results
+                            if r.get("type") == "comment"]
+                none_comments = [c for c in comments
+                                 if "filter: (none)" in c.get("text", "")]
+
+                assert len(none_comments) >= 1, (
+                    "Expected a '# filter: (none)' comment after "
+                    "clearing filters, got comments: {}".format(
+                        [c.get("text") for c in comments]))
+            finally:
+                conn_trace.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
 
 # ---------------------------------------------------------------------------
 # TestTraceRawAPI -- Phase 7: raw (non-blocking) trace API tests

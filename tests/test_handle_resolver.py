@@ -593,7 +593,7 @@ def _make_viewer_stub(scrollback=None, timestamp_mode="absolute",
     stub.disabled_libs = None
     stub.disabled_funcs = None
     stub.disabled_procs = None
-    stub.shell_noise_filter = False
+    stub.noise_suppressed = set()
 
     # Bind real methods from TraceViewer so the save logic runs
     # the actual formatting code instead of a mock.
@@ -719,8 +719,8 @@ class TestSaveScrollback:
         assert "Close" in lines[1]
         assert "OpenLibrary" not in content
 
-    def test_save_respects_shell_noise_filter(self, tmp_path, monkeypatch):
-        """Save excludes shell init noise when filter is active."""
+    def test_save_respects_noise_filter(self, tmp_path, monkeypatch):
+        """Save excludes shell init noise when noise items are suppressed."""
         monkeypatch.chdir(tmp_path)
         events = [
             {"seq": "1", "time": "12:00:00.001", "lib": "dos",
@@ -733,7 +733,8 @@ class TestSaveScrollback:
              "retval": "OK", "status": "O"},
         ]
         stub = _make_viewer_stub(scrollback=events)
-        stub.shell_noise_filter = True
+        from amigactl.trace_ui import _ALL_NOISE_NAMES
+        stub.noise_suppressed = set(_ALL_NOISE_NAMES)
         stub._save_scrollback()
 
         files = list(tmp_path.glob("atrace_*.log"))

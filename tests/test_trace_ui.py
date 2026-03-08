@@ -2694,20 +2694,21 @@ class TestNewlyDiscoveredItems:
         viewer._apply_grid_filters()
 
         # Check that send_filter was called with a command containing
-        # both FindResident and Lock in a single -FUNC= clause
+        # both FindResident and Lock in a single -FUNC= clause,
+        # using dotted lib.func format (Phase 7b, Feature 8b.1).
         viewer.conn.send_filter.assert_called_once()
         call_args = viewer.conn.send_filter.call_args
         raw = call_args[1].get("raw", call_args[0][0]
                                 if call_args[0] else "")
-        # Should contain both functions
+        # Should contain both functions with lib prefix
         assert "-FUNC=" in raw
         # Split out the -FUNC= value
         for part in raw.split():
             if part.startswith("-FUNC="):
                 funcs_str = part[len("-FUNC="):]
                 funcs_list = funcs_str.split(",")
-                assert "FindResident" in funcs_list
-                assert "Lock" in funcs_list
+                assert "exec.FindResident" in funcs_list
+                assert "dos.Lock" in funcs_list
                 # Should be a single -FUNC= clause, not two
                 break
         # No duplicate FUNC= clauses
@@ -4062,96 +4063,134 @@ class TestColumnHeader:
 
 
 # ---------------------------------------------------------------------------
-# Shell noise filter (Fix 4)
+# Noise filter (Phase 7b, Feature 8b.3 — replaces shell_noise_filter)
 # ---------------------------------------------------------------------------
 
 
-class TestShellNoiseFilter:
-    """Tests for the shell init noise filter (Fix 4)."""
+class TestNoiseFilter:
+    """Tests for per-item noise filtering (Phase 7b, 8b.3).
 
-    def test_shell_noise_filter_blocks_setvar_rc(self):
-        """Shell noise filter suppresses SetVar for RC (shell bookkeeping)."""
+    Replaces the old boolean shell_noise_filter with a per-item
+    noise_suppressed set. Each noise variable can be individually
+    suppressed or shown via the toggle grid's NOISE category.
+    """
+
+    def test_noise_suppressed_default(self):
+        """Viewer starts with all noise items suppressed."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
+        from amigactl.trace_ui import _ALL_NOISE_NAMES
+        assert viewer.noise_suppressed == _ALL_NOISE_NAMES
+
+    def test_noise_filter_blocks_setvar_rc(self):
+        """Noise filter suppresses SetVar for RC when in noise_suppressed."""
+        viewer = _make_viewer()
+        # Default: all suppressed (RC is in the set)
         event = {"func": "SetVar",
                  "args": '"RC",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_blocks_setvar_result2(self):
-        """Shell noise filter suppresses SetVar for Result2 (shell bookkeeping)."""
+    def test_noise_filter_blocks_setvar_result2(self):
+        """Noise filter suppresses SetVar for Result2."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "SetVar",
                  "args": '"Result2",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_blocks_getvar_rc_after_command(self):
-        """Shell noise filter suppresses GetVar for RC (post-command query)."""
+    def test_noise_filter_blocks_getvar_rc_after_command(self):
+        """Noise filter suppresses GetVar for RC (post-command query)."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "GetVar",
                  "args": '"RC",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_blocks_setvar_process(self):
-        """Shell noise filter suppresses SetVar for process (init-only)."""
+    def test_noise_filter_blocks_setvar_process(self):
+        """Noise filter suppresses SetVar for process."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "SetVar", "args": '"process",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_passes_setvar_custom(self):
-        """Shell noise filter does not block SetVar for custom variables."""
+    def test_noise_filter_passes_setvar_custom(self):
+        """Noise filter does not block SetVar for custom variables."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "SetVar", "args": '"myvar",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_off_passes_all(self):
-        """With shell noise filter off, shell init events pass through."""
+    def test_noise_filter_off_passes_all(self):
+        """With empty noise_suppressed, all shell init events pass."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = False
+        viewer.noise_suppressed = set()  # nothing suppressed
         event = {"func": "SetVar", "args": '"process",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "O"}
         assert viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_blocks_getvar_echo(self):
-        """Shell noise filter suppresses GetVar for echo."""
+    def test_noise_filter_blocks_getvar_echo(self):
+        """Noise filter suppresses GetVar for echo."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "GetVar", "args": '"echo",LOCAL',
                  "lib": "dos", "task": "[1] control", "status": "-"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_passes_findvar_lv_var(self):
-        """FindVar with LV_VAR is not affected by shell noise filter."""
+    def test_noise_filter_passes_findvar_lv_var(self):
+        """FindVar with LV_VAR is not affected by noise filter."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "FindVar", "args": '"process",LV_VAR',
                  "lib": "dos", "task": "[1] control", "status": "E"}
         assert viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_blocks_findvar_lv_alias(self):
-        """FindVar with LV_ALIAS is suppressed by shell noise filter."""
+    def test_noise_filter_blocks_findvar_lv_alias(self):
+        """FindVar with LV_ALIAS is suppressed when in noise_suppressed."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = True
         event = {"func": "FindVar",
                  "args": '"cnet:control",LV_ALIAS',
                  "lib": "dos", "task": "[1] control", "status": "E"}
         assert not viewer._passes_client_filter(event)
 
-    def test_shell_noise_filter_off_passes_findvar_alias(self):
-        """With shell noise filter off, FindVar LV_ALIAS passes."""
+    def test_noise_filter_off_passes_findvar_alias(self):
+        """With empty noise_suppressed, FindVar LV_ALIAS passes."""
         viewer = _make_viewer()
-        viewer.shell_noise_filter = False
+        viewer.noise_suppressed = set()
         event = {"func": "FindVar",
                  "args": '"cnet:control",LV_ALIAS',
                  "lib": "dos", "task": "[1] control", "status": "E"}
+        assert viewer._passes_client_filter(event)
+
+    def test_noise_filter_individual_item(self):
+        """Individual noise items can be selectively enabled."""
+        viewer = _make_viewer()
+        # Remove only "RC" from suppressed set (show RC events)
+        viewer.noise_suppressed = viewer.noise_suppressed - {"RC"}
+
+        # RC events should now pass
+        event_rc = {"func": "SetVar", "args": '"RC",LOCAL',
+                    "lib": "dos", "task": "[1] control", "status": "O"}
+        assert viewer._passes_client_filter(event_rc)
+
+        # Other noise items still suppressed
+        event_process = {"func": "SetVar", "args": '"process",LOCAL',
+                         "lib": "dos", "task": "[1] control", "status": "O"}
+        assert not viewer._passes_client_filter(event_process)
+
+    def test_noise_filter_lv_alias_individual(self):
+        """LV_ALIAS can be individually enabled."""
+        viewer = _make_viewer()
+        # Remove LV_ALIAS from suppressed set
+        viewer.noise_suppressed = viewer.noise_suppressed - {"LV_ALIAS"}
+
+        event = {"func": "FindVar",
+                 "args": '"cnet:control",LV_ALIAS',
+                 "lib": "dos", "task": "[1] control", "status": "E"}
+        assert viewer._passes_client_filter(event)
+
+    def test_noise_filter_non_noise_events_unaffected(self):
+        """Non-noise function events pass regardless of noise state."""
+        viewer = _make_viewer()
+        event = {"func": "Open", "args": '"RAM:test",1006',
+                 "lib": "dos", "task": "[1] control", "status": "O"}
         assert viewer._passes_client_filter(event)
 
 
@@ -4629,29 +4668,6 @@ class TestHighlightCursor:
         # Cancel (Esc)
         viewer._handle_grid_key(("esc", ""))
         assert viewer.grid_visible is False
-
-        # highlight should be at bottom visible row
-        visible_lines = viewer.term.rows - 4
-        combined = viewer._get_combined_events()
-        expected = min(
-            len(combined) - 1,
-            viewer.pause_scroll_pos + visible_lines - 1)
-        assert viewer.highlight_pos == expected
-
-    def test_highlight_reset_after_init_toggle(self):
-        """Toggle [i] while paused -> highlight at bottom visible row."""
-        viewer = _make_viewer()
-        viewer.layout = ColumnLayout(80)
-        viewer.term.rows = 24
-        for i in range(50):
-            viewer._process_event_result(
-                _make_event(seq=i, time="10:00:{:02d}.000".format(i % 60)))
-        viewer._toggle_pause()
-        viewer.highlight_pos = 10
-
-        # Toggle init noise filter
-        viewer.term.read_key = mock.MagicMock(return_value="i")
-        viewer._handle_keypress()
 
         # highlight should be at bottom visible row
         visible_lines = viewer.term.rows - 4
@@ -5141,3 +5157,173 @@ class TestDetailView:
         assert continuation.startswith(" " * 13)
         # And should not start with 14 spaces (exact alignment)
         assert not continuation.startswith(" " * 14)
+
+
+# ---------------------------------------------------------------------------
+# TestCommentPersistence -- Wave 2 (Feature 8b.4)
+# ---------------------------------------------------------------------------
+
+class TestCommentPersistence:
+    """Tests for comment storage in scrollback and related behaviors."""
+
+    def test_comment_stored_in_scrollback(self):
+        """Process a comment event, verify it is stored in scrollback."""
+        viewer = _make_viewer()
+
+        comment = {"type": "comment", "text": "filter: LIB=dos"}
+        viewer._process_event_result(comment)
+
+        assert len(viewer.scrollback) == 1
+        assert viewer.scrollback[0] is comment
+
+    def test_comment_in_save_output(self):
+        """Process events and a comment, verify save output contains it."""
+        viewer = _make_viewer()
+        viewer.layout = ColumnLayout(80)
+
+        # Process some events and a comment
+        event1 = _make_event(lib="dos", func="Open", time="10:00:00.000")
+        comment = {"type": "comment", "text": "filter: LIB=exec"}
+        event2 = _make_event(lib="exec", func="OpenLibrary",
+                             time="10:00:01.000")
+
+        viewer._process_event_result(event1)
+        viewer._process_event_result(comment)
+        viewer._process_event_result(event2)
+
+        assert len(viewer.scrollback) == 3
+
+        # Call the actual _save_scrollback() method, capturing file output
+        captured = io.StringIO()
+        mock_open = mock.mock_open()
+        mock_open.return_value.__enter__ = mock.Mock(
+            return_value=captured)
+        mock_open.return_value.__exit__ = mock.Mock(return_value=False)
+
+        with mock.patch("amigactl.trace_ui.open", mock_open):
+            viewer._save_scrollback()
+
+        output = captured.getvalue()
+        lines = output.splitlines()
+
+        # Verify the comment appears with # prefix in saved output
+        assert any(line == "# filter: LIB=exec" for line in lines)
+
+    def test_comment_passes_client_filter(self):
+        """Comments pass _passes_client_filter even with active filters."""
+        viewer = _make_viewer()
+        viewer.disabled_libs = {"dos"}
+
+        comment = {"type": "comment", "text": "filter: LIB=dos"}
+        assert viewer._passes_client_filter(comment) is True
+
+        # Normal event from blocked lib should fail
+        event = _make_event(lib="dos")
+        assert viewer._passes_client_filter(event) is False
+
+    def test_comment_in_filtered_snapshot(self):
+        """Comments appear in filtered snapshot regardless of filters."""
+        viewer = _make_viewer()
+        viewer.disabled_libs = {"dos"}
+
+        event_dos = _make_event(lib="dos", func="Open",
+                                time="10:00:00.000")
+        comment = {"type": "comment", "text": "filter: (none)"}
+        event_exec = _make_event(lib="exec", func="OpenLibrary",
+                                  time="10:00:01.000")
+
+        viewer._process_event_result(event_dos)
+        viewer._process_event_result(comment)
+        viewer._process_event_result(event_exec)
+
+        filtered = viewer._build_filtered_snapshot()
+
+        # dos event filtered out, comment and exec event remain
+        assert len(filtered) == 2
+        assert filtered[0].get("type") == "comment"
+        assert filtered[1].get("lib") == "exec"
+
+    def test_comment_buffered_when_paused(self):
+        """Comments buffered when paused; metadata still extracted."""
+        viewer = _make_viewer()
+        viewer.paused = True
+
+        comment = {"type": "comment",
+                   "text": "eclock_freq: 709379 Hz"}
+
+        with mock.patch.object(viewer.term, 'write_event') as mock_write:
+            viewer._process_event_result(comment)
+            # Should NOT be displayed (paused)
+            mock_write.assert_not_called()
+
+        # Should be in pause_buffer
+        assert len(viewer.pause_buffer) == 1
+        assert viewer.pause_buffer[0] is comment
+
+        # Should be in scrollback
+        assert len(viewer.scrollback) == 1
+
+        # Metadata should have been extracted
+        assert viewer.eclock_freq == 709379
+
+    def test_comment_metadata_extracted_when_grid_visible(self):
+        """Metadata parsed even when grid overlay is visible."""
+        viewer = _make_viewer()
+        viewer.grid_visible = True
+
+        comment = {"type": "comment",
+                   "text": "timestamp_precision: microsecond"}
+
+        viewer._process_event_result(comment)
+
+        assert viewer.timestamp_precision == "microsecond"
+        assert len(viewer.pause_buffer) == 1
+
+    def test_detail_view_skips_comment(self):
+        """Opening detail view on a comment is a no-op."""
+        viewer = _make_viewer()
+        viewer.paused = True
+        viewer.layout = ColumnLayout(80)
+
+        # Process an event and a comment
+        event = _make_event(time="10:00:00.000")
+        comment = {"type": "comment", "text": "filter: LIB=dos"}
+
+        viewer._process_event_result(event)
+        viewer._process_event_result(comment)
+
+        # Build snapshot for pause
+        viewer._scroll_snapshot = viewer._build_filtered_snapshot()
+
+        # Point highlight at the comment (index 1)
+        viewer.highlight_pos = 1
+
+        # Open detail view -- should be a no-op
+        viewer._open_detail_view()
+        assert not viewer.detail_visible
+
+    def test_parse_comment_metadata_idempotent(self):
+        """Calling _parse_comment_metadata twice is harmless."""
+        viewer = _make_viewer()
+
+        comment = {"type": "comment",
+                   "text": "eclock_freq: 709379 Hz"}
+        viewer._parse_comment_metadata(comment)
+        assert viewer.eclock_freq == 709379
+
+        # Call again -- should not raise or change value
+        viewer._parse_comment_metadata(comment)
+        assert viewer.eclock_freq == 709379
+
+    def test_comment_not_counted_in_total_events(self):
+        """Comments do not increment total_events counter."""
+        viewer = _make_viewer()
+
+        comment = {"type": "comment", "text": "filter: LIB=dos"}
+        event = _make_event()
+
+        viewer._process_event_result(comment)
+        viewer._process_event_result(event)
+
+        assert viewer.total_events == 1
+        assert len(viewer.scrollback) == 2

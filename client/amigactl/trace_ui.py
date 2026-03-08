@@ -28,17 +28,21 @@ except ImportError:
 from .colors import RESET, format_trace_event, get_lib_color, strip_ansi
 from .protocol import ProtocolError, send_command
 
-# Shell variables suppressed by the shell-noise filter [i].
+# Shell variables suppressed by the noise filter grid items.
 # Includes RC and Result2: these duplicate information already visible
 # in traced function return values. Post-command SetVar RC/Result2 are
 # shell bookkeeping, not application library calls. Users debugging
-# shell behavior can toggle [i] off to see them.
+# shell behavior can enable individual noise items in the toggle grid.
 _SHELL_INIT_VARS = frozenset({
     "process",
     "RC", "Result2",
     "echo", "debug", "oldredirect",
     "interactive", "simpleshell",
 })
+
+# All noise item names (shell init vars + LV_ALIAS for FindVar filter).
+# Used to build the default noise_suppressed set.
+_ALL_NOISE_NAMES = frozenset(_SHELL_INIT_VARS | {"LV_ALIAS"})
 
 
 class TerminalState:
@@ -741,7 +745,11 @@ class TraceViewer:
         self.help_visible = False
         self.grid_visible = False
         self.errors_filter = False  # Toggle for ERRORS mode
-        self.shell_noise_filter = True  # Suppress shell init events
+        # Per-item noise suppression: items in this set are suppressed.
+        # Default: all noise items suppressed (matches old
+        # shell_noise_filter=True behavior). Individual items can be
+        # enabled via the NOISE category in the toggle grid.
+        self.noise_suppressed = set(_ALL_NOISE_NAMES)
 
         # Event tracking
         self.total_events = 0
@@ -785,6 +793,7 @@ class TraceViewer:
         # Non-empty set = blocklist of disabled values.
         self.disabled_libs = None    # set[str] or None
         self.disabled_procs = None   # set[str] or None
+        self.disabled_noise = None   # set[str] or None -- noise items disabled in grid
 
         # [R3-MF3 fix]: Per-library function disable state.
         # dict[str, set[str]] mapping lib name -> disabled func names,
@@ -797,6 +806,7 @@ class TraceViewer:
         # Restored on cancel so _save_func_state() navigation writes
         # don't leak into _passes_client_filter(). Cleared on apply.
         self._pre_grid_disabled_funcs = None
+        self._pre_grid_noise_suppressed = None
 
         # Grid state
         self.grid = None             # ToggleGrid instance (when used)
@@ -958,7 +968,23 @@ class TraceViewer:
         event = result
 
         if event.get("type") == "comment":
-            # Comments always displayed (overflow warnings, etc.)
+            # Parse metadata BEFORE the pause check so eclock_freq /
+            # timestamp_precision extraction works regardless of pause
+            # state. Only the display part is deferred.
+            self._parse_comment_metadata(event)
+            self.scrollback.append(event)
+            if len(self.scrollback) >= self.scrollback_limit:
+                self._scrollback_full = True
+            # While paused or overlay visible, buffer the comment for
+            # later rendering via _scroll_pause_buffer(). Do NOT call
+            # _display_comment() here -- it uses write_event() (scroll
+            # region appending) which corrupts the pause view that uses
+            # write_at() (absolute positioning).
+            if self.paused or self.grid_visible or self.help_visible or self.detail_visible:
+                if len(self.pause_buffer) < self.pause_buffer_limit:
+                    self.pause_buffer.append(event)
+                return
+            # Live stream: display immediately
             self._display_comment(event)
             return
 
@@ -1200,19 +1226,6 @@ class TraceViewer:
             self._toggle_errors_filter()
         elif key == "S":
             self._save_scrollback()
-        elif key == "i":
-            self.shell_noise_filter = not self.shell_noise_filter
-            self._status_dirty = True
-            if not self.paused:
-                self._rerender_from_scrollback()
-            else:
-                self._scroll_snapshot = self._build_filtered_snapshot()
-                self.pause_scroll_pos = len(self._scroll_snapshot) + \
-                    len(self.pause_buffer)
-                self._init_highlight_at_bottom()
-                self._scroll_pause_buffer(0)
-            self._draw_status_bar()
-            self._draw_hotkey_bar()
         elif key == "c":
             if not self.paused:
                 self._clear_events()
@@ -1278,7 +1291,7 @@ class TraceViewer:
     def _save_scrollback(self):
         """Save filtered scrollback buffer to a timestamped log file."""
         # Filter through current client-side filters (disabled_libs,
-        # disabled_funcs, disabled_procs, shell_noise_filter, search).
+        # disabled_funcs, disabled_procs, noise_suppressed, search).
         # The saved file should match what the user sees on screen.
         events = self._build_filtered_snapshot()
         if not events:
@@ -1291,6 +1304,9 @@ class TraceViewer:
         lines = []
         prev_time = None
         for event in events:
+            if event.get("type") == "comment":
+                lines.append("# {}".format(event.get("text", "")))
+                continue
             ev = self._annotated_event(event)
             if hasattr(self, 'layout'):
                 time_str = self._format_timestamp_for_scroll(
@@ -1406,6 +1422,15 @@ class TraceViewer:
             row = 3 + idx  # scroll region starts at row 3
             if row >= self.term.rows - 1:
                 break
+            if event.get("type") == "comment":
+                # Render comment using write_at() -- do NOT call
+                # _display_comment() which uses write_event() (scroll
+                # region appending, not absolute positioning).
+                text = self.cw.warning(
+                    "# {}".format(event.get("text", "")))
+                self.term.write_at(row, text)
+                # Do not update prev_time for comments
+                continue
             event = self._annotated_event(event)
             if hasattr(self, 'layout'):
                 time_str = self._format_timestamp_for_scroll(
@@ -1433,6 +1458,9 @@ class TraceViewer:
         """
         filtered = []
         for event in self.scrollback:
+            if event.get("type") == "comment":
+                filtered.append(event)
+                continue
             if not self._passes_client_filter(event):
                 continue
             if self.search_pattern:
@@ -1443,19 +1471,13 @@ class TraceViewer:
             filtered.append(event)
         return filtered
 
-    def _display_comment(self, event):
-        """Display a comment event (e.g. overflow warnings).
+    def _parse_comment_metadata(self, event):
+        """Extract metadata from comment text (eclock_freq, etc.).
 
-        Comments are always shown regardless of filters or pause
-        state. They are formatted in warning color (yellow).
-
-        Also parses metadata from header comments (Phase 6):
-        - "eclock_freq: NNN Hz" -> self.eclock_freq
-        - "timestamp_precision: microsecond" -> self.timestamp_precision
+        Called unconditionally for all comments, even when buffered
+        during pause. The display is separate.
         """
         text = event.get("text", "")
-
-        # Parse metadata from header comments
         if text.startswith("eclock_freq: "):
             try:
                 freq_str = text.split(":")[1].strip().split()[0]
@@ -1465,6 +1487,15 @@ class TraceViewer:
         elif text.startswith("timestamp_precision: "):
             self.timestamp_precision = text.split(":", 1)[1].strip()
 
+    def _display_comment(self, event):
+        """Display a comment event in the scroll region.
+
+        Only called when the stream is live (not paused, no overlay).
+        Metadata parsing is handled separately by
+        _parse_comment_metadata() which runs unconditionally.
+        """
+        self._parse_comment_metadata(event)
+        text = event.get("text", "")
         self.term.write_event(self.cw.warning("# {}".format(text)))
 
     # ---- Status and hotkey bars ----
@@ -1510,8 +1541,8 @@ class TraceViewer:
             filter_parts = []
             if self.errors_filter:
                 filter_parts.append("ERRORS")
-            if self.shell_noise_filter:
-                filter_parts.append("init")
+            if self.noise_suppressed:
+                filter_parts.append("noise")
             if self.search_pattern:
                 filter_parts.append(
                     'search: "{}"'.format(self.search_pattern))
@@ -1572,31 +1603,25 @@ class TraceViewer:
         else:
             errors_text = "[e] errors"
 
-        if self.shell_noise_filter:
-            init_text = "[i] INIT"
-        else:
-            init_text = "[i] init"
-
         full = ("  [Tab] filters  [/] search  {}  {}  "
-                "{}  {}  [c] clear  [S] save  [t] time  [?] help  "
+                "{}  [c] clear  [S] save  [t] time  [?] help  "
                 "[q] quit").format(
-                    pause_text, stats_text, errors_text, init_text)
+                    pause_text, stats_text, errors_text)
 
         if len(full) <= self.term.cols:
             return full
 
         # Abbreviated
-        short = "[Tab]filt [/]srch {} {} {} {} [c] [S] [t] [?] [q]".format(
+        short = "[Tab]filt [/]srch {} {} {} [c] [S] [t] [?] [q]".format(
             "[p]PAUS" if self.paused else "[p]",
             "[s]STAT" if self.stats_mode else "[s]",
-            "[e]ERR" if self.errors_filter else "[e]",
-            "[i]INI" if self.shell_noise_filter else "[i]")
+            "[e]ERR" if self.errors_filter else "[e]")
 
         if len(short) <= self.term.cols:
             return short
 
         # Minimal
-        return "[Tab] [/] [p] [s] [e] [i] [c] [t] [?] [q]"
+        return "[Tab] [/] [p] [s] [e] [c] [t] [?] [q]"
 
     # ---- Filter methods ----
 
@@ -1690,6 +1715,10 @@ class TraceViewer:
         keyed by library name. The event's library determines which
         set of disabled functions to check against.
         """
+        # Comments always pass client filters
+        if event.get("type") == "comment":
+            return True
+
         if self.disabled_libs:
             lib = event.get("lib", "")
             if lib in self.disabled_libs:
@@ -1711,9 +1740,10 @@ class TraceViewer:
             if proc in self.disabled_procs:
                 return False
 
-        # Shell init noise filter (Fix 4): suppress SetVar/GetVar for
-        # known shell initialization variables.
-        if self.shell_noise_filter:
+        # Shell noise filter: per-item suppression via noise_suppressed set.
+        # Each noise item corresponds to a specific variable name or
+        # FindVar type. Items in noise_suppressed are blocked.
+        if self.noise_suppressed:
             func = event.get("func", "")
             if func in ("SetVar", "GetVar"):
                 args = event.get("args", "")
@@ -1724,12 +1754,13 @@ class TraceViewer:
                     end_quote = args.find('"', 1)
                     if end_quote > 1:
                         varname = args[1:end_quote]
-                        if varname in _SHELL_INIT_VARS:
+                        if varname in self.noise_suppressed:
                             return False
             if func == "FindVar":
                 args = event.get("args", "")
                 if ",LV_ALIAS" in args:
-                    return False
+                    if "LV_ALIAS" in self.noise_suppressed:
+                        return False
 
         return True
 
@@ -1802,10 +1833,11 @@ class TraceViewer:
         snapshot = self._scroll_snapshot or []
         filtered_new = [
             e for e in self.pause_buffer
-            if self._passes_client_filter(e)
-            and (not self.search_pattern
-                 or self.search_pattern.lower()
-                 in format_trace_event(e, self.cw).lower())
+            if e.get("type") == "comment"
+            or (self._passes_client_filter(e)
+                and (not self.search_pattern
+                     or self.search_pattern.lower()
+                     in format_trace_event(e, self.cw).lower()))
         ]
         return snapshot + filtered_new
 
@@ -1814,7 +1846,7 @@ class TraceViewer:
 
         Called when entering pause mode, and after any operation
         that resets pause_scroll_pos to the bottom (help dismiss,
-        grid close, [i] toggle, search exit).
+        grid close, search exit).
         """
         combined = self._get_combined_events()
         visible_lines = self.term.rows - 4
@@ -1954,6 +1986,9 @@ class TraceViewer:
             return
         idx = max(0, min(self.highlight_pos, len(combined) - 1))
         event = combined[idx]
+        # Comments don't have func/args/retval fields -- skip detail view
+        if event.get("type") == "comment":
+            return
         self._detail_event = event
         self._detail_lines = self._build_detail_lines(event)
         self._detail_scroll_pos = 0
@@ -2037,6 +2072,18 @@ class TraceViewer:
 
             if row >= self.term.rows - 1:
                 break
+
+            # Comment rendering: use write_at() with warning color.
+            # Do NOT call _display_comment() (uses write_event()) or
+            # _annotated_event() (accesses event["args"]).
+            if event.get("type") == "comment":
+                text = self.cw.warning(
+                    "# {}".format(event.get("text", "")))
+                # No highlight bar for comments (not selectable)
+                self.term.write_at(row, text)
+                # Do not update prev_time for comments
+                continue
+
             event = self._annotated_event(event)
             if hasattr(self, 'layout'):
                 time_str = self._format_timestamp_for_scroll(
@@ -2216,7 +2263,6 @@ class TraceViewer:
             "    s       Toggle statistics display in status bar",
             "    t       Cycle timestamp: absolute / relative / delta",
             "    e       Toggle ERRORS filter (show only errors)",
-            "    i       Toggle shell init noise filter (default: on)",
             "    c       Clear all events and reset counters",
             "    S       Save scrollback to log file",
             "    ?       Toggle this help screen",
@@ -2323,6 +2369,15 @@ class TraceViewer:
             for item in self.grid.proc_items:
                 item["enabled"] = item["name"] not in self.disabled_procs
 
+        # Restore noise item states from disabled_noise.
+        # Unlike LIB/FUNC/PROC, noise items have no "never visited"
+        # concept -- they always exist. When disabled_noise is not None,
+        # restore the saved state. When None (first grid open), the
+        # constructor defaults (all disabled) match noise_suppressed.
+        if self.disabled_noise is not None:
+            for item in self.grid.noise_items:
+                item["enabled"] = item["name"] not in self.disabled_noise
+
         # Re-snapshot the initial filter so has_user_changes()
         # correctly detects changes from the RESTORED state, not
         # from the fresh-constructor state.
@@ -2388,6 +2443,9 @@ class TraceViewer:
             copy.deepcopy(self.disabled_funcs)
             if self.disabled_funcs is not None else None)
 
+        # Snapshot noise state for cancel restoration.
+        self._pre_grid_noise_suppressed = set(self.noise_suppressed)
+
         self._restore_grid_state()
         self.grid_visible = True
         self.grid.render(self.term, self.cw)
@@ -2398,7 +2456,18 @@ class TraceViewer:
         if key == "\r" or key == "\n":  # Enter: apply and return
             self._save_func_state()  # [R3-MF3 fix]
             self._pre_grid_disabled_funcs = None  # [R6-SF3 fix]
+            self._pre_grid_noise_suppressed = None
             self._apply_grid_filters()
+
+            # Update noise state unconditionally -- noise changes are
+            # client-side only and not gated by has_user_changes().
+            noise_enabled = self.grid.get_noise_state()
+            self.noise_suppressed = _ALL_NOISE_NAMES - noise_enabled
+
+            # Save noise grid state for restoration on next grid open.
+            self.disabled_noise = {i["name"] for i in self.grid.noise_items
+                                   if not i["enabled"]}
+
             self.grid_visible = False
             self.grid = None
             self.term.clear_scroll_region()
@@ -2435,6 +2504,9 @@ class TraceViewer:
                 # filtering."
                 self.disabled_funcs = self._pre_grid_disabled_funcs
                 self._pre_grid_disabled_funcs = None
+                # Restore noise state (cancel = no noise changes)
+                self.noise_suppressed = self._pre_grid_noise_suppressed
+                self._pre_grid_noise_suppressed = None
                 self.grid_visible = False
                 self.grid = None
                 self.term.clear_scroll_region()
@@ -2481,9 +2553,17 @@ class TraceViewer:
                                     not in disabled_for_lib)
                         self.grid.clamp_cursor(1)  # FUNCTIONS
             elif seq == "[A":  # Up arrow
-                self.grid.move_cursor(-1)
+                avail = self.grid._available_item_rows(self.term.rows)
+                self.grid.move_cursor(-1, visible_rows=avail)
             elif seq == "[B":  # Down arrow
-                self.grid.move_cursor(1)
+                avail = self.grid._available_item_rows(self.term.rows)
+                self.grid.move_cursor(1, visible_rows=avail)
+            elif seq == "[5~":  # Page Up
+                avail = self.grid._available_item_rows(self.term.rows)
+                self.grid.move_cursor(-avail, visible_rows=avail)
+            elif seq == "[6~":  # Page Down
+                avail = self.grid._available_item_rows(self.term.rows)
+                self.grid.move_cursor(avail, visible_rows=avail)
         elif key == " ":  # Space: toggle at cursor
             if self.grid.categories[self.grid.active_category] \
                     == "LIBRARIES":
@@ -2520,12 +2600,18 @@ class TraceViewer:
 
             # [R3-MF3 fix]: Build FUNC= filter from all libraries'
             # disabled functions, not just the grid's current
-            # func_items.
+            # func_items. Uses lib.func format for daemon
+            # disambiguation (Phase 7b, Feature 8b.1).
             if self.disabled_funcs:
-                # Collect all disabled functions across all libraries
+                # Collect all disabled functions across all libraries,
+                # using dotted lib.func format for daemon disambiguation.
+                # disabled_funcs values are set[str] of bare names;
+                # dotting is done here at send time.
                 all_disabled_funcs = set()
-                for lib_funcs in self.disabled_funcs.values():
-                    all_disabled_funcs.update(lib_funcs)
+                for lib_name, lib_funcs in self.disabled_funcs.items():
+                    for fn in lib_funcs:
+                        all_disabled_funcs.add(
+                            "{}.{}".format(lib_name, fn))
 
                 if all_disabled_funcs:
                     # Remove any FUNC= or -FUNC= the grid generated

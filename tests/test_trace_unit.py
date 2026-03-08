@@ -1347,6 +1347,41 @@ class TestSendFilter:
         # Should not raise
         conn.send_filter(lib="dos")
 
+    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= filtering ---
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_dotted_func(self, mock_send):
+        """Verify FILTER command with dotted lib.func syntax (8b.1)."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(func="dos.Open")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER FUNC=dos.Open")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_raw_dotted_func(self, mock_send):
+        """Verify raw filter with dotted lib.func names (8b.1)."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(raw="-FUNC=exec.AllocMem,dos.Read")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER -FUNC=exec.AllocMem,dos.Read")
+
+    @mock.patch("amigactl.send_command")
+    def test_send_filter_dotted_func_with_lib(self, mock_send):
+        """Dotted func and lib filter combined (8b.1)."""
+        conn = _make_mock_conn()
+        conn._sock.getblocking.return_value = True
+
+        conn.send_filter(lib="dos", func="dos.Open")
+
+        mock_send.assert_called_once_with(
+            conn._sock, "FILTER LIB=dos FUNC=dos.Open")
+
 
 # ---------------------------------------------------------------------------
 # TestReadOneTraceEvent
