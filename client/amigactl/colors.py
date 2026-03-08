@@ -63,8 +63,9 @@ _LIB_COLORS = {
     "exec": YELLOW,
     "intuition": GREEN,
     "graphics": BLUE,
-    "icon": "\033[35m",       # magenta
-    "workbench": "\033[1;36m",  # bold cyan
+    "bsdsocket": "\033[1;31m",    # bold red
+    "icon": "\033[35m",           # magenta
+    "workbench": "\033[1;36m",    # bold cyan
 }
 
 _LIB_COLOR_PALETTE = [

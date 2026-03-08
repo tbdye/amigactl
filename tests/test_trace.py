@@ -80,7 +80,11 @@ def restore_trace_state(conn):
                    "Read", "Write",
                    # Phase 5 device I/O additions
                    "DoIO", "SendIO", "WaitIO",
-                   "AbortIO", "CheckIO"]
+                   "AbortIO", "CheckIO",
+                   # Phase 9 additions
+                   "ReplyMsg", "send", "recv", "WaitSelect",
+                   "Wait", "Signal", "CloseLibrary",
+                   "UnLock", "OpenFont"]
     conn.trace_disable(funcs=noise_funcs)
 
 
@@ -104,20 +108,20 @@ class TestTraceStatus:
         assert "buffer_used" in status
 
     def test_status_field_types(self, conn):
-        """Numeric fields are ints, booleans are bools, patches==50."""
+        """Numeric fields are ints, booleans are bools, patches in (80, 65)."""
         status = conn.trace_status()
         assert isinstance(status["loaded"], bool)
         assert isinstance(status["enabled"], bool)
         assert isinstance(status["patches"], int)
         assert isinstance(status["events_produced"], int)
-        assert status["patches"] == 50
+        assert status["patches"] in (80, 65)
         assert status["buffer_capacity"] > 0
 
     def test_status_patch_list(self, conn):
-        """patch_list has 50 entries, each with name and enabled bool."""
+        """patch_list has 80 or 65 entries, each with name and enabled bool."""
         status = conn.trace_status()
         assert "patch_list" in status
-        assert len(status["patch_list"]) == 50
+        assert len(status["patch_list"]) in (80, 65)
         for entry in status["patch_list"]:
             assert "name" in entry
             assert "enabled" in entry
@@ -623,7 +627,7 @@ class TestTraceRun:
 class TestNoiseDefaults:
     """Tests for noise function auto-disable defaults (Phase 4).
 
-    After loading atrace, 19 high-frequency functions should be
+    After loading atrace, 28 high-frequency functions should be
     disabled by default.  These tests verify the default state and
     user override behavior.
     """
@@ -631,7 +635,7 @@ class TestNoiseDefaults:
     def test_noise_funcs_default_disabled(self, conn):
         """Noise functions should be disabled by default after loading."""
         status = conn.trace_status()
-        assert status.get("noise_disabled", 0) >= 19
+        assert status.get("noise_disabled", 0) >= 28
 
         # Check specific functions are disabled
         patches = status.get("patch_list", [])
@@ -646,6 +650,12 @@ class TestNoiseDefaults:
             # Phase 5 device I/O additions
             "exec.DoIO", "exec.SendIO", "exec.WaitIO",
             "exec.AbortIO", "exec.CheckIO",
+            # Phase 9 additions
+            "exec.ReplyMsg", "bsdsocket.send", "bsdsocket.recv",
+            "bsdsocket.WaitSelect",
+            "exec.Wait", "exec.Signal", "exec.CloseLibrary",
+            "dos.UnLock",
+            "graphics.OpenFont",
         }
         for patch in patches:
             if patch["name"] in noise_names:
@@ -689,7 +699,7 @@ class TestTraceRunPhase4:
             # Check noise functions are disabled before
             status = conn.trace_status()
             pre_noise = status.get("noise_disabled", 0)
-            assert pre_noise >= 19
+            assert pre_noise >= 28
 
             # Start TRACE RUN
             events = []
@@ -702,7 +712,7 @@ class TestTraceRunPhase4:
             # After trace_run returns, noise should still be disabled
             status = conn.trace_status()
             post_noise = status.get("noise_disabled", 0)
-            assert post_noise >= 19, \
+            assert post_noise >= 28, \
                 "Noise functions should remain disabled during TRACE RUN"
         finally:
             conn.close()
@@ -2701,3 +2711,51 @@ class TestPhase6EClock:
         finally:
             sig.alarm(0)
             sig.signal(sig.SIGALRM, old_handler)
+
+
+# ---------------------------------------------------------------------------
+# TestBsdSocketFilter -- Phase 9: bsdsocket/graphics library filters
+# ---------------------------------------------------------------------------
+
+class TestBsdSocketFilter:
+    """Tests for bsdsocket library filtering."""
+
+    def test_lib_filter_bsdsocket(self, conn, restore_trace_state):
+        """LIB=bsdsocket filter accepted by daemon."""
+        session = conn.trace_start_raw(lib="bsdsocket")
+        with session:
+            time.sleep(0.5)
+            _stop_raw_session(session)
+        # No assertion on events -- just verify the filter is accepted
+
+    def test_lib_filter_graphics(self, conn, restore_trace_state):
+        """LIB=graphics filter accepted by daemon."""
+        session = conn.trace_start_raw(lib="graphics")
+        with session:
+            time.sleep(0.5)
+            _stop_raw_session(session)
+
+
+# ---------------------------------------------------------------------------
+# TestPatchCount -- Phase 9: verify patch count
+# ---------------------------------------------------------------------------
+
+class TestPatchCount:
+    """Verify patch count reflects Phase 9 additions."""
+
+    def test_80_patches(self, conn):
+        """TRACE STATUS shows 80 patches (or 65 if no bsdsocket)."""
+        status = conn.trace_status()
+        patches = status.get("patches", 0)
+        assert patches in (80, 65), (
+            "Expected 80 patches (or 65 without bsdsocket), got {}".format(
+                patches))
+
+    def test_bsdsocket_in_patch_list(self, conn):
+        """TRACE STATUS patch list includes bsdsocket functions (if available)."""
+        status = conn.trace_status()
+        patch_list = status.get("patch_list", [])
+        bsd_patches = [e for e in patch_list
+                       if "bsdsocket" in e.get("name", "")]
+        # Either 15 bsdsocket patches or 0 (no TCP/IP stack)
+        assert len(bsd_patches) in (0, 15)

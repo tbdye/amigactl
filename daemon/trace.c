@@ -89,7 +89,18 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "FreeMem",          LIB_EXEC, -210, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "AllocVec",         LIB_EXEC, -684, ERR_CHECK_NULL,  0, RET_PTR      },
     { "exec", "FreeVec",          LIB_EXEC, -690, ERR_CHECK_VOID,  0, RET_VOID     },
-    /* dos.library functions (20) */
+    /* Extended exec.library (Phase 9) */
+    { "exec", "Wait",           LIB_EXEC, -318, ERR_CHECK_ANY,   0, RET_PTR      },
+    { "exec", "Signal",         LIB_EXEC, -324, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "AllocSignal",    LIB_EXEC, -330, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
+    { "exec", "FreeSignal",     LIB_EXEC, -336, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "CreateMsgPort",  LIB_EXEC, -666, ERR_CHECK_NULL,  0, RET_PTR      },
+    { "exec", "DeleteMsgPort",  LIB_EXEC, -672, ERR_CHECK_VOID,  0, RET_VOID     },
+    /* Lifecycle closers exec.library (Phase 9) */
+    { "exec", "CloseLibrary",   LIB_EXEC, -414, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "CloseDevice",    LIB_EXEC, -450, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "ReplyMsg",       LIB_EXEC, -378, ERR_CHECK_VOID,  0, RET_VOID     },
+    /* dos.library functions (24) */
     { "dos", "Open",              LIB_DOS,   -30, ERR_CHECK_NULL,  1, RET_PTR      },
     { "dos", "Close",             LIB_DOS,   -36, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Lock",              LIB_DOS,   -84, ERR_CHECK_NULL,  1, RET_LOCK     },
@@ -110,7 +121,12 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "CurrentDir",        LIB_DOS,  -126, ERR_CHECK_VOID,  0, RET_OLD_LOCK },
     { "dos", "Read",              LIB_DOS,   -42, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     { "dos", "Write",             LIB_DOS,   -48, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
-    /* intuition.library functions (10) */
+    /* dos.library additions (Phase 9) */
+    { "dos", "UnLock",          LIB_DOS,   -90, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "dos", "Examine",         LIB_DOS,  -102, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
+    { "dos", "ExNext",          LIB_DOS,  -108, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
+    { "dos", "Seek",            LIB_DOS,   -66, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
+    /* intuition.library functions (11) */
     { "intuition", "OpenWindow",     LIB_INTUITION, -204, ERR_CHECK_NULL, 0, RET_PTR      },
     { "intuition", "CloseWindow",    LIB_INTUITION,  -72, ERR_CHECK_VOID, 0, RET_VOID     },
     { "intuition", "OpenScreen",     LIB_INTUITION, -198, ERR_CHECK_NULL, 0, RET_PTR      },
@@ -121,6 +137,26 @@ static const struct trace_func_entry func_table[] = {
     { "intuition", "ModifyIDCMP",    LIB_INTUITION, -150, ERR_CHECK_VOID, 0, RET_VOID     },
     { "intuition", "OpenWorkBench",  LIB_INTUITION, -210, ERR_CHECK_ANY,  0, RET_PTR      },
     { "intuition", "CloseWorkBench", LIB_INTUITION,  -78, ERR_CHECK_ANY,  0, RET_BOOL_DOS },
+    /* intuition.library addition (Phase 9) */
+    { "intuition", "LockPubScreen", LIB_INTUITION, -510, ERR_CHECK_NULL, 1, RET_PTR },
+    /* bsdsocket.library functions (Phase 9) */
+    { "bsdsocket", "socket",       LIB_BSDSOCKET,  -30, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "bind",         LIB_BSDSOCKET,  -36, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "listen",       LIB_BSDSOCKET,  -42, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "accept",       LIB_BSDSOCKET,  -48, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "connect",      LIB_BSDSOCKET,  -54, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "sendto",       LIB_BSDSOCKET,  -60, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "send",         LIB_BSDSOCKET,  -66, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "recvfrom",     LIB_BSDSOCKET,  -72, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "recv",         LIB_BSDSOCKET,  -78, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "shutdown",     LIB_BSDSOCKET,  -84, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "setsockopt",   LIB_BSDSOCKET,  -90, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "getsockopt",   LIB_BSDSOCKET,  -96, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "IoctlSocket",  LIB_BSDSOCKET, -114, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "CloseSocket",  LIB_BSDSOCKET, -120, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    { "bsdsocket", "WaitSelect",   LIB_BSDSOCKET, -126, ERR_CHECK_NEG1, 0, RET_IO_LEN },
+    /* graphics.library functions (Phase 9) */
+    { "graphics", "OpenFont",     LIB_GRAPHICS,  -72, ERR_CHECK_NULL,  0, RET_PTR },
 };
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
@@ -180,6 +216,7 @@ static struct atrace_event *g_ring_entries = NULL;
 
 /* Running total of dropped events (from ring->overflow) */
 static ULONG g_events_dropped = 0;
+static ULONG g_self_filtered = 0;
 static ULONG g_poll_count = 0;
 
 /* Command extraction buffer (static, single-threaded) */
@@ -308,6 +345,16 @@ static const char *noise_func_names[] = {
     "WaitIO",
     "AbortIO",
     "CheckIO",
+    /* Phase 9 additions */
+    "ReplyMsg",
+    "send",
+    "recv",
+    "WaitSelect",
+    "Wait",
+    "Signal",
+    "CloseLibrary",
+    "UnLock",
+    "OpenFont",
     NULL
 };
 
@@ -466,6 +513,11 @@ static const char *format_access_mode(LONG mode);
 static const char *format_lock_type(LONG type);
 static void format_memf_flags(ULONG flags, char *buf, int bufsz);
 static void format_idcmp_flags(ULONG flags, char *buf, int bufsz);
+static const char *format_af(LONG domain);
+static const char *format_socktype(LONG type);
+static const char *format_shutdown_how(LONG how);
+static const char *format_seek_offset(LONG offset);
+static int format_signal_set(ULONG sigs, char *buf, int bufsz);
 static void format_args(struct atrace_event *ev,
                         const struct trace_func_entry *fe,
                         char *buf, int bufsz);
@@ -523,6 +575,7 @@ void trace_cleanup(void)
     g_anchor = NULL;
     g_ring_entries = NULL;
     g_events_dropped = 0;
+    g_self_filtered = 0;
     task_cache_count = 0;
     task_cache_polls = 0;
     g_inflight_stall_pos = 0xFFFFFFFF;
@@ -2002,6 +2055,92 @@ static int emit_trace_header(LONG fd, struct trace_state *ts,
     return 0;
 }
 
+/* Socket domain (address family) names */
+static const char *format_af(LONG domain)
+{
+    switch (domain) {
+    case 0:  return "AF_UNSPEC";
+    case 2:  return "AF_INET";
+    default: return NULL;
+    }
+}
+
+/* Socket type names */
+static const char *format_socktype(LONG type)
+{
+    switch (type) {
+    case 1: return "SOCK_STREAM";
+    case 2: return "SOCK_DGRAM";
+    case 3: return "SOCK_RAW";
+    default: return NULL;
+    }
+}
+
+/* Shutdown how names */
+static const char *format_shutdown_how(LONG how)
+{
+    switch (how) {
+    case 0: return "SHUT_RD";
+    case 1: return "SHUT_WR";
+    case 2: return "SHUT_RDWR";
+    default: return NULL;
+    }
+}
+
+/* Seek offset mode names */
+static const char *format_seek_offset(LONG offset)
+{
+    switch (offset) {
+    case -1: return "OFFSET_BEGINNING";
+    case  0: return "OFFSET_CURRENT";
+    case  1: return "OFFSET_END";
+    default: return NULL;
+    }
+}
+
+/* Signal set bit names for exec.Wait/Signal display.
+ * Returns the number of characters written to buf. */
+static int format_signal_set(ULONG sigs, char *buf, int bufsz)
+{
+    int n = 0;
+    int first = 1;
+    /* Check for well-known signal bits.
+     * static const: avoid reconstructing on every call (68k stack/CPU). */
+    static const struct { ULONG bit; const char *name; } known[] = {
+        { 1UL << 12, "CTRL_C" },
+        { 1UL << 13, "CTRL_D" },
+        { 1UL << 14, "CTRL_E" },
+        { 1UL << 15, "CTRL_F" },
+    };
+    int ki;
+
+    n = snprintf(buf, bufsz, "0x%08lx", (unsigned long)sigs);
+    if (n >= bufsz) return n;
+
+    /* Append known signal names in parentheses */
+    for (ki = 0; ki < 4; ki++) {
+        if (sigs & known[ki].bit) {
+            if (first) {
+                int m = snprintf(buf + n, bufsz - n, " (");
+                if (m > 0) n += m;
+                first = 0;
+            } else {
+                int m = snprintf(buf + n, bufsz - n, "|");
+                if (m > 0) n += m;
+            }
+            {
+                int m = snprintf(buf + n, bufsz - n, "%s", known[ki].name);
+                if (m > 0) n += m;
+            }
+        }
+    }
+    if (!first && n < bufsz - 1) {
+        buf[n++] = ')';
+        buf[n] = '\0';
+    }
+    return n;
+}
+
 /* Generic argument formatter -- dispatches to per-function formatters. */
 static void format_args(struct atrace_event *ev,
                         const struct trace_func_entry *fe,
@@ -2158,6 +2297,56 @@ static void format_args(struct atrace_event *ev,
 
         case -690:  /* FreeVec(memoryBlock) */
             p += snprintf(p, remaining, "0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -318:  /* Wait(signalSet) */
+        {
+            char sig_buf[128];
+            format_signal_set(ev->args[0], sig_buf, sizeof(sig_buf));
+            p += snprintf(p, remaining, "%s", sig_buf);
+            return;
+        }
+
+        case -324:  /* Signal(task, signalSet) */
+        {
+            char sig_buf[128];
+            format_signal_set(ev->args[1], sig_buf, sizeof(sig_buf));
+            p += snprintf(p, remaining, "task=0x%lx,%s",
+                          (unsigned long)ev->args[0], sig_buf);
+            return;
+        }
+
+        case -330:  /* AllocSignal(signalNum) */
+            p += snprintf(p, remaining, "sig=%ld",
+                          (long)(LONG)ev->args[0]);
+            return;
+
+        case -336:  /* FreeSignal(signalNum) */
+            p += snprintf(p, remaining, "sig=%ld",
+                          (long)(LONG)ev->args[0]);
+            return;
+
+        case -666:  /* CreateMsgPort() -- no args */
+            return;
+
+        case -672:  /* DeleteMsgPort(port) */
+            p += snprintf(p, remaining, "port=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -414:  /* CloseLibrary(library) */
+            p += snprintf(p, remaining, "lib=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -450:  /* CloseDevice(ioRequest) */
+            p += snprintf(p, remaining, "io=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -378:  /* ReplyMsg(message) */
+            p += snprintf(p, remaining, "msg=0x%lx",
                           (unsigned long)ev->args[0]);
             return;
 
@@ -2350,6 +2539,52 @@ static void format_args(struct atrace_event *ev,
                           (unsigned long)ev->args[2]);
             return;
 
+        case -90:   /* UnLock(lock) */
+            /* lock_cache_lookup() is populated by the Lock() return
+             * value formatter when Lock() succeeds.  If the
+             * corresponding Lock() happened before tracing started,
+             * the cache will miss and we fall through to hex display.
+             * This is expected behavior, not a bug. */
+            if (ev->args[0] == 0) {
+                p += snprintf(p, remaining, "lock=NULL");
+            } else {
+                const char *path = lock_cache_lookup(ev->args[0]);
+                if (path)
+                    p += snprintf(p, remaining, "\"%s\"", path);
+                else
+                    p += snprintf(p, remaining, "lock=0x%lx",
+                                  (unsigned long)ev->args[0]);
+            }
+            return;
+
+        case -102:  /* Examine(lock, fib) */
+            p += snprintf(p, remaining, "lock=0x%lx,fib=0x%lx",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -108:  /* ExNext(lock, fib) */
+            p += snprintf(p, remaining, "lock=0x%lx,fib=0x%lx",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -66:   /* Seek(file, position, offset) */
+        {
+            const char *ofs_name = format_seek_offset((LONG)ev->args[2]);
+            if (ofs_name)
+                p += snprintf(p, remaining, "fh=0x%lx,pos=%ld,%s",
+                              (unsigned long)ev->args[0],
+                              (long)(LONG)ev->args[1],
+                              ofs_name);
+            else
+                p += snprintf(p, remaining, "fh=0x%lx,pos=%ld,mode=%ld",
+                              (unsigned long)ev->args[0],
+                              (long)(LONG)ev->args[1],
+                              (long)(LONG)ev->args[2]);
+            return;
+        }
+
         }  /* end dos switch */
     }
 
@@ -2408,7 +2643,153 @@ static void format_args(struct atrace_event *ev,
         case -78:   /* CloseWorkBench() -- no args */
             return;
 
+        case -510:  /* LockPubScreen(name) */
+            if (ev->args[0] == 0 || ev->string_data[0] == '\0') {
+                p += snprintf(p, remaining, "NULL (default)");
+            } else {
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            }
+            return;
+
         }  /* end intuition switch */
+    }
+
+    /* --- bsdsocket.library --- */
+
+    if (fe->lib_id == LIB_BSDSOCKET) {
+        switch (fe->lvo_offset) {
+
+        case -30:   /* socket(domain, type, protocol) */
+        {
+            const char *af = format_af((LONG)ev->args[0]);
+            const char *st = format_socktype((LONG)ev->args[1]);
+            if (af && st)
+                p += snprintf(p, remaining, "%s,%s,proto=%lu",
+                              af, st, (unsigned long)ev->args[2]);
+            else
+                p += snprintf(p, remaining, "domain=%lu,type=%lu,proto=%lu",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[1],
+                              (unsigned long)ev->args[2]);
+            return;
+        }
+
+        case -36:   /* bind(fd, name, namelen) */
+            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx,len=%lu",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[1],
+                          (unsigned long)ev->args[2]);
+            return;
+
+        case -42:   /* listen(fd, backlog) */
+            p += snprintf(p, remaining, "fd=%ld,backlog=%lu",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -48:   /* accept(fd, addr, addrlen) */
+            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -54:   /* connect(fd, name, namelen) */
+            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx,len=%lu",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[1],
+                          (unsigned long)ev->args[2]);
+            return;
+
+        case -60:   /* sendto(fd, buf, len, flags) -- first 4 of 6 */
+            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[2],
+                          (unsigned long)ev->args[3]);
+            return;
+
+        case -66:   /* send(fd, buf, len, flags) */
+            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[2],
+                          (unsigned long)ev->args[3]);
+            return;
+
+        case -72:   /* recvfrom(fd, buf, len, flags) -- first 4 of 6 */
+            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[2],
+                          (unsigned long)ev->args[3]);
+            return;
+
+        case -78:   /* recv(fd, buf, len, flags) */
+            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[2],
+                          (unsigned long)ev->args[3]);
+            return;
+
+        case -84:   /* shutdown(fd, how) */
+        {
+            const char *how_name = format_shutdown_how((LONG)ev->args[1]);
+            if (how_name)
+                p += snprintf(p, remaining, "fd=%ld,%s",
+                              (long)(LONG)ev->args[0], how_name);
+            else
+                p += snprintf(p, remaining, "fd=%ld,how=%ld",
+                              (long)(LONG)ev->args[0],
+                              (long)(LONG)ev->args[1]);
+            return;
+        }
+
+        case -90:   /* setsockopt(fd, level, optname, optval) -- first 4 of 5 */
+            p += snprintf(p, remaining, "fd=%ld,level=%ld,opt=%ld",
+                          (long)(LONG)ev->args[0],
+                          (long)(LONG)ev->args[1],
+                          (long)(LONG)ev->args[2]);
+            return;
+
+        case -96:   /* getsockopt(fd, level, optname, optval) -- first 4 of 5 */
+            p += snprintf(p, remaining, "fd=%ld,level=%ld,opt=%ld",
+                          (long)(LONG)ev->args[0],
+                          (long)(LONG)ev->args[1],
+                          (long)(LONG)ev->args[2]);
+            return;
+
+        case -114:  /* IoctlSocket(fd, request, argp) */
+            p += snprintf(p, remaining, "fd=%ld,req=0x%lx",
+                          (long)(LONG)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -120:  /* CloseSocket(fd) */
+            p += snprintf(p, remaining, "fd=%ld",
+                          (long)(LONG)ev->args[0]);
+            return;
+
+        case -126:  /* WaitSelect(nfds, sigmask, readfds, writefds) */
+        {
+            char sig_buf[128];
+            format_signal_set(ev->args[1], sig_buf, sizeof(sig_buf));
+            p += snprintf(p, remaining, "nfds=%lu,sigs=%s",
+                          (unsigned long)ev->args[0], sig_buf);
+            return;
+        }
+
+        }  /* end bsdsocket switch */
+    }
+
+    /* --- graphics.library --- */
+
+    if (fe->lib_id == LIB_GRAPHICS) {
+        switch (fe->lvo_offset) {
+
+        case -72:   /* OpenFont(textAttr) */
+            p += snprintf(p, remaining, "attr=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        }  /* end graphics switch */
     }
 
     /* Fallback: should not reach here for known functions,
@@ -2897,6 +3278,7 @@ void trace_poll_events(struct daemon_state *d)
             g_anchor = NULL;
             g_ring_entries = NULL;
             g_events_dropped = 0;
+            g_self_filtered = 0;
             return;
         }
         /* Semaphore busy but tracing still enabled -- skip this cycle */
@@ -2924,6 +3306,7 @@ void trace_poll_events(struct daemon_state *d)
             g_anchor = NULL;
             g_ring_entries = NULL;
             g_events_dropped = 0;
+            g_self_filtered = 0;
         }
         return;
     }
@@ -2977,6 +3360,22 @@ void trace_poll_events(struct daemon_state *d)
                 g_inflight_stall_count = 1;
                 break;  /* First time seeing this slot as in-progress */
             }
+        }
+
+        /* Skip amigactld's own bsdsocket calls to prevent feedback loop.
+         * Uses g_daemon_task from exec.c (initialized at daemon startup). */
+        if (ev->lib_id == LIB_BSDSOCKET &&
+            ev->caller_task == (APTR)g_daemon_task) {
+            ev->valid = 0;
+            if (pos == g_inflight_stall_pos) {
+                g_inflight_stall_pos = 0xFFFFFFFF;
+                g_inflight_stall_count = 0;
+            }
+            pos = (pos + 1) % ring->capacity;
+            ring->read_pos = pos;
+            total_consumed++;
+            g_self_filtered++;
+            continue;
         }
 
         /* Resolve task name for formatting and PROC filter matching.
@@ -3153,6 +3552,10 @@ static int trace_cmd_status(struct client *c)
 
     snprintf(line, sizeof(line), "events_dropped=%lu",
              (unsigned long)g_events_dropped);
+    send_payload_line(c->fd, line);
+
+    snprintf(line, sizeof(line), "events_self_filtered=%lu",
+             (unsigned long)g_self_filtered);
     send_payload_line(c->fd, line);
 
     if (g_anchor->ring) {

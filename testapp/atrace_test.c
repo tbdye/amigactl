@@ -28,6 +28,10 @@
 
 #include <devices/timer.h>
 
+#include <graphics/text.h>
+#include <proto/graphics.h>
+#include <proto/bsdsocket.h>
+
 #include <string.h>
 
 /* Ensure sufficient stack for buffers and nested calls */
@@ -50,7 +54,13 @@ static void cleanup_files(void)
     DeleteFile((STRPTR)"RAM:atrace_test_dir");
     DeleteFile((STRPTR)"RAM:atrace_test_readfile");
     DeleteFile((STRPTR)"RAM:atrace_test_p8dir");
+    DeleteFile((STRPTR)"RAM:atrace_test_seek");
+    DeleteFile((STRPTR)"RAM:atrace_test_examine_dir");
 }
+
+/* ---- Library bases ---- */
+
+struct Library *SocketBase = NULL;
 
 /* ---- Main ---- */
 
@@ -782,6 +792,464 @@ int main(int argc, char **argv)
     }
 
     Delay(1);
+
+    /* ================================================================
+     * Phase 9: Extended exec tests (blocks 47-52)
+     * ================================================================ */
+
+    /* Block 47: Wait + Signal
+     * Allocate a signal, signal ourselves, wait for it. */
+    {
+        LONG sig;
+        sig = AllocSignal(-1);
+        if (sig >= 0) {
+            Signal(FindTask(NULL), 1UL << sig);
+            Wait(1UL << sig);
+            FreeSignal(sig);
+        }
+    }
+
+    Delay(1);
+
+    /* Block 48: AllocSignal + FreeSignal
+     * Allocate a specific signal then free it. */
+    {
+        LONG sig;
+        sig = AllocSignal(-1);
+        if (sig >= 0)
+            FreeSignal(sig);
+    }
+
+    Delay(1);
+
+    /* Block 49: CreateMsgPort + DeleteMsgPort */
+    {
+        struct MsgPort *port;
+        port = CreateMsgPort();
+        if (port)
+            DeleteMsgPort(port);
+    }
+
+    Delay(1);
+
+    /* Block 50: CloseLibrary
+     * Open dos.library then close it. The OpenLibrary event is already
+     * traced; this tests the CloseLibrary pairing. */
+    {
+        struct Library *lib;
+        lib = OpenLibrary((STRPTR)"dos.library", 0);
+        if (lib)
+            CloseLibrary(lib);
+    }
+
+    Delay(1);
+
+    /* Block 51: CloseDevice
+     * Open timer.device then close it. Tests the CloseDevice pairing. */
+    {
+        struct MsgPort *port;
+        struct timerequest *tr;
+        port = CreateMsgPort();
+        if (port) {
+            tr = (struct timerequest *)CreateIORequest(port,
+                                            sizeof(struct timerequest));
+            if (tr) {
+                if (OpenDevice((STRPTR)"timer.device", UNIT_MICROHZ,
+                               (struct IORequest *)tr, 0) == 0) {
+                    CloseDevice((struct IORequest *)tr);
+                }
+                DeleteIORequest((struct IORequest *)tr);
+            }
+            DeleteMsgPort(port);
+        }
+    }
+
+    Delay(1);
+
+    /* Block 52: ReplyMsg
+     * Create two ports, send a message, receive it, reply to it. */
+    {
+        struct MsgPort *recv_port;
+        struct MsgPort *reply_port;
+        struct Message msg;
+        struct Message *got;
+
+        recv_port = CreateMsgPort();
+        reply_port = CreateMsgPort();
+        if (recv_port && reply_port) {
+            memset(&msg, 0, sizeof(msg));
+            msg.mn_Node.ln_Type = NT_MESSAGE;
+            msg.mn_ReplyPort = reply_port;
+            msg.mn_Length = sizeof(struct Message);
+
+            PutMsg(recv_port, &msg);
+            got = GetMsg(recv_port);
+            if (got)
+                ReplyMsg(got);
+            /* Wait for reply to arrive */
+            GetMsg(reply_port);
+        }
+        if (reply_port)
+            DeleteMsgPort(reply_port);
+        if (recv_port)
+            DeleteMsgPort(recv_port);
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9: dos.library tests (blocks 53-55)
+     * ================================================================ */
+
+    /* Block 53: UnLock
+     * Lock RAM:, then UnLock it. Tests the Lock/UnLock pairing. */
+    {
+        BPTR lock;
+        lock = Lock((STRPTR)"RAM:", ACCESS_READ);
+        if (lock)
+            UnLock(lock);
+    }
+
+    Delay(1);
+
+    /* Block 54: Examine + ExNext
+     * Lock RAM:, examine it, call ExNext to iterate entries. */
+    {
+        BPTR lock;
+        static struct FileInfoBlock fib;  /* static: 260 bytes, too big for stack */
+        LONG result;
+
+        lock = Lock((STRPTR)"RAM:", ACCESS_READ);
+        if (lock) {
+            result = Examine(lock, &fib);
+            if (result) {
+                /* ExNext once to get first directory entry (if any).
+                 * The test cares about the function call, not the result. */
+                ExNext(lock, &fib);
+            }
+            UnLock(lock);
+        }
+    }
+
+    Delay(1);
+
+    /* Block 55: Seek (success + failure)
+     * Success: Create a file, write data, seek to beginning, close.
+     * Failure: Seek on a NULL file handle to generate an IoErr event. */
+    {
+        BPTR fh;
+        static char buf[16];
+        LONG old_pos;
+
+        memset(buf, 'B', 16);
+
+        /* Success case: Seek to beginning after writing 16 bytes.
+         * old_pos should be 16 (the position before seeking). */
+        fh = Open((STRPTR)"RAM:atrace_test_seek", MODE_NEWFILE);
+        if (fh) {
+            Write(fh, buf, 16);
+            old_pos = Seek(fh, 0, OFFSET_BEGINNING);
+            (void)old_pos;
+            Close(fh);
+        }
+        DeleteFile((STRPTR)"RAM:atrace_test_seek");
+
+        /* Failure case: Seek on an invalid file handle (0).
+         * This should return -1 with an IoErr capture. */
+        old_pos = Seek((BPTR)0, 0, OFFSET_BEGINNING);
+        (void)old_pos;
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9: intuition.library test (block 56)
+     * ================================================================ */
+
+    /* Block 56: LockPubScreen
+     * Lock the default public screen (NULL name), then unlock.
+     * Requires IntuitionBase to be open.
+     *
+     * Note: The Phase 5 intuition test blocks (37-40) open
+     * IntuitionBase once per section and share it across blocks.
+     * This block is in a separate Phase 9 section, so it follows
+     * the same pattern of opening IntuitionBase for its section.
+     * The Phase 5 section already closed its IntuitionBase at line
+     * 681, so a fresh open is required here. */
+    {
+        struct Library *IntuitionBase;
+        IntuitionBase = OpenLibrary((STRPTR)"intuition.library", 37);
+        if (IntuitionBase) {
+            struct Screen *scr;
+            scr = LockPubScreen(NULL);
+            if (scr)
+                UnlockPubScreen(NULL, scr);
+            CloseLibrary(IntuitionBase);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9: graphics.library test (block 57)
+     * ================================================================ */
+
+    /* Block 57: OpenFont
+     * Open the default system font (topaz.font, 8pt), then close. */
+    {
+        struct Library *GfxBase;
+        GfxBase = OpenLibrary((STRPTR)"graphics.library", 0);
+        if (GfxBase) {
+            static struct TextAttr ta;
+            struct TextFont *font;
+
+            ta.ta_Name = (STRPTR)"topaz.font";
+            ta.ta_YSize = 8;
+            ta.ta_Style = 0;
+            ta.ta_Flags = 0;
+
+            font = OpenFont(&ta);
+            if (font)
+                CloseFont(font);
+            CloseLibrary(GfxBase);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9: bsdsocket.library tests (blocks 58-66)
+     * ================================================================ */
+
+    /* bsdsocket tests: all wrapped in a single library open.
+     * SocketBase is declared at FILE SCOPE (before main()) to satisfy
+     * the `extern struct Library *SocketBase;` declaration in
+     * proto/bsdsocket.h.  Here we just assign it. */
+    {
+        SocketBase = OpenLibrary((STRPTR)"bsdsocket.library", 4);
+        if (SocketBase) {
+
+            /* Block 58: socket + CloseSocket
+             * Create a TCP socket, then close it. */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM, 0 */
+                if (fd >= 0)
+                    CloseSocket(fd);
+            }
+
+            Delay(1);
+
+            /* Block 59: socket + bind + listen + CloseSocket
+             * Create a TCP socket, bind to port 0 (any), listen. */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (fd >= 0) {
+                    struct sockaddr_in addr;
+                    memset(&addr, 0, sizeof(addr));
+                    addr.sin_family = 2;  /* AF_INET */
+                    addr.sin_port = 0;    /* any port */
+                    addr.sin_addr.s_addr = 0;  /* INADDR_ANY */
+
+                    bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+                    listen(fd, 5);
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 60: socket + connect (failure expected)
+             * Try to connect to localhost:1 (unlikely to succeed).
+             * Roadshow typically has a loopback interface (127.0.0.1)
+             * configured by default.  The purpose of this test is to
+             * generate a failed connect event for trace validation --
+             * the specific error (ECONNREFUSED, ENETUNREACH, etc.)
+             * does not matter.  The Python test accepts any error status. */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (fd >= 0) {
+                    struct sockaddr_in addr;
+                    memset(&addr, 0, sizeof(addr));
+                    addr.sin_family = 2;
+                    addr.sin_port = 1;  /* port 1 -- should fail */
+                    addr.sin_addr.s_addr = 0x7f000001;  /* 127.0.0.1 */
+
+                    connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 61: UDP sendto + recvfrom (loopback)
+             * Create a UDP socket, bind to a fixed port, sendto self,
+             * then recvfrom to complete the loopback test.
+             * Port 4444 is used for both bind and sendto destination.
+             * 68k is big-endian so network byte order matches host order --
+             * no htons() needed. INADDR_LOOPBACK = 0x7f000001. */
+            {
+                LONG fd;
+                fd = socket(2, 2, 0);  /* AF_INET, SOCK_DGRAM */
+                if (fd >= 0) {
+                    struct sockaddr_in addr;
+                    static char msg[] = "atrace_test";
+                    static char rbuf[32];
+                    LONG sent, got;
+                    memset(&addr, 0, sizeof(addr));
+                    addr.sin_family = 2;        /* AF_INET */
+                    addr.sin_port = 4444;       /* fixed port */
+                    addr.sin_addr.s_addr = 0x7f000001;  /* INADDR_LOOPBACK */
+
+                    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                        sent = sendto(fd, msg, sizeof(msg) - 1, 0,
+                                      (struct sockaddr *)&addr, sizeof(addr));
+                        if (sent > 0) {
+                            struct sockaddr_in from;
+                            socklen_t fromlen = sizeof(from);
+                            memset(&from, 0, sizeof(from));
+                            got = recvfrom(fd, rbuf, sizeof(rbuf), 0,
+                                           (struct sockaddr *)&from, &fromlen);
+                            (void)got;
+                        }
+                    }
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 62: shutdown
+             * Create a TCP socket, shutdown both directions. */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);
+                if (fd >= 0) {
+                    shutdown(fd, 2);  /* SHUT_RDWR */
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 63: setsockopt + getsockopt
+             * Create a socket, set SO_REUSEADDR via setsockopt, then
+             * verify via getsockopt.  Tests the 5-arg functions (>4 arg
+             * capping -- only the first 4 args are captured in the trace). */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (fd >= 0) {
+                    LONG optval = 1;
+                    LONG optlen = sizeof(optval);
+                    LONG getval = 0;
+                    socklen_t getlen = sizeof(getval);
+
+                    setsockopt(fd, 0xFFFF, 0x0004, &optval, optlen);
+                        /* SOL_SOCKET=0xFFFF, SO_REUSEADDR=0x0004 */
+                    getsockopt(fd, 0xFFFF, 0x0004, &getval, &getlen);
+                    (void)getval;
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 64: IoctlSocket
+             * Create a socket, use IoctlSocket with FIONBIO to set
+             * non-blocking mode. */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (fd >= 0) {
+                    LONG nbio = 1;
+                    IoctlSocket(fd, 0x8004667E, (char *)&nbio);
+                        /* FIONBIO = 0x8004667E */
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 65: send + recv (TCP loopback)
+             * Create a TCP socket pair via bind+listen on one socket and
+             * connect on another, then accept.  Send data on the connected
+             * socket, recv on the accepted socket. */
+            {
+                LONG listen_fd, conn_fd, accept_fd;
+                struct sockaddr_in addr;
+                socklen_t addrlen;
+
+                listen_fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (listen_fd >= 0) {
+                    memset(&addr, 0, sizeof(addr));
+                    addr.sin_family = 2;
+                    addr.sin_port = 4445;  /* fixed port for test */
+                    addr.sin_addr.s_addr = 0x7f000001;  /* INADDR_LOOPBACK */
+
+                    if (bind(listen_fd, (struct sockaddr *)&addr,
+                             sizeof(addr)) == 0
+                        && listen(listen_fd, 1) == 0) {
+
+                        conn_fd = socket(2, 1, 0);
+                        if (conn_fd >= 0) {
+                            if (connect(conn_fd, (struct sockaddr *)&addr,
+                                        sizeof(addr)) == 0) {
+                                addrlen = sizeof(addr);
+                                accept_fd = accept(listen_fd,
+                                                   (struct sockaddr *)&addr,
+                                                   &addrlen);
+                                if (accept_fd >= 0) {
+                                    static char sbuf[] = "atrace_send";
+                                    static char rbuf[32];
+                                    LONG n;
+
+                                    send(conn_fd, sbuf,
+                                         sizeof(sbuf) - 1, 0);
+                                    n = recv(accept_fd, rbuf,
+                                             sizeof(rbuf), 0);
+                                    (void)n;
+                                    CloseSocket(accept_fd);
+                                }
+                            }
+                            CloseSocket(conn_fd);
+                        }
+                    }
+                    CloseSocket(listen_fd);
+                }
+            }
+
+            Delay(1);
+
+            /* Block 66: WaitSelect (zero timeout)
+             * Create a socket, call WaitSelect with a zero timeout for
+             * immediate return.  Tests the 6-arg function (>4 arg capping). */
+            {
+                LONG fd;
+                fd = socket(2, 1, 0);  /* AF_INET, SOCK_STREAM */
+                if (fd >= 0) {
+                    struct timeval tv;
+                    fd_set rfds;
+                    ULONG sigmask = 0;
+
+                    tv.tv_sec = 0;
+                    tv.tv_usec = 0;  /* immediate return */
+                    FD_ZERO(&rfds);
+                    FD_SET(fd, &rfds);
+
+                    WaitSelect(fd + 1, &rfds, NULL, NULL,
+                               &tv, &sigmask);
+                    CloseSocket(fd);
+                }
+            }
+
+            Delay(1);
+
+            CloseLibrary(SocketBase);
+        }
+    }
 
     cleanup_files();
     return 0;

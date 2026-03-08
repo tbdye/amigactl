@@ -21,6 +21,8 @@
 #define LIB_EXEC    0
 #define LIB_DOS     1
 #define LIB_INTUITION  2
+#define LIB_BSDSOCKET  3
+#define LIB_GRAPHICS   4
 
 /* Event entry size -- must be 128 bytes for shift-based indexing */
 #define ATRACE_EVENT_SIZE   128

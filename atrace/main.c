@@ -80,6 +80,16 @@ static const char *noise_func_names[] = {
     "WaitIO",
     "AbortIO",
     "CheckIO",
+    /* Phase 9 additions */
+    "ReplyMsg",
+    "send",
+    "recv",
+    "WaitSelect",
+    "Wait",
+    "Signal",
+    "CloseLibrary",
+    "UnLock",
+    "OpenFont",
     NULL  /* sentinel */
 };
 
@@ -195,7 +205,7 @@ static struct atrace_anchor *find_anchor(void)
 /* ---- Patch name lookup ---- */
 
 /* Search atrace_libs[]/func_info[] for a case-insensitive match on
- * function name. Returns the global patch index (0-49), or -1 if
+ * function name. Returns the global patch index (0-79), or -1 if
  * not found. The global index is computed sequentially through all
  * libraries' functions in order, matching the installation order
  * in do_install(). The anchor parameter is unused but kept for
@@ -251,6 +261,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     int total_patches;
     int li, fi;
     int patch_idx;
+    int patches_installed;
 
     total_patches = 0;
     for (li = 0; li < atrace_lib_count; li++)
@@ -362,6 +373,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
 
     /* 5. Open target libraries and install patches */
     patch_idx = 0;
+    patches_installed = 0;
     {
     ULONG saved_dos_base = 0;
     for (li = 0; li < atrace_lib_count; li++) {
@@ -370,7 +382,9 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
 
         libbase = OpenLibrary((STRPTR)lib->name, 0);
         if (!libbase) {
-            printf("Cannot open %s -- skipping\n", lib->name);
+            printf("Cannot open %s -- skipping %d patches\n",
+                   lib->name, (int)lib->func_count);
+            patch_idx += lib->func_count;
             continue;
         }
         /* Do NOT close the library -- keep it in memory
@@ -404,6 +418,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             } else {
                 printf("Patched %s/%s (LVO %d)\n",
                        lib->name, func->name, (int)func->lvo_offset);
+                patches_installed++;
             }
 
             patch_idx++;
@@ -443,8 +458,10 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     /* 7. Register the semaphore -- makes atrace discoverable */
     AddSemaphore(&anchor->sem);
 
-    printf("atrace loaded: %d patches, %lu-entry ring buffer (%luKB)\n",
-           patch_idx, (unsigned long)capacity,
+    printf("atrace loaded: %d of %d patches installed, "
+           "%lu-entry ring buffer (%luKB)\n",
+           patches_installed, total_patches,
+           (unsigned long)capacity,
            (unsigned long)(ATRACE_EVENT_SIZE * capacity / 1024));
     if (start_disabled)
         printf("Tracing is DISABLED (use ENABLE to activate)\n");
@@ -454,8 +471,12 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     return RETURN_OK;
 }
 
-/* Short library names for STATUS display, indexed by lib_id */
-static const char *lib_short_names[] = { "exec", "dos", "intuition" };
+/* Short library names for STATUS display, indexed by lib_id (0-4).
+ * If future phases add libraries with lib_id >= 5, this array must
+ * be extended.  The array size implicitly limits the maximum lib_id. */
+static const char *lib_short_names[] = {
+    "exec", "dos", "intuition", "bsdsocket", "graphics"
+};
 
 /* ---- STATUS: print current state ---- */
 

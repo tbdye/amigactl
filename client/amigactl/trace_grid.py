@@ -115,10 +115,21 @@ class ToggleGrid:
             "FreeMem", "AllocVec", "FreeVec",
             # Phase 5 device I/O additions
             "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+            # Phase 9 additions
+            "ReplyMsg",
+            "Wait", "Signal", "CloseLibrary",
         },
         "dos": {
             # Phase 5 additions
             "Read", "Write",
+            "UnLock",
+        },
+        "bsdsocket": {
+            # Phase 9 additions
+            "send", "recv", "WaitSelect",
+        },
+        "graphics": {
+            "OpenFont",
         },
     }
 
