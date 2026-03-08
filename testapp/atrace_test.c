@@ -49,6 +49,7 @@ static void cleanup_files(void)
     DeleteFile((STRPTR)"RAM:atrace_test_ren_new");
     DeleteFile((STRPTR)"RAM:atrace_test_dir");
     DeleteFile((STRPTR)"RAM:atrace_test_readfile");
+    DeleteFile((STRPTR)"RAM:atrace_test_p8dir");
 }
 
 /* ---- Main ---- */
@@ -734,6 +735,50 @@ int main(int argc, char **argv)
         }
 
         DeleteFile((STRPTR)"RAM:atrace_test_readfile");
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 8: IoErr capture tests (blocks 43-46)
+     * ================================================================ */
+
+    /* Block 43: DeleteFile of non-existent file
+     * Triggers IoErr 205 (object not found) via DeleteFile. */
+    {
+        DeleteFile((STRPTR)"RAM:atrace_test_phase8_nofile");
+    }
+
+    Delay(1);
+
+    /* Block 44: Lock directory-not-found
+     * Triggers IoErr 204 (directory not found) or 205 (object not found)
+     * depending on filesystem handler. */
+    {
+        Lock((STRPTR)"RAM:nonexistent_dir/file", ACCESS_READ);
+    }
+
+    Delay(1);
+
+    /* Block 45: CreateDir already exists
+     * First CreateDir succeeds, second should fail with IoErr 203
+     * (object already exists) on RAM: filesystem. */
+    {
+        BPTR lock1, lock2;
+        lock1 = CreateDir((STRPTR)"RAM:atrace_test_p8dir");
+        if (lock1) UnLock(lock1);
+        lock2 = CreateDir((STRPTR)"RAM:atrace_test_p8dir");
+        if (lock2) UnLock(lock2);
+        DeleteFile((STRPTR)"RAM:atrace_test_p8dir");
+    }
+
+    Delay(1);
+
+    /* Block 46: FindResident with non-existent name
+     * exec.library failure without IoErr -- validates no spurious
+     * IoErr text on non-dos functions. */
+    {
+        FindResident((STRPTR)"atrace_p8_nosuch");
     }
 
     Delay(1);

@@ -11,9 +11,10 @@
  *      Identical for all functions.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
- *   3. Suffix (86 bytes): MOVEM restore, trampoline, post-call handler,
- *      disabled path, overflow path. Identical for all functions except
- *      that byte offsets shift based on variable region size.
+ *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
+ *      with IoErr capture (Phase 8), disabled path, overflow path.
+ *      Identical for all functions except that byte offsets shift based
+ *      on variable region size.
  */
 
 #include "atrace.h"
@@ -108,8 +109,9 @@ static const UWORD stub_prefix[] = {
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
- * post-call handler, disabled path, overflow path.
- * 43 UWORD values, 86 bytes.
+ * post-call handler with IoErr capture (Phase 8), disabled path,
+ * overflow path.
+ * 63 UWORD values, 126 bytes.
  *
  * The trampoline uses a stack-based approach to pass the entry pointer
  * (a5) through the original function call WITHOUT clobbering a0.
@@ -138,48 +140,65 @@ static const UWORD stub_suffix[] = {
     /* 26: */ 0x206F, 0x0004,           /* movea.l 4(sp), a0    entry ptr       */
     /* 30: */ 0x2140, 0x001C,           /* move.l d0, 28(a0)    entry->retval   */
 
-    /* 34: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
-    /* 38: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
-    /* 44: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
-    /* 48: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
-    /* 50: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
-    /* 52: */ 0x4E75,                   /* rts                  return to caller*/
+    /* === Phase 8: IoErr capture (dos.library only) === */
+    /* 34: */ 0x0C28, 0x0001, 0x0001,   /* cmp.b #LIB_DOS, 1(a0)              */
+    /* 40: */ 0x6620,                   /* bne.s +32            .skip_ioerr     */
+    /* 42: */ 0x4A80,                   /* tst.l d0             retval == 0?    */
+    /* 44: */ 0x661C,                   /* bne.s +28            success->skip   */
+    /* 46: */ 0x2F0E,                   /* move.l a6, -(sp)     save caller a6  */
+    /* 48: */ 0x2C7C, 0x0000, 0x0000,   /* movea.l #DOS_BASE, a6 [patched]    */
+    /* 54: */ 0x4EAE, 0xFF7C,           /* jsr -132(a6)         IoErr()         */
+    /* 58: */ 0x2C5F,                   /* movea.l (sp)+, a6    restore a6      */
+    /* 60: */ 0x206F, 0x0004,           /* movea.l 4(sp), a0    reload entry    */
+    /* 64: */ 0x1140, 0x0062,           /* move.b d0, 98(a0)    entry->ioerr    */
+    /* 68: */ 0x0028, 0x0002, 0x0021,   /* or.b #2, 33(a0)     FLAG_HAS_IOERR  */
+
+    /* .skip_ioerr: */
+    /* 74: */ 0x10BC, 0x0001,           /* move.b #1, (a0)      entry->valid=1  */
+    /* 78: */ 0x207C, 0x0000, 0x0000,   /* movea.l #PATCH_ADDR, a0  [4]        */
+    /* 84: */ 0x53A8, 0x0000,           /* subq.l #1, OFS_USE_COUNT(a0)        */
+    /* 88: */ 0x201F,                   /* move.l (sp)+, d0     restore retval  */
+    /* 90: */ 0x588F,                   /* addq.l #4, sp        pop entry ptr   */
+    /* 92: */ 0x4E75,                   /* rts                  return to caller*/
 
     /* === DISABLED fast path === */
-    /* .disabled: (suffix offset 54) */
-    /* 54: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /* 56: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
-    /* 62: */ 0x4E75,                   /* rts                  tail-call orig  */
+    /* .disabled: (suffix offset 94) */
+    /* 94: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /* 96: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [2]       */
+    /*102: */ 0x4E75,                   /* rts                  tail-call orig  */
 
     /* === OVERFLOW path === */
-    /* .overflow: (suffix offset 64) */
-    /* 64: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
-    /* 68: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
-    /* 72: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
-    /* 76: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
-    /* 78: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
-    /* 84: */ 0x4E75,                   /* rts                  tail-call orig  */
+    /* .overflow: (suffix offset 104) */
+    /*104: */ 0x52A8, 0x0000,           /* addq.l #1, OFS_OVERFLOW(a0)         */
+    /*108: */ 0x4EAE, 0xFF82,           /* jsr _LVOEnable(a6)                  */
+    /*112: */ 0x4CDF, 0x5FFF,           /* movem.l (sp)+, d0-d7/a0-a4/a6       */
+    /*116: */ 0x2A5F,                   /* movea.l (sp)+, a5    restore a5      */
+    /*118: */ 0x2F3C, 0x0000, 0x0000,   /* move.l #ORIG_ADDR, -(sp)  [3]       */
+    /*124: */ 0x4E75,                   /* rts                  tail-call orig  */
 };
 
-#define STUB_SUFFIX_BYTES   86  /* 43 words */
+#define STUB_SUFFIX_BYTES   126  /* 63 words (was 86 / 43 words) */
 
 /* ---- Suffix-relative byte offsets ---- */
 
 /* PATCH_ADDR occurrence 4 (high word of address in suffix) */
-#define PATCH_SUFFIX_REL            40
+#define PATCH_SUFFIX_REL            80   /* was 40 */
+
+/* DOS_BASE_ADDR (high word of DOSBase address in suffix IoErr block) */
+#define DOS_BASE_SUFFIX_REL         50   /* high word of DOS_BASE at suffix byte 48 */
 
 /* Struct field displacement patches within the suffix */
-#define SUFFIX_DISP_USE_COUNT_DEC   46   /* subq.l #1, OFS_USE_COUNT(a0) */
-#define SUFFIX_DISP_OVERFLOW        66   /* addq.l #1, OFS_OVERFLOW(a0)  */
+#define SUFFIX_DISP_USE_COUNT_DEC   86   /* was 46 -- subq.l #1, OFS_USE_COUNT(a0) */
+#define SUFFIX_DISP_OVERFLOW       106   /* was 66 -- addq.l #1, OFS_OVERFLOW(a0)  */
 
 /* Label offsets within the suffix (used for branch displacement calc) */
-#define SUFFIX_LABEL_DISABLED       54   /* .disabled label */
-#define SUFFIX_LABEL_OVERFLOW       64   /* .overflow label */
+#define SUFFIX_LABEL_DISABLED       94   /* was 54 -- .disabled label */
+#define SUFFIX_LABEL_OVERFLOW      104   /* was 64 -- .overflow label */
 
 /* ORIG_ADDR occurrences (suffix-relative high word offsets) */
-#define ORIG_SUFFIX_REL_1           18   /* trampoline push   */
-#define ORIG_SUFFIX_REL_2           58   /* .disabled push    */
-#define ORIG_SUFFIX_REL_3           80   /* .overflow push    */
+#define ORIG_SUFFIX_REL_1           18   /* trampoline push -- unchanged */
+#define ORIG_SUFFIX_REL_2           98   /* was 58 -- .disabled push    */
+#define ORIG_SUFFIX_REL_3          120   /* was 80 -- .overflow push    */
 
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
@@ -240,8 +259,8 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *   1. Fixed prefix (196 bytes) - task filter, register save, ring buffer,
  *      EClock capture, event header
  *   2. Variable region - argument copy, flags, string capture, built from metadata
- *   3. Fixed suffix (86 bytes) - post-call handler, disabled path,
- *      overflow path
+ *   3. Fixed suffix (126 bytes) - post-call handler with IoErr capture
+ *      (Phase 8), disabled path, overflow path
  *
  * Parameters:
  *   anchor    -- pointer to the atrace_anchor (already allocated)
@@ -250,6 +269,7 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *                arg_regs, string_args, enabled=1)
  *   libbase   -- the library base pointer for SetFunction
  *   entries   -- pointer to ring buffer entries array
+ *   dos_base  -- dos.library base pointer for IoErr() (Phase 8)
  *
  * Returns 0 on success, -1 on failure (AllocMem failed).
  *
@@ -261,7 +281,8 @@ int stub_generate_and_install(
     struct atrace_anchor *anchor,
     struct atrace_patch *patch,
     struct Library *libbase,
-    struct atrace_event *entries)
+    struct atrace_event *entries,
+    ULONG dos_base)
 {
     UBYTE *stub_mem;
     UWORD *p;
@@ -346,13 +367,22 @@ int stub_generate_and_install(
     var_buf[var_words++] = 0x422D;  /* clr.b 106(a5)        NUL empty name    */
     var_buf[var_words++] = 0x006A;
 
-    /* Set valid=1 BEFORE the suffix's trampoline calls the original function.
+    /* Set valid=2 BEFORE the suffix's trampoline calls the original function.
      * This must happen pre-call because blocking functions (e.g. dos.RunCommand)
      * can block indefinitely.  With valid=0 during the block, the consumer
      * cannot advance past this slot, freezing ALL event consumption system-wide.
-     * The suffix post-call handler also writes valid=1 (now redundant but harmless). */
-    var_buf[var_words++] = 0x1ABC;    /* move.b #1, (a5)  entry->valid = 1 */
-    var_buf[var_words++] = 0x0001;    /* immediate byte 1, word-aligned    */
+     *
+     * The value 2 ("in-progress") distinguishes pre-call events from
+     * post-call events (valid=1, set by the suffix post-call handler).
+     * The daemon uses this to suppress IoErr display for events consumed
+     * mid-flight: if the daemon polls while the original function is still
+     * executing (e.g. Lock waiting for a DOS packet reply), retval and
+     * ioerr fields are not yet filled.  The daemon sees valid=2 and skips
+     * IoErr append.  After the function returns, the post-call handler
+     * overwrites valid with 1, but the daemon has already consumed the
+     * event -- the write is harmless. */
+    var_buf[var_words++] = 0x1ABC;    /* move.b #2, (a5)  entry->valid = 2 */
+    var_buf[var_words++] = 0x0002;    /* immediate byte 2, word-aligned    */
 
     /* ---- 2. Calculate total size and allocate ---- */
 
@@ -396,6 +426,11 @@ int stub_generate_and_install(
 
     /* TIMER_BASE_ADDR -- 1 occurrence (prefix, EClock block) */
     patch_addr(p, TIMER_BASE_OFF, (ULONG)anchor->timer_base);
+
+    /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block) */
+    if (dos_base != 0) {
+        patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL, dos_base);
+    }
 
     /* Struct field displacements (prefix -- patched from offsetof) */
     p[DISP_ENABLED / 2]       = (UWORD)offsetof(struct atrace_patch, enabled);

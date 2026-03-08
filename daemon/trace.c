@@ -125,6 +125,51 @@ static const struct trace_func_entry func_table[] = {
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
 
+/* ---- DOS error code lookup (Phase 8) ---- */
+
+/* Standard AmigaOS DOS error code names.
+ * Returns NULL for unknown codes. */
+static const char *dos_error_name(int code)
+{
+    switch (code) {
+    case 103: return "insufficient free store";
+    case 105: return "task table full";
+    case 114: return "bad template";
+    case 116: return "required argument missing";
+    case 117: return "value after keyword missing";
+    case 120: return "argument line invalid or too long";
+    case 121: return "file is not an object module";
+    case 122: return "invalid resident library";
+    case 202: return "object in use";
+    case 203: return "object already exists";
+    case 204: return "directory not found";
+    case 205: return "object not found";
+    case 206: return "invalid window description";
+    case 207: return "object too large";
+    case 208: return "action not known";
+    case 209: return "packet request type unknown";
+    case 210: return "object name invalid";
+    case 211: return "invalid lock";
+    case 212: return "object not of required type";
+    case 213: return "disk not validated";
+    case 214: return "disk write-protected";
+    case 215: return "rename across devices";
+    case 216: return "directory not empty";
+    case 218: return "device not mounted";
+    case 219: return "seek error";
+    case 220: return "comment too big";
+    case 221: return "disk full";
+    case 222: return "file is protected from deletion";
+    case 223: return "file is write protected";
+    case 224: return "file is read protected";
+    case 225: return "not a DOS disk";
+    case 226: return "no disk in drive";
+    case 232: return "no more entries";
+    case 233: return "buffer overflow";
+    default:  return NULL;
+    }
+}
+
 /* ---- Module globals ---- */
 
 /* Cached anchor pointer -- NULL if atrace not found */
@@ -142,6 +187,17 @@ static char trace_cmd_buf[MAX_CMD_LEN + 1];
 
 /* Event formatting buffer (static, single-threaded) */
 static char trace_line_buf[512];
+
+/* In-progress (valid=2) event patience tracking.
+ * When the consumer encounters an event with valid=2, it waits up to
+ * INFLIGHT_PATIENCE consecutive polls for the post-call handler to
+ * complete (set valid=1).  After that, it consumes the event as-is.
+ * This prevents ring buffer stalls from blocking functions while
+ * giving non-blocking functions time to complete and fill in retval,
+ * ioerr, and FLAG_HAS_IOERR. */
+#define INFLIGHT_PATIENCE 3  /* 3 encounters = ~200ms at 100ms poll rate */
+static ULONG g_inflight_stall_pos = 0xFFFFFFFF;
+static int g_inflight_stall_count = 0;
 
 /* ---- EClock session epoch ----
  * Captured at TRACE START / TRACE RUN to convert per-event EClock
@@ -166,6 +222,14 @@ static void drain_stale_events(void)
     ULONG stale;
     ULONG ci;
 
+    /* Reset in-progress stall tracking -- a new trace session starts
+     * with a clean slate.  Without this, stale stall state from a
+     * prior session could cause the first valid=2 event in the new
+     * session to be consumed prematurely (if it happens to land at
+     * the same ring position as the old stall). */
+    g_inflight_stall_pos = 0xFFFFFFFF;
+    g_inflight_stall_count = 0;
+
     if (!g_anchor || !g_anchor->ring || !g_ring_entries)
         return;
 
@@ -182,15 +246,20 @@ static void drain_stale_events(void)
         ring->overflow = 0;
     }
 
-    /* Clear valid flags and retval to prevent trace_poll_events() from
-     * consuming stale entries.  Clearing retval prevents the pre-call
-     * valid=1 race: stubs set valid=1 before calling the original
-     * function (needed for blocking calls), so the daemon may read the
-     * entry while the function is executing.  Without clearing, the
-     * retval field retains stale data from prior ring buffer usage. */
+    /* Clear valid flags, retval, ioerr, and flags to prevent
+     * trace_poll_events() from consuming stale entries.  Stubs set
+     * valid=2 ("in-progress") before calling the original function
+     * (needed for blocking calls -- the consumer must not stall on
+     * those slots).  The post-call handler writes retval, ioerr,
+     * FLAG_HAS_IOERR, and sets valid=1 ("complete").  If the daemon
+     * polls while the function is executing, it sees valid=2 and
+     * stale field values from prior ring buffer usage.  Clearing
+     * here ensures those stale values are zero, not misleading. */
     for (ci = 0; ci < ring->capacity; ci++) {
         g_ring_entries[ci].valid = 0;
         g_ring_entries[ci].retval = 0;
+        g_ring_entries[ci].ioerr = 0;
+        g_ring_entries[ci].flags = 0;
     }
 }
 
@@ -456,6 +525,8 @@ void trace_cleanup(void)
     g_events_dropped = 0;
     task_cache_count = 0;
     task_cache_polls = 0;
+    g_inflight_stall_pos = 0xFFFFFFFF;
+    g_inflight_stall_count = 0;
     g_eclock_valid = 0;
     g_eclock_freq = 0;
 }
@@ -2373,13 +2444,17 @@ static void format_args(struct atrace_event *ev,
 
 /* Format return value with per-function semantics.
  * Writes the formatted retval string to buf, and returns a status
- * character ('O', 'E', or '-') for the wire protocol. */
+ * character ('O', 'E', or '-') for the wire protocol.
+ *
+ * Phase 8: Uses single-return pattern so the IoErr append epilogue
+ * executes for all code paths. */
 static char format_retval(struct atrace_event *ev,
                            const struct trace_func_entry *fe,
                            char *buf, int bufsz)
 {
     ULONG rv = ev->retval;
     LONG srv = (LONG)rv;  /* signed interpretation */
+    char status = '-';
 
     if (!fe) {
         /* Unknown function */
@@ -2393,16 +2468,19 @@ static char format_retval(struct atrace_event *ev,
     switch (fe->result_type) {
     case RET_VOID:
         snprintf(buf, bufsz, "(void)");
-        return '-';
+        status = '-';
+        break;
 
     case RET_PTR:
         /* Pointer: NULL=fail, non-zero=hex addr */
         if (rv == 0) {
             snprintf(buf, bufsz, "NULL");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
+            status = 'O';
         }
-        snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
-        return 'O';
+        break;
 
     case RET_BOOL_DOS:
         /* DOS boolean: non-zero=success, 0=fail.
@@ -2411,62 +2489,73 @@ static char format_retval(struct atrace_event *ev,
          * check with if(result), not if(result == DOSTRUE). */
         if (rv == 0) {
             snprintf(buf, bufsz, "FAIL");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "OK");
+            status = 'O';
         }
-        snprintf(buf, bufsz, "OK");
-        return 'O';
+        break;
 
     case RET_NZERO_ERR:
         /* 0=success, non-zero=error code (OpenDevice) */
         if (rv == 0) {
             snprintf(buf, bufsz, "OK");
-            return 'O';
+            status = 'O';
+        } else {
+            snprintf(buf, bufsz, "err=%ld", (long)srv);
+            status = 'E';
         }
-        snprintf(buf, bufsz, "err=%ld", (long)srv);
-        return 'E';
+        break;
 
     case RET_MSG_PTR:
         /* Message pointer: NULL=empty (normal), non-zero=addr */
         if (rv == 0) {
             snprintf(buf, bufsz, "(empty)");
-            return '-';
+            status = '-';
+        } else {
+            snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
+            status = 'O';
         }
-        snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
-        return 'O';
+        break;
 
     case RET_RC:
         /* Return code: signed decimal, 0=success */
         snprintf(buf, bufsz, "rc=%ld", (long)srv);
-        if (srv == 0)
-            return 'O';
-        return 'E';
+        status = (srv == 0) ? 'O' : 'E';
+        break;
 
     case RET_LOCK:
         /* BPTR lock: NULL=fail, non-zero=hex addr */
         if (rv == 0) {
             snprintf(buf, bufsz, "NULL");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
+            status = 'O';
         }
-        snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
-        return 'O';
+        break;
 
     case RET_LEN:
         /* Byte count: -1=fail, >=0=decimal count */
         if (srv == -1) {
             snprintf(buf, bufsz, "-1");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "%ld", (long)srv);
+            status = 'O';
         }
-        snprintf(buf, bufsz, "%ld", (long)srv);
-        return 'O';
+        break;
 
     case RET_PTR_OPAQUE:
         /* Opaque pointer: non-zero means success, show OK not hex */
         if (rv == 0) {
             snprintf(buf, bufsz, "NULL");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "OK");
+            status = 'O';
         }
-        snprintf(buf, bufsz, "OK");
-        return 'O';
+        break;
 
     case RET_EXECUTE:
         /* Execute(): return value is ambiguous between shell rc and DOS boolean.
@@ -2478,16 +2567,19 @@ static char format_retval(struct atrace_event *ev,
             snprintf(buf, bufsz, "OK");      /* DOSTRUE = genuine success */
         else
             snprintf(buf, bufsz, "rc=%ld", (long)srv);
-        return '-';   /* Neutral status -- never classified as error */
+        status = '-';   /* Neutral status -- never classified as error */
+        break;
 
     case RET_IO_LEN:
         /* I/O byte count: -1=error, 0=EOF(Read), >0=bytes transferred */
         if (srv == -1) {
             snprintf(buf, bufsz, "-1");
-            return 'E';
+            status = 'E';
+        } else {
+            snprintf(buf, bufsz, "%ld", (long)srv);
+            status = 'O';
         }
-        snprintf(buf, bufsz, "%ld", (long)srv);
-        return 'O';
+        break;
 
     case RET_OLD_LOCK:
         /* Old lock from CurrentDir: informational */
@@ -2500,7 +2592,8 @@ static char format_retval(struct atrace_event *ev,
             else
                 snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
         }
-        return '-';
+        status = '-';
+        break;
 
     default:
         /* Fallback */
@@ -2508,8 +2601,41 @@ static char format_retval(struct atrace_event *ev,
             snprintf(buf, bufsz, "NULL");
         else
             snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
-        return '-';
+        status = '-';
+        break;
     }
+
+    /* Phase 8: append IoErr info for dos.library failures.
+     * The status == 'E' check is essential -- the stub captures IoErr
+     * whenever retval==0, which includes valid returns (CurrentDir,
+     * GetVar, RunCommand, etc.). The daemon suppresses display for
+     * those via the status check.
+     *
+     * The ev->valid == 1 check handles the pre-call valid race: stubs
+     * set valid=2 before calling the original function (so blocking
+     * functions don't freeze the consumer).  If the daemon polls while
+     * the function is executing, it sees valid=2 and retval/ioerr are
+     * stale (zero from MEMF_CLEAR).  The post-call handler sets
+     * valid=1 after writing retval, ioerr, and FLAG_HAS_IOERR.
+     * Checking valid==1 ensures we only append IoErr text for events
+     * whose post-call handler has completed. */
+    if (g_anchor && g_anchor->version >= 4 &&
+        status == 'E' && ev->valid == 1 &&
+        (ev->flags & FLAG_HAS_IOERR) && ev->ioerr != 0 &&
+        fe->lib_id == LIB_DOS) {
+        int cur_len = (int)strlen(buf);
+        int ioerr_code = (int)ev->ioerr;
+        const char *err_name = dos_error_name(ioerr_code);
+        if (err_name) {
+            snprintf(buf + cur_len, bufsz - cur_len,
+                     " (%s, %d)", err_name, ioerr_code);
+        } else {
+            snprintf(buf + cur_len, bufsz - cur_len,
+                     " (err %d)", ioerr_code);
+        }
+    }
+
+    return status;
 }
 
 /* ---- Event formatting ---- */
@@ -2827,6 +2953,32 @@ void trace_poll_events(struct daemon_state *d)
         const char *filter_name;
         ev = &g_ring_entries[pos];
 
+        /* Wait for in-progress events (valid=2) to complete (valid=1).
+         * Stubs set valid=2 pre-call so the consumer can advance past
+         * blocking functions.  But for non-blocking functions, the
+         * post-call handler sets valid=1 within microseconds.  Waiting
+         * one poll cycle (100ms) lets those functions finish so we get
+         * complete data (retval, ioerr, FLAG_HAS_IOERR).
+         *
+         * For truly blocking functions (RunCommand, Execute), valid=2
+         * persists for seconds.  After INFLIGHT_PATIENCE consecutive
+         * polls at the same position, we consume the event as-is to
+         * prevent ring buffer stalls.  The IoErr guard (ev->valid==1)
+         * in format_retval suppresses stale IoErr data. */
+        if (ev->valid == 2) {
+            if (pos == g_inflight_stall_pos) {
+                g_inflight_stall_count++;
+                if (g_inflight_stall_count < INFLIGHT_PATIENCE) {
+                    break;  /* Wait for post-call handler */
+                }
+                /* Patience expired -- consume as-is */
+            } else {
+                g_inflight_stall_pos = pos;
+                g_inflight_stall_count = 1;
+                break;  /* First time seeing this slot as in-progress */
+            }
+        }
+
         /* Resolve task name for formatting and PROC filter matching.
          * resolve_task_name() uses resolve_cli_name() to extract the
          * CLI command basename (e.g. "atrace_test") for CLI processes,
@@ -2877,6 +3029,14 @@ void trace_poll_events(struct daemon_state *d)
 
         /* Release slot */
         ev->valid = 0;
+
+        /* Reset in-progress stall tracking now that we've advanced
+         * past this position.  Without this reset, wrapping back to
+         * the same ring slot would falsely inherit the stall count. */
+        if (pos == g_inflight_stall_pos) {
+            g_inflight_stall_pos = 0xFFFFFFFF;
+            g_inflight_stall_count = 0;
+        }
 
         /* Advance consumer */
         pos = (pos + 1) % ring->capacity;
@@ -3059,6 +3219,11 @@ static int trace_cmd_status(struct client *c)
         snprintf(line, sizeof(line), "eclock_freq=%lu",
                  (unsigned long)g_anchor->eclock_freq);
         send_payload_line(c->fd, line);
+    }
+
+    /* Phase 8: IoErr capture capability */
+    if (g_anchor->version >= 4) {
+        send_payload_line(c->fd, "ioerr_capture=1");
     }
 
     /* Count noise-disabled functions */
@@ -3584,6 +3749,12 @@ void trace_check_run_completed(struct daemon_state *d)
                        g_ring_entries[pos].valid) {
                     const char *filter_name;
                     ev = &g_ring_entries[pos];
+
+                    /* Skip in-progress events -- they belong to
+                     * still-running processes and will be consumed
+                     * by the next trace_poll_events() call. */
+                    if (ev->valid == 2)
+                        break;
 
                     /* Use resolved name for PROC filter matching
                      * (same logic as trace_poll_events).

@@ -927,8 +927,8 @@ class TestDosFunctions:
             .format(len(trace_events)))
         ev = matches[0]
         assert ev["lib"] == "dos"
-        assert ev["retval"] == "NULL", (
-            "Open(nonexistent) retval should be 'NULL', got: {}".format(
+        assert ev["retval"].startswith("NULL"), (
+            "Open(nonexistent) retval should start with 'NULL', got: {}".format(
                 ev["retval"]))
         assert ev["status"] == "E", (
             "Open(nonexistent) status should be 'E', got: {}".format(
@@ -1057,7 +1057,7 @@ class TestDosFunctions:
             assert _HEX_PTR.match(ev["retval"]), (
                 "Successful LoadSeg should return hex BPTR: {}".format(ev["retval"]))
         else:
-            assert ev["retval"] == "NULL", (
+            assert ev["retval"].startswith("NULL"), (
                 "Failed LoadSeg should return NULL: {}".format(ev["retval"]))
             assert ev["status"] == "E"
 
@@ -1080,7 +1080,7 @@ class TestDosFunctions:
                 "Successful NewLoadSeg should return hex BPTR: {}".format(
                     ev["retval"]))
         else:
-            assert ev["retval"] == "NULL", (
+            assert ev["retval"].startswith("NULL"), (
                 "Failed NewLoadSeg should return NULL: {}".format(
                     ev["retval"]))
             assert ev["status"] == "E"
@@ -1156,7 +1156,7 @@ class TestDosFunctions:
                     ev["retval"]))
         else:
             assert ev["status"] == "E"
-            assert ev["retval"] == "NULL", (
+            assert ev["retval"].startswith("NULL"), (
                 "Failed FindVar should return NULL: {}".format(ev["retval"]))
 
     def test_setvar(self, trace_events):
@@ -1242,8 +1242,8 @@ class TestDosFunctions:
             assert ev["status"] == "E", (
                 "MakeLink status should be 'O' or 'E', got: {}".format(
                     ev["status"]))
-            assert ev["retval"] == "FAIL", (
-                "Failed MakeLink retval should be 'FAIL', got: {}".format(
+            assert ev["retval"].startswith("FAIL"), (
+                "Failed MakeLink retval should start with 'FAIL', got: {}".format(
                     ev["retval"]))
 
     def test_rename(self, trace_events):
@@ -1460,7 +1460,7 @@ class TestFieldInvariants:
         open_events = _find_events(trace_events, "Open")
         err_opens = [ev for ev in open_events if ev["status"] == "E"]
         for ev in err_opens:
-            assert ev["retval"] == "NULL", (
+            assert ev["retval"].startswith("NULL"), (
                 "Open seq={} status=E but retval not NULL: {}".format(
                     ev["seq"], ev["retval"]))
 
@@ -1987,3 +1987,85 @@ class TestPhase6Timestamps:
             assert len(task) > 0, (
                 "Empty task name in event seq={}, func={}".format(
                     ev.get("seq"), ev.get("func")))
+
+
+# ---------------------------------------------------------------------------
+# TestPhase8IoErr -- IoErr capture for dos.library failures
+# ---------------------------------------------------------------------------
+
+class TestPhase8IoErr:
+    """Phase 8: IoErr capture for dos.library failures."""
+
+    def test_open_failure_has_ioerr(self, trace_events):
+        """Open non-existent file should show IoErr 205."""
+        matches = _find_events(trace_events, "Open", "atrace_test_nofile")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["status"] == "E"
+        # Check retval contains IoErr info
+        assert "205" in ev["retval"], (
+            "Expected IoErr 205 in retval, got: {}".format(ev["retval"]))
+        assert "object not found" in ev["retval"].lower(), (
+            "Expected 'object not found' in retval, got: {}".format(
+                ev["retval"]))
+
+    def test_delete_nonexistent_has_ioerr(self, trace_events):
+        """DeleteFile of non-existent file should show IoErr 205."""
+        matches = _find_events(trace_events, "DeleteFile",
+                               "atrace_test_phase8_nofile")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["status"] == "E"
+        assert "205" in ev["retval"]
+
+    def test_lock_dirnotfound_has_ioerr(self, trace_events):
+        """Lock with missing directory should show IoErr 204 or 205."""
+        matches = _find_events(trace_events, "Lock",
+                               "nonexistent_dir")
+        assert len(matches) >= 1
+        ev = matches[0]
+        assert ev["status"] == "E"
+        # RAM: handler may return 204 (directory not found) or 205
+        # (object not found) -- both are valid for a missing path
+        assert "204" in ev["retval"] or "205" in ev["retval"], (
+            "Expected IoErr 204 or 205, got: {}".format(ev["retval"]))
+
+    def test_successful_open_no_ioerr(self, trace_events):
+        """Successful Open should NOT have IoErr text."""
+        matches = _find_events(trace_events, "Open",
+                               "atrace_test_read")
+        success = [e for e in matches if e["status"] == "O"]
+        assert len(success) >= 1
+        ev = success[0]
+        # Successful calls should not have error info appended
+        assert "(" not in ev["retval"], (
+            "Successful Open should not show IoErr: {}".format(ev["retval"]))
+
+    def test_exec_function_no_ioerr(self, trace_events):
+        """exec.library functions should never show IoErr, even on failure."""
+        # FindResident with a non-existent name returns NULL (status E)
+        # but should NOT have IoErr text (exec functions don't use IoErr).
+        # Note: FindResident is NOT a noise function, so it produces events
+        # in the trace_events fixture (unlike FindPort which is noise).
+        matches = _find_events(trace_events, "FindResident",
+                               "atrace_p8_nosuch")
+        assert len(matches) >= 1, (
+            "No FindResident('atrace_p8_nosuch') event found in {} events"
+            .format(len(trace_events)))
+        ev = matches[0]
+        assert ev["status"] == "E", (
+            "FindResident(non-existent) should have status E, got: {}"
+            .format(ev["status"]))
+        # Should not have "(err" or "(object" in retval
+        assert "(" not in ev["retval"], (
+            "exec function should not show IoErr: {}".format(ev["retval"]))
+
+    def test_createdir_exists_has_ioerr(self, trace_events):
+        """CreateDir of existing directory should show IoErr 203."""
+        matches = _find_events(trace_events, "CreateDir",
+                               "atrace_test_p8dir")
+        failures = [e for e in matches if e["status"] == "E"]
+        if failures:
+            ev = failures[0]
+            assert "203" in ev["retval"], (
+                "Expected IoErr 203, got: {}".format(ev["retval"]))

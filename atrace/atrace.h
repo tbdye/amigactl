@@ -13,7 +13,7 @@
 /* ---- Constants ---- */
 
 #define ATRACE_MAGIC        0x41545243  /* 'ATRC' */
-#define ATRACE_VERSION      3
+#define ATRACE_VERSION      4
 #define ATRACE_SEM_NAME     "atrace_patches"
 #define ATRACE_DEFAULT_BUFSZ 8192
 

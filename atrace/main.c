@@ -49,7 +49,8 @@ extern int stub_generate_and_install(
     struct atrace_anchor *anchor,
     struct atrace_patch *patch,
     struct Library *libbase,
-    struct atrace_event *entries);
+    struct atrace_event *entries,
+    ULONG dos_base);
 
 /* Functions that are auto-disabled by default due to high frequency.
  * These are enabled automatically when filter_task is set (TRACE RUN),
@@ -361,6 +362,8 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
 
     /* 5. Open target libraries and install patches */
     patch_idx = 0;
+    {
+    ULONG saved_dos_base = 0;
     for (li = 0; li < atrace_lib_count; li++) {
         struct lib_info *lib = &atrace_libs[li];
         struct Library *libbase;
@@ -372,6 +375,10 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
         }
         /* Do NOT close the library -- keep it in memory
          * because patches point into it. */
+
+        /* Save dos.library base for IoErr capture (Phase 8) */
+        if (lib->lib_id == LIB_DOS)
+            saved_dos_base = (ULONG)libbase;
 
         for (fi = 0; fi < lib->func_count; fi++) {
             struct func_info *func = &lib->funcs[fi];
@@ -389,7 +396,8 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
                 p->arg_regs[ri] = func->arg_regs[ri];
             p->string_args = func->string_args;
 
-            if (stub_generate_and_install(anchor, p, libbase, entries) < 0) {
+            if (stub_generate_and_install(anchor, p, libbase, entries,
+                                          saved_dos_base) < 0) {
                 printf("Failed to install patch for %s/%s\n",
                        lib->name, func->name);
                 /* Continue with remaining patches */
@@ -401,6 +409,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             patch_idx++;
         }
     }
+    }  /* end saved_dos_base scope */
 
     /* 6. If FUNCS specified, disable all then enable only named ones.
      *    Names were already validated before allocation. */

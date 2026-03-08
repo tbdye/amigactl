@@ -2119,16 +2119,30 @@ class TestEventFormatting:
             result = layout.format_event(event, cw)
             assert "\033[31m" in result, (
                 "Expected RED (\\033[31m) in error event output")
-            # Verify the retval text appears within the red portion
+            # Verify the retval text appears within the red portion.
+            # The retval may be truncated by ColumnLayout (trailing ~),
+            # so check that the displayed text is a prefix of the retval.
             retval = event.get("retval", "")
             if retval:
                 red_prefix = "\033[31m"
                 idx = result.find(red_prefix)
                 assert idx >= 0, "RED escape not found"
                 after_red = result[idx + len(red_prefix):]
-                assert retval in after_red, (
-                    "retval {!r} not found after RED escape".format(
-                        retval))
+                # Strip RESET and anything after to isolate the red text
+                reset_idx = after_red.find("\033[0m")
+                if reset_idx >= 0:
+                    red_text = after_red[:reset_idx]
+                else:
+                    red_text = after_red
+                # red_text is either the full retval or truncated with ~
+                if red_text.endswith("~"):
+                    assert retval.startswith(red_text[:-1]), (
+                        "retval {!r} does not start with truncated "
+                        "red text {!r}".format(retval, red_text))
+                else:
+                    assert red_text == retval, (
+                        "retval {!r} does not match red text {!r}".format(
+                            retval, red_text))
 
     def test_ok_retval_green(self, formatting_events):
         """Success status events have retval colored GREEN."""
