@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.7.0
+**Version**: 0.7.1
 
 **Conventions used in this document:**
 
@@ -89,7 +89,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.7.0`).
+The version string matches the daemon version (currently `0.7.1`).
 
 ### Behavior
 

@@ -2,7 +2,7 @@ Short:    Remote access toolkit for AmigaOS
 Uploader: thomas@tfenet.com (Thomas Dye)
 Author:   thomas@tfenet.com (Thomas Dye)
 Type:     comm/tcp
-Version:  0.7.0
+Version:  0.7.1
 Requires: AmigaOS 2.0+, 68020+, bsdsocket.library
 Architecture: m68k-amigaos
 
@@ -21,6 +21,12 @@ navigation commands (find, tree, grep, diff, du, watch).
 
 Designed for trusted LANs and emulator setups. Supports IP-based
 access control via a configuration file.
+
+CHANGES IN 0.7.1
+
+Shell: Added tab completion for local filesystem paths in get, put,
+and append commands. Added tilde (~) expansion for local paths in
+get, put, and append commands.
 
 CHANGES IN 0.7.0
 

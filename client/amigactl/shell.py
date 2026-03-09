@@ -668,6 +668,52 @@ class AmigaShell(cmd.Cmd):
 
         return results
 
+    def _complete_local_path(self, text):
+        """Tab-complete a local filesystem path."""
+        expanded = os.path.expanduser(text)
+        if os.path.sep in expanded or expanded.startswith("/"):
+            dir_part = os.path.dirname(expanded)
+            name_prefix = os.path.basename(expanded)
+        else:
+            dir_part = "."
+            name_prefix = expanded
+
+        if not dir_part:
+            dir_part = "/"
+
+        # Compute orig_dir once: the original (unexpanded) prefix to prepend.
+        if text == "~":
+            # Bare tilde: list home directory contents, prefix results with ~/
+            dir_part = expanded
+            name_prefix = ""
+            orig_dir = "~/"
+        elif os.path.sep in text or text.startswith("/"):
+            orig_dir = text[:len(text) - len(os.path.basename(text))]
+        elif text.startswith("~"):
+            orig_dir = text[:len(text) - len(name_prefix)]
+        else:
+            orig_dir = ""
+
+        try:
+            entries = os.listdir(dir_part)
+        except OSError:
+            return []
+
+        # Filter out hidden files unless the prefix starts with '.'
+        if not name_prefix.startswith("."):
+            entries = [e for e in entries if not e.startswith(".")]
+
+        results = []
+        for entry in entries:
+            if entry.startswith(name_prefix):
+                full = os.path.join(dir_part, entry)
+                if os.path.isdir(full):
+                    results.append(orig_dir + entry + "/")
+                else:
+                    results.append(orig_dir + entry)
+
+        return results
+
     # Single-path commands: delegate directly to _complete_path
     complete_cd = _complete_path
     complete_ls = _complete_path
@@ -685,20 +731,21 @@ class AmigaShell(cmd.Cmd):
 
     def complete_get(self, text, line, begidx, endidx):
         """Complete get: first arg is Amiga path, second is local."""
-        # Count words before cursor to determine argument position
         prefix = line[:begidx]
         args = prefix.split()
-        # args[0] is "get", so position 1 is the Amiga path
         if len(args) <= 1:
             return self._complete_path(text, line, begidx, endidx)
+        elif len(args) == 2:
+            return self._complete_local_path(text)
         return []
 
     def complete_put(self, text, line, begidx, endidx):
         """Complete put: first arg is local, second is Amiga path."""
         prefix = line[:begidx]
         args = prefix.split()
-        # args[0] is "put", position 1 is local path, position 2+ is Amiga
-        if len(args) >= 2:
+        if len(args) <= 1:
+            return self._complete_local_path(text)
+        elif len(args) == 2:
             return self._complete_path(text, line, begidx, endidx)
         return []
 
@@ -1116,7 +1163,7 @@ class AmigaShell(cmd.Cmd):
             remote = self._resolve_path(parts[0])
             if remote is None:
                 return
-            local = parts[1]
+            local = os.path.expanduser(parts[1])
         else:
             print("Usage: get REMOTE [LOCAL]")
             return
@@ -1155,12 +1202,12 @@ class AmigaShell(cmd.Cmd):
             print("Parse error: {}".format(e))
             return
         if len(parts) == 1:
-            local = parts[0]
+            local = os.path.expanduser(parts[0])
             remote = self._resolve_path(os.path.basename(local))
             if remote is None:
                 return
         elif len(parts) == 2:
-            local = parts[0]
+            local = os.path.expanduser(parts[0])
             remote = self._resolve_path(parts[1])
             if remote is None:
                 return
@@ -1204,7 +1251,7 @@ class AmigaShell(cmd.Cmd):
             print("Usage: append LOCAL REMOTE")
             return
 
-        local = parts[0]
+        local = os.path.expanduser(parts[0])
         remote = self._resolve_path(parts[1])
         if remote is None:
             return
@@ -1228,7 +1275,9 @@ class AmigaShell(cmd.Cmd):
         """Complete append: first arg is local, second is Amiga path."""
         prefix = line[:begidx]
         args = prefix.split()
-        if len(args) >= 2:
+        if len(args) <= 1:
+            return self._complete_local_path(text)
+        elif len(args) == 2:
             return self._complete_path(text, line, begidx, endidx)
         return []
 

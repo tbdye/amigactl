@@ -143,7 +143,7 @@ The interactive shell starts automatically when no subcommand is given, or
 explicitly with the `shell` subcommand:
 
     $ client/amigactl.sh --host 192.168.6.200
-    Connected to 192.168.6.200 (amigactld 0.7.0)
+    Connected to 192.168.6.200 (amigactld 0.7.1)
     Type "help" for a list of commands, "exit" to disconnect.
     amiga@192.168.6.200:SYS:> ls
     C/  Devs/  Expansion/  L/  Libs/  Locale/  Prefs/  S/  System/  T/
