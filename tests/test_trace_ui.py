@@ -894,7 +894,7 @@ class TestTraceViewer:
         viewer._handle_resize()
 
     def test_status_bar_default(self):
-        """Default status bar shows event counts and elapsed."""
+        """Default status bar shows tier label, event counts and elapsed."""
         viewer = _make_viewer()
         viewer.total_events = 42
         viewer.shown_events = 42
@@ -905,7 +905,7 @@ class TestTraceViewer:
         viewer._draw_status_bar()
 
         written = output.getvalue()
-        assert "TRACE:" in written
+        assert "TRACE [basic]:" in written
         assert "42 events" in written
 
     def test_status_bar_filtered(self):
@@ -1948,23 +1948,26 @@ class TestGridStatePersistence:
         assert exec_item is not None
         assert exec_item["enabled"] is True
 
-    def test_grid_state_none_preserves_noise_defaults(self):
-        """When disabled_funcs is None, noise defaults apply."""
+    def test_grid_state_none_preserves_daemon_disabled(self):
+        """When disabled_funcs is None, daemon_disabled_funcs apply."""
         viewer = _make_viewer()
         viewer.discovered_libs = {"exec": 200}
         viewer.discovered_funcs = {
             "exec": {"AllocMem": 128, "GetMsg": 47, "Open": 12}
         }
         viewer.discovered_procs = {}
+        viewer.daemon_disabled_funcs = {
+            "exec.AllocMem", "exec.GetMsg",
+        }
         assert viewer.disabled_funcs is None
 
         viewer._enter_toggle_grid()
 
-        # Noise functions should be disabled (constructor default)
+        # Daemon-disabled functions should be disabled
         for item in viewer.grid.func_items:
             if item["name"] in ("AllocMem", "GetMsg"):
                 assert not item["enabled"], \
-                    "{} should be disabled (noise default)".format(
+                    "{} should be disabled (daemon-disabled)".format(
                         item["name"])
             else:
                 assert item["enabled"]
@@ -2179,20 +2182,23 @@ class TestGridStatePersistence:
         event = _make_event(lib="exec", func="FindPort")
         assert viewer._passes_client_filter(event) is True
 
-    def test_noise_defaults_suppressed_after_enable_all(self):
-        """After enabling all noise funcs, they stay enabled on reopen."""
+    def test_daemon_disabled_suppressed_after_enable_all(self):
+        """After enabling all daemon-disabled funcs, they stay enabled on reopen."""
         viewer = _make_viewer()
         viewer.discovered_libs = {"exec": 200}
         viewer.discovered_funcs = {
             "exec": {"AllocMem": 128, "FindPort": 47, "Open": 12},
         }
         viewer.discovered_procs = {}
+        viewer.daemon_disabled_funcs = {
+            "exec.AllocMem", "exec.FindPort",
+        }
 
-        # First open: noise defaults apply (disabled_funcs is None)
+        # First open: daemon-disabled apply (disabled_funcs is None)
         viewer._enter_toggle_grid()
         viewer._handle_grid_key(("esc", "[C"))  # to FUNCTIONS
 
-        # Verify noise functions are disabled (constructor defaults)
+        # Verify daemon-disabled functions are disabled
         for item in viewer.grid.func_items:
             if item["name"] in ("AllocMem", "FindPort"):
                 assert not item["enabled"]
@@ -2211,7 +2217,8 @@ class TestGridStatePersistence:
         viewer._enter_toggle_grid()
         viewer._handle_grid_key(("esc", "[C"))  # to FUNCTIONS
 
-        # ALL functions should be enabled (noise defaults suppressed)
+        # ALL functions should be enabled (daemon defaults suppressed
+        # by disabled_funcs restore with empty set)
         for item in viewer.grid.func_items:
             assert item["enabled"], \
                 "{} should be enabled after enable-all".format(
@@ -5327,3 +5334,204 @@ class TestCommentPersistence:
 
         assert viewer.total_events == 1
         assert len(viewer.scrollback) == 2
+
+
+# ---------------------------------------------------------------------------
+# TestTierSwitching
+# ---------------------------------------------------------------------------
+
+class TestTierSwitching:
+    """Tests for TraceViewer tier switching (Phase 9c)."""
+
+    def test_initial_tier_is_basic(self):
+        """Viewer starts at tier 1 (Basic)."""
+        viewer = _make_viewer()
+        assert viewer.current_tier == 1
+
+    def test_initial_manual_overrides_empty(self):
+        """Manual additions/removals are empty at start."""
+        viewer = _make_viewer()
+        assert viewer.manual_additions == set()
+        assert viewer.manual_removals == set()
+
+    def test_switch_tier_calls_send_filter(self):
+        """_switch_tier sends FILTER with ENABLE= containing Detail funcs."""
+        viewer = _make_viewer()
+        viewer._switch_tier(2)
+        viewer.conn.send_filter.assert_called_once()
+        raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
+        assert "ENABLE=" in raw_arg
+        assert "PutMsg" in raw_arg
+        assert "GetMsg" in raw_arg
+        assert viewer.current_tier == 2
+
+    def test_switch_tier_basic_to_verbose(self):
+        """_switch_tier(3) enables Detail + Verbose functions."""
+        viewer = _make_viewer()
+        viewer._switch_tier(3)
+        viewer.conn.send_filter.assert_called_once()
+        raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
+        assert "ENABLE=" in raw_arg
+        # Detail functions
+        assert "PutMsg" in raw_arg
+        # Verbose functions
+        assert "ExNext" in raw_arg
+        assert viewer.current_tier == 3
+
+    def test_switch_tier_down(self):
+        """Switching down sends DISABLE= with the removed functions."""
+        viewer = _make_viewer()
+        viewer.current_tier = 2
+        viewer._switch_tier(1)
+        viewer.conn.send_filter.assert_called_once()
+        raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
+        assert "DISABLE=" in raw_arg
+        assert "PutMsg" in raw_arg
+        assert viewer.current_tier == 1
+
+    def test_switch_tier_clears_manual(self):
+        """Tier switch clears manual overrides."""
+        viewer = _make_viewer()
+        viewer.manual_additions = {"AllocMem"}
+        viewer.manual_removals = {"Open"}
+        viewer._switch_tier(2)
+        assert viewer.manual_additions == set()
+        assert viewer.manual_removals == set()
+
+    def test_switch_tier_same_tier_no_overrides_noop(self):
+        """Switching to same tier with no overrides is a no-op."""
+        viewer = _make_viewer()
+        viewer._switch_tier(1)
+        viewer.conn.send_filter.assert_not_called()
+        assert viewer.current_tier == 1
+
+    def test_switch_tier_same_tier_with_overrides_resets(self):
+        """Switching to same tier with manual overrides clears them."""
+        viewer = _make_viewer()
+        viewer.manual_additions = {"AllocMem"}
+        viewer._switch_tier(1)
+        # Should send filter to disable AllocMem
+        viewer.conn.send_filter.assert_called_once()
+        raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
+        assert "DISABLE=" in raw_arg
+        assert "AllocMem" in raw_arg
+        assert viewer.manual_additions == set()
+
+    def test_switch_tier_works_in_run_mode(self):
+        """Tier switching works in RUN mode."""
+        viewer = _make_viewer(mode="run")
+        viewer._switch_tier(2)
+        viewer.conn.send_filter.assert_called()
+        assert viewer.current_tier == 2
+
+    def test_tier_label_basic(self):
+        """Basic tier label is [basic]."""
+        viewer = _make_viewer()
+        assert viewer._tier_label() == "[basic]"
+
+    def test_tier_label_detail(self):
+        """Detail tier label is [detail]."""
+        viewer = _make_viewer()
+        viewer.current_tier = 2
+        assert viewer._tier_label() == "[detail]"
+
+    def test_tier_label_verbose(self):
+        """Verbose tier label is [verbose]."""
+        viewer = _make_viewer()
+        viewer.current_tier = 3
+        assert viewer._tier_label() == "[verbose]"
+
+    def test_tier_label_with_additions(self):
+        """Tier label includes manual additions."""
+        viewer = _make_viewer()
+        viewer.manual_additions = {"AllocMem"}
+        assert viewer._tier_label() == "[basic+AllocMem]"
+
+    def test_tier_label_with_removals(self):
+        """Tier label includes manual removals."""
+        viewer = _make_viewer()
+        viewer.manual_removals = {"Open"}
+        assert viewer._tier_label() == "[basic-Open]"
+
+    def test_tier_label_with_both_overrides(self):
+        """Tier label includes both additions and removals."""
+        viewer = _make_viewer()
+        viewer.manual_additions = {"AllocMem"}
+        viewer.manual_removals = {"Open"}
+        label = viewer._tier_label()
+        assert label == "[basic-Open+AllocMem]"
+
+    def test_tier_label_multiple_additions_sorted(self):
+        """Multiple manual additions are sorted alphabetically."""
+        viewer = _make_viewer()
+        viewer.manual_additions = {"FreeMem", "AllocMem"}
+        label = viewer._tier_label()
+        assert label == "[basic+AllocMem,FreeMem]"
+
+    def test_tier_label_run_mode(self):
+        """RUN mode shows tier name."""
+        viewer = _make_viewer(mode="run")
+        assert viewer._tier_label() == "[basic]"
+
+    def test_status_bar_shows_tier_label(self):
+        """Status bar includes the tier label."""
+        viewer = _make_viewer()
+        viewer.total_events = 10
+        viewer.shown_events = 10
+        viewer.current_tier = 2
+
+        output = io.StringIO()
+        viewer.term.stdout = output
+        viewer._draw_status_bar()
+
+        written = output.getvalue()
+        assert "TRACE [detail]:" in written
+
+    def test_keypress_1_switches_to_basic(self):
+        """Pressing '1' dispatches _switch_tier(1) via _handle_keypress."""
+        viewer = _make_viewer()
+        viewer.term.read_key = mock.Mock(return_value="1")
+        with mock.patch.object(viewer, "_switch_tier") as mock_switch:
+            viewer._handle_keypress()
+            mock_switch.assert_called_once_with(1)
+
+    def test_keypress_2_switches_to_detail(self):
+        """Pressing '2' dispatches _switch_tier(2) via _handle_keypress."""
+        viewer = _make_viewer()
+        viewer.term.read_key = mock.Mock(return_value="2")
+        with mock.patch.object(viewer, "_switch_tier") as mock_switch:
+            viewer._handle_keypress()
+            mock_switch.assert_called_once_with(2)
+
+    def test_keypress_3_switches_to_verbose(self):
+        """Pressing '3' dispatches _switch_tier(3) via _handle_keypress."""
+        viewer = _make_viewer()
+        viewer.term.read_key = mock.Mock(return_value="3")
+        with mock.patch.object(viewer, "_switch_tier") as mock_switch:
+            viewer._handle_keypress()
+            mock_switch.assert_called_once_with(3)
+
+    def test_switch_updates_daemon_disabled_funcs(self):
+        """Switching tier down adds disabled funcs to daemon_disabled_funcs."""
+        viewer = _make_viewer()
+        # Populate discovered_funcs so the lookup works
+        viewer.discovered_funcs = {
+            "exec": {"PutMsg": 10, "GetMsg": 5}
+        }
+        viewer.current_tier = 2
+        viewer._switch_tier(1)
+        # PutMsg and GetMsg are Detail tier, should be daemon-disabled now
+        assert "exec.PutMsg" in viewer.daemon_disabled_funcs
+        assert "exec.GetMsg" in viewer.daemon_disabled_funcs
+
+    def test_switch_up_removes_from_daemon_disabled(self):
+        """Switching tier up removes funcs from daemon_disabled_funcs."""
+        viewer = _make_viewer()
+        viewer.discovered_funcs = {
+            "exec": {"PutMsg": 10, "GetMsg": 5}
+        }
+        viewer.daemon_disabled_funcs = {"exec.PutMsg", "exec.GetMsg"}
+        viewer._switch_tier(2)
+        # PutMsg and GetMsg should no longer be daemon-disabled
+        assert "exec.PutMsg" not in viewer.daemon_disabled_funcs
+        assert "exec.GetMsg" not in viewer.daemon_disabled_funcs

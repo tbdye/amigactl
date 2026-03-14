@@ -59,7 +59,11 @@ def restore_trace_state(conn):
     Teardown restores: globally enabled, all non-noise functions
     enabled, noise functions disabled.  This matches the expected
     default state of a freshly loaded atrace (Phase 4+).
+
+    The non-Basic function list is derived from trace_tiers.py to stay
+    in sync with the authoritative tier definitions automatically.
     """
+    from amigactl.trace_tiers import TIER_DETAIL, TIER_VERBOSE, TIER_MANUAL
     yield
     # Restore global enable
     conn.trace_enable()
@@ -70,22 +74,9 @@ def restore_trace_state(conn):
                       if not e.get("enabled")]
     if disabled_funcs:
         conn.trace_enable(funcs=disabled_funcs)
-    # Re-disable noise functions to match post-install defaults
-    noise_funcs = ["FindPort", "FindSemaphore", "FindTask",
-                   "GetMsg", "PutMsg", "ObtainSemaphore",
-                   "ReleaseSemaphore", "AllocMem",
-                   "OpenLibrary",
-                   # Phase 5 additions
-                   "FreeMem", "AllocVec", "FreeVec",
-                   "Read", "Write",
-                   # Phase 5 device I/O additions
-                   "DoIO", "SendIO", "WaitIO",
-                   "AbortIO", "CheckIO",
-                   # Phase 9 additions
-                   "ReplyMsg", "send", "recv", "WaitSelect",
-                   "Wait", "Signal", "CloseLibrary",
-                   "UnLock", "OpenFont"]
-    conn.trace_disable(funcs=noise_funcs)
+    # Re-disable non-Basic tier functions to match post-install defaults
+    non_basic = list(TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL)
+    conn.trace_disable(funcs=non_basic)
 
 
 # ---------------------------------------------------------------------------
@@ -625,37 +616,49 @@ class TestTraceRun:
 # ---------------------------------------------------------------------------
 
 class TestNoiseDefaults:
-    """Tests for noise function auto-disable defaults (Phase 4).
+    """Tests for noise function auto-disable defaults (Phase 4/9c).
 
-    After loading atrace, 28 high-frequency functions should be
+    After loading atrace, 32 non-Basic tier functions should be
     disabled by default.  These tests verify the default state and
     user override behavior.
     """
 
     def test_noise_funcs_default_disabled(self, conn):
-        """Noise functions should be disabled by default after loading."""
-        status = conn.trace_status()
-        assert status.get("noise_disabled", 0) >= 28
+        """Non-Basic tier functions should be disabled by default."""
+        from amigactl.trace_tiers import TIER_DETAIL, TIER_VERBOSE, TIER_MANUAL
 
-        # Check specific functions are disabled
+        status = conn.trace_status()
+        non_basic = TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL
+        assert status.get("noise_disabled", 0) >= len(non_basic)
+
+        # Check specific functions are disabled -- all non-Basic tiers
         patches = status.get("patch_list", [])
         noise_names = {
-            "exec.FindPort", "exec.FindSemaphore", "exec.FindTask",
-            "exec.GetMsg", "exec.PutMsg", "exec.ObtainSemaphore",
-            "exec.ReleaseSemaphore", "exec.AllocMem",
-            "exec.OpenLibrary",
-            # Phase 5 additions
-            "exec.FreeMem", "exec.AllocVec", "exec.FreeVec",
-            "dos.Read", "dos.Write",
-            # Phase 5 device I/O additions
+            # exec.library -- TIER_DETAIL
+            "exec.AllocSignal", "exec.FreeSignal",
+            "exec.CreateMsgPort", "exec.DeleteMsgPort",
+            "exec.PutMsg", "exec.GetMsg",
+            "exec.ObtainSemaphore", "exec.ReleaseSemaphore",
+            "exec.ReplyMsg", "exec.CloseLibrary",
+            # exec.library -- TIER_MANUAL
+            "exec.AllocMem", "exec.FreeMem",
+            "exec.AllocVec", "exec.FreeVec",
+            "exec.Wait", "exec.Signal",
             "exec.DoIO", "exec.SendIO", "exec.WaitIO",
             "exec.AbortIO", "exec.CheckIO",
-            # Phase 9 additions
-            "exec.ReplyMsg", "bsdsocket.send", "bsdsocket.recv",
+            # dos.library -- TIER_DETAIL
+            "dos.Examine", "dos.Seek",
+            # dos.library -- TIER_VERBOSE
+            "dos.ExNext",
+            # dos.library -- TIER_MANUAL
+            "dos.Read", "dos.Write",
+            # intuition.library -- TIER_DETAIL
+            "intuition.ModifyIDCMP",
+            # bsdsocket.library -- TIER_DETAIL
+            "bsdsocket.sendto", "bsdsocket.recvfrom",
+            # bsdsocket.library -- TIER_VERBOSE
+            "bsdsocket.send", "bsdsocket.recv",
             "bsdsocket.WaitSelect",
-            "exec.Wait", "exec.Signal", "exec.CloseLibrary",
-            "dos.UnLock",
-            "graphics.OpenFont",
         }
         for patch in patches:
             if patch["name"] in noise_names:
@@ -764,7 +767,15 @@ class TestTraceRunPhase4:
             conn.close()
 
     def test_trace_run_filter_only_target(self, amiga_host, amiga_port):
-        """TRACE RUN should only show events from the target process."""
+        """TRACE RUN should only show events from the daemon's process.
+
+        RunCommand executes the command in the daemon's own process
+        context, so the task-level filter captures only that process's
+        events.  With cli_CommandName capture, the task name field
+        reflects the running command's basename (e.g. "List") rather
+        than the process name ("amigactld").  We verify that all events
+        come from a single consistent task, confirming the filter works.
+        """
         conn = AmigaConnection(amiga_host, amiga_port)
         conn.connect()
         try:
@@ -776,13 +787,15 @@ class TestTraceRunPhase4:
 
             conn.trace_run("C:List SYS:", collect)
 
-            # All events should be from the daemon process (RunCommand
-            # executes in the daemon's own context, identified as "amigactld")
+            # All events should come from a single task — the daemon's
+            # process running the command.  The name may be "amigactld"
+            # or the command basename (e.g. "List") depending on whether
+            # cli_CommandName is set during execution.
             assert len(events) > 0, "No events received"
-            for ev in events:
-                task = ev.get("task", "")
-                assert "amigactld" in task, \
-                    "Event from non-target task: {}".format(task)
+            task_names = {ev.get("task", "") for ev in events}
+            assert len(task_names) == 1, \
+                "Events from multiple tasks (filter leak): {}".format(
+                    task_names)
         finally:
             conn.close()
 
@@ -2759,3 +2772,354 @@ class TestPatchCount:
                        if "bsdsocket" in e.get("name", "")]
         # Either 15 bsdsocket patches or 0 (no TCP/IP stack)
         assert len(bsd_patches) in (0, 15)
+
+
+# ---------------------------------------------------------------------------
+# TestTierFiltering -- Phase 9c: tier-based enable/disable
+# ---------------------------------------------------------------------------
+
+class TestTierFiltering:
+    """Tests for Phase 9c tier system integration.
+
+    Verifies that the daemon's default enable/disable state matches
+    the tier definitions, and that tier switching via TRACE ENABLE/
+    DISABLE correctly controls which functions produce events.
+
+    Each test uses two connections: one for control (enable/disable)
+    and one for TRACE RUN (which auto-filters to the target process).
+    Tests restore state to defaults on completion.
+
+    Representative functions per tier:
+    - Basic:   Open, Close, Lock, UnLock, FindPort (should always appear by default)
+    - Detail:  GetMsg, Examine, Seek (disabled by default)
+    - Verbose: ExNext (disabled by default)
+    - Manual:  AllocMem, Read (disabled by default, never auto-enabled)
+
+    These tests live in test_trace.py (not test_trace_app.py) because
+    they manage their own TRACE START/STOP lifecycle per test via
+    trace_run(), rather than sharing the module-scoped trace_events
+    fixture used by test_trace_app.py.
+    """
+
+    def _restore_defaults(self, conn):
+        """Restore enable/disable state to post-install defaults.
+
+        Re-enables all patches, then disables the non-Basic tier
+        functions.  The function list is derived from trace_tiers.py
+        to stay in sync with the authoritative tier definitions.
+        """
+        from amigactl.trace_tiers import TIER_DETAIL, TIER_VERBOSE, TIER_MANUAL
+        conn.trace_enable()
+        status = conn.trace_status()
+        patch_list = status.get("patch_list", [])
+        disabled_funcs = [e["name"].split(".")[-1] for e in patch_list
+                          if not e.get("enabled")]
+        if disabled_funcs:
+            conn.trace_enable(funcs=disabled_funcs)
+        non_basic = list(TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL)
+        conn.trace_disable(funcs=non_basic)
+
+    def test_basic_tier_default(self, amiga_host, amiga_port):
+        """Default state enables only Basic tier functions.
+
+        After atrace install, non-Basic functions are auto-disabled.
+        Running atrace_test should produce Basic-tier events (Open,
+        Close, Lock, UnLock, etc.) but NOT Detail/Verbose/Manual tier
+        events (GetMsg, Examine, ExNext, AllocMem, Read).
+        """
+        import signal as sig
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                # Verify defaults: noise functions should be disabled
+                status = conn.trace_status()
+                assert status.get("noise_disabled", 0) >= 32, (
+                    "Expected at least 32 noise functions disabled, "
+                    "got {}".format(status.get("noise_disabled", 0)))
+
+                events = []
+
+                def collect(ev):
+                    if ev.get("type") == "event":
+                        events.append(ev)
+
+                conn.trace_run("C:atrace_test", collect)
+
+                assert len(events) > 0, "No events from atrace_test"
+
+                func_names = {ev["func"] for ev in events}
+
+                # Basic tier functions should appear (atrace_test
+                # exercises all of these)
+                basic_expected = {"Open", "Lock", "DeleteFile"}
+                basic_found = basic_expected & func_names
+                assert len(basic_found) >= 2, (
+                    "Expected at least 2 of {} in events, found: {}. "
+                    "All funcs: {}".format(
+                        basic_expected, basic_found, func_names))
+
+                # Detail tier functions should NOT appear (disabled)
+                detail_absent = {"GetMsg", "Examine", "Seek"}
+                detail_leaked = detail_absent & func_names
+                assert len(detail_leaked) == 0, (
+                    "Detail tier functions should not appear with "
+                    "default (Basic) settings: {}".format(detail_leaked))
+
+                # Verbose tier functions should NOT appear
+                verbose_absent = {"ExNext"}
+                verbose_leaked = verbose_absent & func_names
+                assert len(verbose_leaked) == 0, (
+                    "Verbose tier functions should not appear with "
+                    "default (Basic) settings: {}".format(verbose_leaked))
+
+                # Manual tier functions should NOT appear
+                manual_absent = {"AllocMem", "FreeMem", "AllocVec",
+                                 "FreeVec", "Read", "Write"}
+                manual_leaked = manual_absent & func_names
+                assert len(manual_leaked) == 0, (
+                    "Manual tier functions should not appear with "
+                    "default (Basic) settings: {}".format(manual_leaked))
+            finally:
+                self._restore_defaults(conn)
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_tier_switch_to_detail(self, amiga_host, amiga_port):
+        """Enabling Detail tier functions makes them produce events.
+
+        Start from default (Basic only), enable Detail tier functions
+        (GetMsg, Examine, Seek), run atrace_test, verify Detail events
+        appear alongside Basic events.
+        """
+        import signal as sig
+        from amigactl.trace_tiers import TIER_DETAIL
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                # Enable Detail tier functions
+                detail_funcs = list(TIER_DETAIL)
+                conn.trace_enable(funcs=detail_funcs)
+
+                events = []
+
+                def collect(ev):
+                    if ev.get("type") == "event":
+                        events.append(ev)
+
+                conn.trace_run("C:atrace_test", collect)
+
+                assert len(events) > 0, "No events from atrace_test"
+
+                func_names = {ev["func"] for ev in events}
+
+                # Basic tier functions should still appear
+                basic_expected = {"Open", "Lock", "DeleteFile"}
+                basic_found = basic_expected & func_names
+                assert len(basic_found) >= 2, (
+                    "Basic tier functions should appear after enabling "
+                    "Detail: found {} of {}. All funcs: {}".format(
+                        basic_found, basic_expected, func_names))
+
+                # Detail tier functions should now appear.
+                # atrace_test exercises Examine and Seek.  At least
+                # one Detail function should appear from the test
+                # app's activity.
+                detail_expected = {"Examine", "Seek", "GetMsg"}
+                detail_found = detail_expected & func_names
+                assert len(detail_found) >= 1, (
+                    "Expected at least 1 of {} after enabling Detail "
+                    "tier, found none. All funcs: {}".format(
+                        detail_expected, func_names))
+
+                # Verbose/Manual should still NOT appear
+                verbose_absent = {"ExNext"}
+                verbose_leaked = verbose_absent & func_names
+                assert len(verbose_leaked) == 0, (
+                    "Verbose tier functions should not appear when only "
+                    "Detail is enabled: {}".format(verbose_leaked))
+
+                manual_absent = {"AllocMem", "FreeMem", "Read", "Write"}
+                manual_leaked = manual_absent & func_names
+                assert len(manual_leaked) == 0, (
+                    "Manual tier functions should not appear when only "
+                    "Detail is enabled: {}".format(manual_leaked))
+            finally:
+                self._restore_defaults(conn)
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_tier_switch_to_verbose(self, amiga_host, amiga_port):
+        """Enabling Verbose tier functions makes them produce events.
+
+        Enable Detail + Verbose tier functions, run atrace_test,
+        verify Verbose events appear.  atrace_test Block 33 calls
+        ExNext in a directory listing loop.
+        """
+        import signal as sig
+        from amigactl.trace_tiers import TIER_DETAIL, TIER_VERBOSE
+
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                # Enable Detail + Verbose tier functions
+                to_enable = list(TIER_DETAIL | TIER_VERBOSE)
+                conn.trace_enable(funcs=to_enable)
+
+                events = []
+
+                def collect(ev):
+                    if ev.get("type") == "event":
+                        events.append(ev)
+
+                conn.trace_run("C:atrace_test", collect)
+
+                assert len(events) > 0, "No events from atrace_test"
+
+                func_names = {ev["func"] for ev in events}
+
+                # Basic should still appear
+                basic_expected = {"Open", "Lock"}
+                basic_found = basic_expected & func_names
+                assert len(basic_found) >= 1, (
+                    "Basic tier functions should appear after enabling "
+                    "Verbose: found {} of {}. All funcs: {}".format(
+                        basic_found, basic_expected, func_names))
+
+                # Detail should appear
+                detail_expected = {"Close", "UnLock", "Examine", "Seek"}
+                detail_found = detail_expected & func_names
+                assert len(detail_found) >= 1, (
+                    "Detail tier functions should appear after enabling "
+                    "Verbose: found {} of {}. All funcs: {}".format(
+                        detail_found, detail_expected, func_names))
+
+                # Verbose should now appear -- atrace_test Block 33
+                # does Examine+ExNext on a directory
+                verbose_expected = {"ExNext"}
+                verbose_found = verbose_expected & func_names
+                assert len(verbose_found) >= 1, (
+                    "Expected ExNext after enabling Verbose tier, "
+                    "found none. All funcs: {}".format(func_names))
+
+                # Manual should still NOT appear
+                manual_absent = {"AllocMem", "FreeMem", "Read", "Write"}
+                manual_leaked = manual_absent & func_names
+                assert len(manual_leaked) == 0, (
+                    "Manual tier functions should not appear when only "
+                    "Verbose is enabled: {}".format(manual_leaked))
+            finally:
+                self._restore_defaults(conn)
+                conn.close()
+        finally:
+            sig.alarm(0)
+            sig.signal(sig.SIGALRM, old_handler)
+
+    def test_tier_status_matches_tiers(self, conn):
+        """Default disabled functions match non-Basic tier assignments.
+
+        The set of disabled functions in TRACE STATUS should match the
+        union of Detail + Verbose + Manual tiers from trace_tiers.py.
+        """
+        from amigactl.trace_tiers import (
+            TIER_DETAIL, TIER_VERBOSE, TIER_MANUAL,
+        )
+
+        status = conn.trace_status()
+        patch_list = status.get("patch_list", [])
+
+        disabled_names = set()
+        for entry in patch_list:
+            if not entry.get("enabled"):
+                bare = entry["name"].split(".", 1)[-1]
+                disabled_names.add(bare)
+
+        # Non-Basic tiers (should be disabled by default)
+        non_basic = TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL
+
+        # Every non-Basic function that exists in the patch list
+        # should be disabled.  Some non-Basic functions might not be
+        # in the patch list (e.g. bsdsocket functions when no TCP/IP
+        # stack), so only check functions that are actually patched.
+        all_patched = {entry["name"].split(".", 1)[-1]
+                       for entry in patch_list}
+        non_basic_patched = non_basic & all_patched
+
+        missing_disable = non_basic_patched - disabled_names
+        assert len(missing_disable) == 0, (
+            "Non-Basic tier functions should be disabled by default, "
+            "but these are enabled: {}".format(missing_disable))
+
+    def test_closelibrary_detail_tier(self):
+        """CloseLibrary should be in Detail tier, not Basic.
+
+        Phase 9d WS7 demotes CloseLibrary from Basic to Detail.
+        The tier definitions should reflect this assignment.
+        """
+        from amigactl.trace_tiers import TIER_BASIC, TIER_DETAIL
+        assert "CloseLibrary" not in TIER_BASIC, (
+            "CloseLibrary should not be in TIER_BASIC (demoted by Phase 9d)")
+        assert "CloseLibrary" in TIER_DETAIL, (
+            "CloseLibrary should be in TIER_DETAIL")
+
+    def test_v0_openlibrary_suppressed_basic(self, amiga_host, amiga_port):
+        """v0 OpenLibrary successes should be suppressed at Basic tier.
+
+        Phase 9d WS6: The daemon suppresses successful OpenLibrary
+        events with version==0 when the current tier is Basic (1).
+        atrace_test Block 69 opens utility.library v0; it should NOT
+        appear in Basic tier output.
+        """
+        import signal as sig
+        old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
+        sig.alarm(60)
+        try:
+            conn = AmigaConnection(amiga_host, amiga_port)
+            conn.connect()
+            try:
+                events = []
+
+                def collect(ev):
+                    if ev.get("type") == "event":
+                        events.append(ev)
+
+                conn.trace_run("C:atrace_test", collect)
+
+                # Check that no v0 OpenLibrary successes from
+                # atrace_test appear in the output
+                v0_opens = [
+                    ev for ev in events
+                    if ev.get("func") == "OpenLibrary"
+                    and ",v0" in ev.get("args", "")
+                    and ev.get("status") == "O"
+                ]
+                # There may be v0 opens from OTHER processes if they
+                # happen during the trace window; filter to atrace_test
+                v0_from_test = [
+                    ev for ev in v0_opens
+                    if "atrace_test" in ev.get("proc", "")
+                ]
+                assert len(v0_from_test) == 0, (
+                    "Expected no v0 OpenLibrary successes from atrace_test "
+                    "at Basic tier, found {}: {}".format(
+                        len(v0_from_test),
+                        [(e["args"], e["status"]) for e in v0_from_test]))
+            finally:
+                conn.close()
+        finally:
+            sig.signal(sig.SIGALRM, old_handler)
+            sig.alarm(0)

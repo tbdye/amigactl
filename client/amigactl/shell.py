@@ -3010,8 +3010,8 @@ class AmigaShell(cmd.Cmd):
     def do_trace(self, arg):
         """Control library call tracing.
 
-    Usage: trace start [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
-           trace run [LIB=<lib>] [FUNC=<func>] [ERRORS] [CD=<dir>] -- <command>
+    Usage: trace start [--basic|--detail|--verbose] [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
+           trace run [--basic|--detail|--verbose] [LIB=<lib>] [FUNC=<func>] [ERRORS] [CD=<dir>] -- <command>
            trace stop
            trace status
            trace enable [<func1> <func2> ...]
@@ -3019,6 +3019,12 @@ class AmigaShell(cmd.Cmd):
 
     Start streaming system library calls. Press Ctrl-C to stop.
     Run launches a command and traces it until it exits.
+
+    Output tiers:
+        --basic         Level 1: SnoopDOS-equivalent (default)
+        --detail        Level 2: Basic + resource lifecycle
+        --verbose       Level 3: Detail + high-volume I/O
+        Use 1/2/3 keys to switch tiers during viewing.
 
     Filters (AND-combined):
         LIB=<lib>       Only show calls to this library (e.g. dos.library)
@@ -3028,8 +3034,8 @@ class AmigaShell(cmd.Cmd):
 
     Examples:
         trace start
-        trace start LIB=dos.library PROC=bbs
-        trace run -- List SYS:
+        trace start --detail LIB=dos.library PROC=bbs
+        trace run --verbose -- List SYS:
         trace run LIB=dos.library -- CNet:bbs
         trace status
         trace enable
@@ -3106,6 +3112,16 @@ class AmigaShell(cmd.Cmd):
                     kwargs["proc"] = token[5:]
                 elif upper == "ERRORS":
                     kwargs["errors_only"] = True
+                elif upper == "--BASIC":
+                    kwargs["tier"] = 1
+                elif upper == "--DETAIL":
+                    kwargs["tier"] = 2
+                elif upper == "--VERBOSE":
+                    kwargs["tier"] = 3
+
+            # Pop tier before branching -- neither trace_start_raw()
+            # nor trace_start() accepts a tier parameter.
+            tier = kwargs.pop("tier", None)
 
             try:
                 # Use interactive viewer if terminal supports it
@@ -3123,9 +3139,24 @@ class AmigaShell(cmd.Cmd):
                             self.conn, session, self.cw, mode="start")
                         if _pre_status is not None:
                             viewer._prepopulate_from_status(_pre_status)
+                        if tier is not None:
+                            viewer.current_tier = tier
+                            # Store initial filters so _apply_initial_tier()
+                            # can reconstruct them (FILTER resets per-session
+                            # filter state; we must re-send initial filters).
+                            viewer._initial_filters = kwargs
                         viewer.run()
                 else:
-                    # Fallback to original callback-based mode
+                    # Callback-based fallback (non-TTY)
+                    # Apply tier by enabling functions before the
+                    # blocking trace_start() call.
+                    if tier is not None and tier > 1:
+                        from .trace_tiers import (
+                            functions_for_tier, TIER_BASIC)
+                        to_enable = functions_for_tier(tier) - TIER_BASIC
+                        if to_enable:
+                            self.conn.trace_enable(
+                                funcs=sorted(to_enable))
                     print(TRACE_HEADER)
                     def trace_callback(event):
                         print(format_trace_event(event, self.cw))
@@ -3182,10 +3213,20 @@ class AmigaShell(cmd.Cmd):
                     if cd_path is None:
                         return  # _resolve_path already printed the error
                     kwargs["cd"] = cd_path
+                elif upper == "--BASIC":
+                    kwargs["tier"] = 1
+                elif upper == "--DETAIL":
+                    kwargs["tier"] = 2
+                elif upper == "--VERBOSE":
+                    kwargs["tier"] = 3
 
             # If no CD= specified, inherit the shell's CWD
             if "cd" not in kwargs and self.cwd:
                 kwargs["cd"] = self.cwd
+
+            # Pop tier before branching -- neither trace_run_raw()
+            # nor trace_run() accepts a tier parameter.
+            tier = kwargs.pop("tier", None)
 
             try:
                 if sys.stdout.isatty() and os.name != "nt":
@@ -3205,9 +3246,21 @@ class AmigaShell(cmd.Cmd):
                             mode="run", proc_id=proc_id)
                         if _pre_status is not None:
                             viewer._prepopulate_from_status(_pre_status)
+                        if tier is not None:
+                            viewer.current_tier = tier
+                            viewer._initial_filters = kwargs
                         viewer.run()
                 else:
-                    # Fallback to original callback-based mode
+                    # Callback-based fallback (non-TTY)
+                    # Apply tier by enabling functions before the
+                    # blocking trace_run() call.
+                    if tier is not None and tier > 1:
+                        from .trace_tiers import (
+                            functions_for_tier, TIER_BASIC)
+                        to_enable = functions_for_tier(tier) - TIER_BASIC
+                        if to_enable:
+                            self.conn.trace_enable(
+                                funcs=sorted(to_enable))
                     print(TRACE_HEADER)
 
                     def trace_callback(event):

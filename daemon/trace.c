@@ -76,16 +76,16 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "OpenDevice",       LIB_EXEC, -444, ERR_CHECK_NZERO, 1, RET_NZERO_ERR},
     { "exec", "OpenLibrary",      LIB_EXEC, -552, ERR_CHECK_NULL,  1, RET_PTR      },
     { "exec", "OpenResource",     LIB_EXEC, -498, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
-    { "exec", "GetMsg",           LIB_EXEC, -372, ERR_CHECK_NONE,  0, RET_MSG_PTR  },
-    { "exec", "PutMsg",           LIB_EXEC, -366, ERR_CHECK_VOID,  0, RET_VOID     },
-    { "exec", "ObtainSemaphore",  LIB_EXEC, -564, ERR_CHECK_VOID,  0, RET_VOID     },
-    { "exec", "ReleaseSemaphore", LIB_EXEC, -570, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "GetMsg",           LIB_EXEC, -372, ERR_CHECK_NONE,  1, RET_MSG_PTR  },
+    { "exec", "PutMsg",           LIB_EXEC, -366, ERR_CHECK_VOID,  1, RET_VOID     },
+    { "exec", "ObtainSemaphore",  LIB_EXEC, -564, ERR_CHECK_VOID,  1, RET_VOID     },
+    { "exec", "ReleaseSemaphore", LIB_EXEC, -570, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "AllocMem",         LIB_EXEC, -198, ERR_CHECK_NULL,  0, RET_PTR      },
-    { "exec", "DoIO",             LIB_EXEC, -456, ERR_CHECK_NZERO, 0, RET_NZERO_ERR},
-    { "exec", "SendIO",           LIB_EXEC, -462, ERR_CHECK_VOID,  0, RET_VOID     },
-    { "exec", "WaitIO",           LIB_EXEC, -474, ERR_CHECK_NZERO, 0, RET_NZERO_ERR},
-    { "exec", "AbortIO",          LIB_EXEC, -480, ERR_CHECK_ANY,   0, RET_NZERO_ERR},
-    { "exec", "CheckIO",          LIB_EXEC, -468, ERR_CHECK_ANY,   0, RET_PTR      },
+    { "exec", "DoIO",             LIB_EXEC, -456, ERR_CHECK_NZERO, 1, RET_NZERO_ERR},
+    { "exec", "SendIO",           LIB_EXEC, -462, ERR_CHECK_VOID,  1, RET_VOID     },
+    { "exec", "WaitIO",           LIB_EXEC, -474, ERR_CHECK_NZERO, 1, RET_NZERO_ERR},
+    { "exec", "AbortIO",          LIB_EXEC, -480, ERR_CHECK_ANY,   1, RET_NZERO_ERR},
+    { "exec", "CheckIO",          LIB_EXEC, -468, ERR_CHECK_ANY,   1, RET_PTR      },
     { "exec", "FreeMem",          LIB_EXEC, -210, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "AllocVec",         LIB_EXEC, -684, ERR_CHECK_NULL,  0, RET_PTR      },
     { "exec", "FreeVec",          LIB_EXEC, -690, ERR_CHECK_VOID,  0, RET_VOID     },
@@ -95,10 +95,10 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "AllocSignal",    LIB_EXEC, -330, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     { "exec", "FreeSignal",     LIB_EXEC, -336, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "CreateMsgPort",  LIB_EXEC, -666, ERR_CHECK_NULL,  0, RET_PTR      },
-    { "exec", "DeleteMsgPort",  LIB_EXEC, -672, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "DeleteMsgPort",  LIB_EXEC, -672, ERR_CHECK_VOID,  1, RET_VOID     },
     /* Lifecycle closers exec.library (Phase 9) */
-    { "exec", "CloseLibrary",   LIB_EXEC, -414, ERR_CHECK_VOID,  0, RET_VOID     },
-    { "exec", "CloseDevice",    LIB_EXEC, -450, ERR_CHECK_VOID,  0, RET_VOID     },
+    { "exec", "CloseLibrary",   LIB_EXEC, -414, ERR_CHECK_VOID,  1, RET_VOID     },
+    { "exec", "CloseDevice",    LIB_EXEC, -450, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "ReplyMsg",       LIB_EXEC, -378, ERR_CHECK_VOID,  0, RET_VOID     },
     /* dos.library functions (24) */
     { "dos", "Open",              LIB_DOS,   -30, ERR_CHECK_NULL,  1, RET_PTR      },
@@ -118,7 +118,7 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "DeleteVar",         LIB_DOS,  -912, ERR_CHECK_NULL,  1, RET_BOOL_DOS },
     { "dos", "SystemTagList",     LIB_DOS,  -606, ERR_CHECK_RC,    1, RET_RC       },
     { "dos", "AddDosEntry",       LIB_DOS,  -678, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
-    { "dos", "CurrentDir",        LIB_DOS,  -126, ERR_CHECK_VOID,  0, RET_OLD_LOCK },
+    { "dos", "CurrentDir",        LIB_DOS,  -126, ERR_CHECK_VOID,  1, RET_OLD_LOCK },
     { "dos", "Read",              LIB_DOS,   -42, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     { "dos", "Write",             LIB_DOS,   -48, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     /* dos.library additions (Phase 9) */
@@ -156,7 +156,7 @@ static const struct trace_func_entry func_table[] = {
     { "bsdsocket", "CloseSocket",  LIB_BSDSOCKET, -120, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "WaitSelect",   LIB_BSDSOCKET, -126, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     /* graphics.library functions (Phase 9) */
-    { "graphics", "OpenFont",     LIB_GRAPHICS,  -72, ERR_CHECK_NULL,  0, RET_PTR },
+    { "graphics", "OpenFont",     LIB_GRAPHICS,  -72, ERR_CHECK_NULL,  1, RET_PTR },
 };
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
@@ -216,8 +216,15 @@ static struct atrace_event *g_ring_entries = NULL;
 
 /* Running total of dropped events (from ring->overflow) */
 static ULONG g_events_dropped = 0;
-static ULONG g_self_filtered = 0;
+static ULONG g_self_filtered = 0;  /* Includes self-filter + content-filter suppression */
 static ULONG g_poll_count = 0;
+
+/* Current output tier level (1=Basic, 2=Detail, 3=Verbose).
+ * Set via TRACE TIER command from the client.
+ * Used for content-based event filtering (e.g., OpenLibrary v0
+ * suppression at Basic tier). Initialized to TIER_BASIC at
+ * session start. */
+static int g_current_tier = 1;
 
 /* Command extraction buffer (static, single-threaded) */
 static char trace_cmd_buf[MAX_CMD_LEN + 1];
@@ -317,44 +324,35 @@ static int find_patch_index_by_name(const char *name)
 
 /* ---- Noise function table ---- */
 
-/* Noise function names -- high-frequency functions that are disabled
- * by default to avoid overwhelming the ring buffer.
+/* Noise function names -- non-Basic tier functions that are disabled
+ * by default at install time.  Union of Detail + Verbose + Manual
+ * tiers (32 functions).
  *
- * MUST match the noise_func_names table in atrace/main.c exactly.
+ * MUST match the union of tier_detail_funcs + tier_verbose_funcs +
+ * tier_manual_funcs in atrace/main.c.
+ * Source of truth: trace_tiers.py.
+ *
  * Used by trace_discover() to validate names at startup and by
  * trace_cmd_status() to report the noise_disabled count. */
 static const char *noise_func_names[] = {
-    "FindPort",
-    "FindSemaphore",
-    "FindTask",
-    "GetMsg",
-    "PutMsg",
-    "ObtainSemaphore",
-    "ReleaseSemaphore",
-    "AllocMem",
-    "OpenLibrary",
-    /* Phase 5 additions */
-    "FreeMem",
-    "AllocVec",
-    "FreeVec",
-    "Read",
-    "Write",
-    /* Phase 5 device I/O additions */
-    "DoIO",
-    "SendIO",
-    "WaitIO",
-    "AbortIO",
-    "CheckIO",
-    /* Phase 9 additions */
-    "ReplyMsg",
-    "send",
-    "recv",
-    "WaitSelect",
-    "Wait",
-    "Signal",
-    "CloseLibrary",
-    "UnLock",
-    "OpenFont",
+    /* Detail tier: exec.library */
+    "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
+    "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
+    "ReplyMsg", "CloseLibrary",
+    /* Detail tier: dos.library */
+    "Examine", "Seek",
+    /* Detail tier: intuition.library */
+    "ModifyIDCMP",
+    /* Detail tier: bsdsocket.library */
+    "sendto", "recvfrom",
+    /* Verbose tier */
+    "ExNext", "send", "recv", "WaitSelect",
+    /* Manual tier: exec.library */
+    "AllocMem", "FreeMem", "AllocVec", "FreeVec",
+    "Wait", "Signal",
+    "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+    /* Manual tier: dos.library */
+    "Read", "Write",
     NULL
 };
 
@@ -576,6 +574,7 @@ void trace_cleanup(void)
     g_ring_entries = NULL;
     g_events_dropped = 0;
     g_self_filtered = 0;
+    g_current_tier = 1;
     task_cache_count = 0;
     task_cache_polls = 0;
     g_inflight_stall_pos = 0xFFFFFFFF;
@@ -1705,9 +1704,9 @@ static int string_likely_truncated(const char *s)
  * waste slots and risk false matches if AmigaOS reuses the BPTR
  * address for a different type.
  *
- * The cache is small (32 entries) and uses FIFO eviction.
+ * The cache is 64 entries with FIFO eviction.
  * Lock values are opaque 32-bit integers (BPTRs shifted << 2). */
-#define LOCK_CACHE_SIZE  32
+#define LOCK_CACHE_SIZE  64
 
 struct lock_cache_entry {
     ULONG lock_val;     /* retval from Lock/CreateDir */
@@ -1749,6 +1748,87 @@ static void lock_cache_clear(void)
     lock_cache_next = 0;
 }
 
+/* Remove a lock from the cache. Called when UnLock() consumes a lock.
+ * Prevents stale entries from causing incorrect path resolution when
+ * AmigaOS reuses BPTR addresses for different locks. */
+static void lock_cache_remove(ULONG lock_val)
+{
+    int i;
+    if (lock_val == 0)
+        return;
+    for (i = 0; i < LOCK_CACHE_SIZE; i++) {
+        if (lock_cache[i].lock_val == lock_val) {
+            lock_cache[i].lock_val = 0;
+            lock_cache[i].path[0] = '\0';
+            return;
+        }
+    }
+}
+
+
+/* ---- File handle cache ----
+ *
+ * Maps Open() return values (BPTR file handles) to their path strings.
+ * Used to resolve Close() arguments to human-readable paths.
+ *
+ * Unlike lock_cache (FIFO eviction only), fh_cache has explicit
+ * remove on Close -- AmigaOS reuses file handle addresses, so stale
+ * entries could cause incorrect path attribution.
+ *
+ * Populated from successful Open() events (retval != 0).
+ * Looked up and removed by Close() events. */
+
+#define FH_CACHE_SIZE  32
+
+struct fh_cache_entry {
+    ULONG fh_val;       /* retval BPTR from Open() */
+    char  path[64];     /* path string */
+};
+
+static struct fh_cache_entry fh_cache[FH_CACHE_SIZE];
+static int fh_cache_next = 0;
+
+static void fh_cache_add(ULONG fh_val, const char *path)
+{
+    if (fh_val == 0 || !path || !path[0])
+        return;
+    fh_cache[fh_cache_next].fh_val = fh_val;
+    strncpy(fh_cache[fh_cache_next].path, path, 63);
+    fh_cache[fh_cache_next].path[63] = '\0';
+    fh_cache_next = (fh_cache_next + 1) % FH_CACHE_SIZE;
+}
+
+static const char *fh_cache_lookup(ULONG fh_val)
+{
+    int i;
+    if (fh_val == 0)
+        return NULL;
+    for (i = 0; i < FH_CACHE_SIZE; i++) {
+        if (fh_cache[i].fh_val == fh_val)
+            return fh_cache[i].path;
+    }
+    return NULL;
+}
+
+static void fh_cache_remove(ULONG fh_val)
+{
+    int i;
+    if (fh_val == 0)
+        return;
+    for (i = 0; i < FH_CACHE_SIZE; i++) {
+        if (fh_cache[i].fh_val == fh_val) {
+            fh_cache[i].fh_val = 0;
+            fh_cache[i].path[0] = '\0';
+            return;
+        }
+    }
+}
+
+static void fh_cache_clear(void)
+{
+    memset(fh_cache, 0, sizeof(fh_cache));
+    fh_cache_next = 0;
+}
 
 /* ---- Trace log header emission ---- */
 
@@ -2226,24 +2306,41 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -372:  /* GetMsg(port) */
-            p += snprintf(p, remaining, "port=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "port=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -366:  /* PutMsg(port, msg) */
-            p += snprintf(p, remaining, "port=0x%lx,msg=0x%lx",
-                          (unsigned long)ev->args[0],
-                          (unsigned long)ev->args[1]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\",msg=0x%lx",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
+            else
+                p += snprintf(p, remaining, "port=0x%lx,msg=0x%lx",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[1]);
             return;
 
         case -564:  /* ObtainSemaphore(sem) */
-            p += snprintf(p, remaining, "sem=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "sem=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -570:  /* ReleaseSemaphore(sem) */
-            p += snprintf(p, remaining, "sem=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "sem=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -198:  /* AllocMem(byteSize, requirements) */
@@ -2256,28 +2353,18 @@ static void format_args(struct atrace_event *ev,
         }
 
         case -456:  /* DoIO(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
-            return;
-
         case -462:  /* SendIO(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
-            return;
-
         case -474:  /* WaitIO(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
-            return;
-
         case -480:  /* AbortIO(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
-            return;
-
         case -468:  /* CheckIO(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
+        case -450:  /* CloseDevice(ioRequest) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\" CMD %lu",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
+            else
+                p += snprintf(p, remaining, "io=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -210:  /* FreeMem(memoryBlock, byteSize) */
@@ -2311,9 +2398,15 @@ static void format_args(struct atrace_event *ev,
         case -324:  /* Signal(task, signalSet) */
         {
             char sig_buf[128];
+            const char *task_name;
             format_signal_set(ev->args[1], sig_buf, sizeof(sig_buf));
-            p += snprintf(p, remaining, "task=0x%lx,%s",
-                          (unsigned long)ev->args[0], sig_buf);
+            task_name = resolve_task_name((APTR)ev->args[0]);
+            if (task_name)
+                p += snprintf(p, remaining, "\"%s\",%s",
+                              task_name, sig_buf);
+            else
+                p += snprintf(p, remaining, "task=0x%lx,%s",
+                              (unsigned long)ev->args[0], sig_buf);
             return;
         }
 
@@ -2331,18 +2424,21 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -672:  /* DeleteMsgPort(port) */
-            p += snprintf(p, remaining, "port=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "port=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -414:  /* CloseLibrary(library) */
-            p += snprintf(p, remaining, "lib=0x%lx",
-                          (unsigned long)ev->args[0]);
-            return;
-
-        case -450:  /* CloseDevice(ioRequest) */
-            p += snprintf(p, remaining, "io=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "lib=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -378:  /* ReplyMsg(message) */
@@ -2368,9 +2464,19 @@ static void format_args(struct atrace_event *ev,
         }
 
         case -36:   /* Close(fileHandle) */
-            p += snprintf(p, remaining, "fh=0x%lx",
-                          (unsigned long)ev->args[0]);
+        {
+            const char *path = fh_cache_lookup(ev->args[0]);
+            if (path) {
+                p += snprintf(p, remaining, "\"%s\"", path);
+                /* Remove from cache -- AmigaOS reuses file handle
+                 * addresses after Close. */
+                fh_cache_remove(ev->args[0]);
+            } else {
+                p += snprintf(p, remaining, "fh=0x%lx",
+                              (unsigned long)ev->args[0]);
+            }
             return;
+        }
 
         case -84:   /* Lock(name, type) */
         {
@@ -2458,19 +2564,46 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -444:  /* MakeLink(name, dest, soft) */
-            p += snprintf(p, remaining, "\"%s%s\",dest=0x%lx,%s",
-                          ev->string_data, trunc,
-                          (unsigned long)ev->args[1],
-                          ev->args[2] ? "soft" : "hard");
+        {
+            /* Dual-string capture: linkName in string_data[0..31],
+             * destPath in string_data[32..63]. */
+            const char *link_name = ev->string_data;
+            const char *dest_path = &ev->string_data[32];
+            const char *link_trunc = (strlen(link_name) >= 31) ? "..." : "";
+            const char *dest_trunc = (strlen(dest_path) >= 31) ? "..." : "";
+            const char *link_type = ev->args[2] ? "soft" : "hard";
+            if (dest_path[0] != '\0') {
+                p += snprintf(p, remaining, "\"%s%s\" -> \"%s%s\" %s",
+                              link_name, link_trunc,
+                              dest_path, dest_trunc, link_type);
+            } else {
+                /* Second string missing -- fall back to hex */
+                p += snprintf(p, remaining, "\"%s%s\" -> 0x%lx %s",
+                              link_name, link_trunc,
+                              (unsigned long)ev->args[1], link_type);
+            }
             return;
+        }
 
         case -78:   /* Rename(oldName, newName) */
-            /* Only arg0 (oldName) captured as string_data.
-             * arg1 (newName) is a pointer -- only one string fits in the event. */
-            p += snprintf(p, remaining, "\"%s%s\",new=0x%lx",
-                          ev->string_data, trunc,
-                          (unsigned long)ev->args[1]);
+        {
+            /* Dual-string capture: oldName in string_data[0..31],
+             * newName in string_data[32..63]. */
+            const char *old_name = ev->string_data;
+            const char *new_name = &ev->string_data[32];
+            const char *old_trunc = (strlen(old_name) >= 31) ? "..." : "";
+            const char *new_trunc = (strlen(new_name) >= 31) ? "..." : "";
+            if (new_name[0] != '\0') {
+                p += snprintf(p, remaining, "\"%s%s\" -> \"%s%s\"",
+                              old_name, old_trunc, new_name, new_trunc);
+            } else {
+                /* Second string missing -- fall back to hex */
+                p += snprintf(p, remaining, "\"%s%s\" -> 0x%lx",
+                              old_name, old_trunc,
+                              (unsigned long)ev->args[1]);
+            }
             return;
+        }
 
         case -504:  /* RunCommand(seg, stack, paramptr, paramlen) */
             p += snprintf(p, remaining, "seg=0x%lx,stack=%lu,%lu",
@@ -2519,11 +2652,21 @@ static void format_args(struct atrace_event *ev,
                 p += snprintf(p, remaining, "lock=NULL");
             } else {
                 const char *path = lock_cache_lookup(ev->args[0]);
-                if (path)
+                if (path) {
                     p += snprintf(p, remaining, "\"%s\"", path);
-                else
+                } else if (fe && fe->has_string &&
+                           ev->string_data[0] != '\0') {
+                    /* Volume name from DEREF_LOCK_VOLUME (e.g., "RAM:").
+                     * The "?" suffix indicates that the volume is known
+                     * from the lock's fl_Volume field but the subdirectory
+                     * path within that volume is not available from the
+                     * stub data alone. */
+                    p += snprintf(p, remaining, "\"%s?\"",
+                                  ev->string_data);
+                } else {
                     p += snprintf(p, remaining, "lock=0x%lx",
                                   (unsigned long)ev->args[0]);
+                }
             }
             return;
 
@@ -2555,6 +2698,10 @@ static void format_args(struct atrace_event *ev,
                     p += snprintf(p, remaining, "lock=0x%lx",
                                   (unsigned long)ev->args[0]);
             }
+            /* Remove lock from cache -- AmigaOS reuses BPTR addresses
+             * after UnLock, so stale entries could cause incorrect
+             * path attribution for new Lock calls. */
+            lock_cache_remove(ev->args[0]);
             return;
 
         case -102:  /* Examine(lock, fib) */
@@ -2785,8 +2932,13 @@ static void format_args(struct atrace_event *ev,
         switch (fe->lvo_offset) {
 
         case -72:   /* OpenFont(textAttr) */
-            p += snprintf(p, remaining, "attr=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\",%lu",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
+            else
+                p += snprintf(p, remaining, "attr=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         }  /* end graphics switch */
@@ -3216,6 +3368,10 @@ static void trace_format_event(struct atrace_event *ev,
             (fe->lib_id == LIB_DOS && fe->lvo_offset == -120)) {   /* CreateDir */
             lock_cache_add(ev->retval, ev->string_data);
         }
+        /* fh_cache population for Open */
+        if (fe->lib_id == LIB_DOS && fe->lvo_offset == -30) {      /* Open */
+            fh_cache_add(ev->retval, ev->string_data);
+        }
     }
 
     snprintf(buf, bufsz, "%lu\t%s\t%s.%s\t%s\t%s\t%s\t%c",
@@ -3279,6 +3435,7 @@ void trace_poll_events(struct daemon_state *d)
             g_ring_entries = NULL;
             g_events_dropped = 0;
             g_self_filtered = 0;
+            g_current_tier = 1;
             return;
         }
         /* Semaphore busy but tracing still enabled -- skip this cycle */
@@ -3307,6 +3464,7 @@ void trace_poll_events(struct daemon_state *d)
             g_ring_entries = NULL;
             g_events_dropped = 0;
             g_self_filtered = 0;
+            g_current_tier = 1;
         }
         return;
     }
@@ -3362,10 +3520,12 @@ void trace_poll_events(struct daemon_state *d)
             }
         }
 
-        /* Skip amigactld's own bsdsocket calls to prevent feedback loop.
+        /* Skip amigactld's own library calls to prevent noise and feedback.
+         * All daemon events are filtered regardless of library -- EXEC paths
+         * create separate processes with distinct task pointers, so user
+         * commands are never suppressed.
          * Uses g_daemon_task from exec.c (initialized at daemon startup). */
-        if (ev->lib_id == LIB_BSDSOCKET &&
-            ev->caller_task == (APTR)g_daemon_task) {
+        if (ev->caller_task == (APTR)g_daemon_task) {
             ev->valid = 0;
             if (pos == g_inflight_stall_pos) {
                 g_inflight_stall_pos = 0xFFFFFFFF;
@@ -3375,6 +3535,29 @@ void trace_poll_events(struct daemon_state *d)
             ring->read_pos = pos;
             total_consumed++;
             g_self_filtered++;
+            continue;
+        }
+
+        /* OpenLibrary v0 success suppression at Basic tier.
+         * At Basic tier, successful OpenLibrary calls with version==0
+         * are pure noise from AmigaOS internal library management
+         * (CLI startup, library interdependencies). Failed opens of
+         * any version are always shown (diagnostic value). At Detail
+         * tier and above, all OpenLibrary events pass through. */
+        if (g_current_tier == 1 &&
+            ev->lib_id == LIB_EXEC &&
+            ev->lvo_offset == -552 &&       /* OpenLibrary */
+            ev->retval != 0 &&              /* success */
+            ev->args[1] == 0) {             /* version 0 */
+            ev->valid = 0;
+            if (pos == g_inflight_stall_pos) {
+                g_inflight_stall_pos = 0xFFFFFFFF;
+                g_inflight_stall_count = 0;
+            }
+            pos = (pos + 1) % ring->capacity;
+            ring->read_pos = pos;
+            total_consumed++;
+            g_self_filtered++;  /* Reuse counter for all daemon-side suppression */
             continue;
         }
 
@@ -3511,6 +3694,25 @@ int cmd_trace(struct daemon_state *d, int idx, const char *args)
 
     if (stricmp(sub, "DISABLE") == 0) {
         return trace_cmd_disable(c, args);
+    }
+
+    if (stricmp(sub, "TIER") == 0) {
+        int level;
+        if (!args || !args[0]) {
+            send_error(c->fd, ERR_SYNTAX, "Usage: TRACE TIER <1|2|3>");
+            send_sentinel(c->fd);
+            return 0;
+        }
+        level = args[0] - '0';
+        if (level < 1 || level > 3) {
+            send_error(c->fd, ERR_SYNTAX, "Invalid tier level (1-3)");
+            send_sentinel(c->fd);
+            return 0;
+        }
+        g_current_tier = level;
+        send_ok(c->fd, NULL);
+        send_sentinel(c->fd);
+        return 0;
     }
 
     send_error(c->fd, ERR_SYNTAX, "Unknown TRACE subcommand");
@@ -3709,6 +3911,8 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
 
     /* Clear caches for the new session */
     lock_cache_clear();
+    fh_cache_clear();
+    g_current_tier = 1;
 
     /* Enter streaming mode */
     c->trace.active = 1;
@@ -3873,6 +4077,8 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
      * Permit() and a later clear could let the new process call
      * Lock(), caching with stale session data. */
     lock_cache_clear();
+    fh_cache_clear();
+    g_current_tier = 1;
 
     /* Find a proc_slot (same logic as exec_async) */
     slot = -1;
@@ -4509,6 +4715,24 @@ int trace_handle_input(struct daemon_state *d, int idx)
                 }
                 send_trace_data_chunk(c->fd, fline);
             }
+            continue;
+        }
+
+        /* TIER command during active trace stream.
+         * Sets the daemon's tier level for content-based filtering
+         * (e.g., OpenLibrary v0 suppression at Basic tier).
+         * Sent by the client as a bare "TIER <1|2|3>" inline command,
+         * following the same pattern as STOP and FILTER. */
+        if (strnicmp(p, "TIER", 4) == 0 &&
+            (p[4] == '\0' || p[4] == ' ' || p[4] == '\t')) {
+            char *tier_arg = p + 4;
+            while (*tier_arg == ' ' || *tier_arg == '\t')
+                tier_arg++;
+            if (*tier_arg >= '1' && *tier_arg <= '3') {
+                g_current_tier = *tier_arg - '0';
+            }
+            /* No response -- fire-and-forget like FILTER.
+             * Invalid values silently ignored. */
             continue;
         }
 

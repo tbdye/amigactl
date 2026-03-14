@@ -39,7 +39,7 @@ class ToggleGrid:
 
     def __init__(self, discovered_libs, discovered_funcs_for_lib,
                  discovered_procs, initial_lib=None,
-                 daemon_disabled_funcs=None):
+                 daemon_disabled_funcs=None, tier_level=1):
         """Initialize the grid.
 
         Args:
@@ -51,13 +51,19 @@ class ToggleGrid:
             initial_lib: Name of the initially selected library
                 (used to scope noise defaults correctly).
             daemon_disabled_funcs: set of "lib.func" strings for
-                functions disabled at the daemon level (noise functions).
+                functions disabled at the daemon level (tier-based
+                auto-disable and manual overrides).
+            tier_level: Current output tier level (1=basic, 2=detail,
+                3=verbose). Used for FUNCTIONS header label and
+                dim styling context.
         """
         self.categories = ["LIBRARIES", "FUNCTIONS", "PROCESSES", "NOISE"]
         self.active_category = 0
         self.selected_lib = initial_lib
         self.focused_lib_index = 0  # C5 fix (R4): cursor in LIBRARIES
         self._daemon_disabled_funcs = daemon_disabled_funcs or set()
+        self._tier_level = tier_level
+        self._non_basic_funcs = self._get_non_basic_funcs()
 
         # Per-category cursor position (persisted across category switches).
         # Invariant: focused_lib_index == cursor_pos[0] at all points
@@ -89,11 +95,14 @@ class ToggleGrid:
             for n in NOISE_ITEMS
         ]
 
-        # Default: noise functions start unchecked
+        # Default: daemon-disabled functions start unchecked
         self._apply_noise_defaults()
 
         # Mark daemon-disabled items (Fix 3)
         self._mark_daemon_disabled()
+
+        # Mark non-basic functions for dim styling (Phase 9c)
+        self._mark_non_basic()
 
         # S5 fix (Wave 5): Snapshot the initial filter output so we
         # can detect whether the user actually changed anything.
@@ -102,41 +111,19 @@ class ToggleGrid:
         self._initial_filter = self.build_filter_command()
         self.user_interacted = False
 
-    # Noise functions per library, matching noise_func_names[] in
-    # daemon/trace.c and atrace/main.c. (M3 fix)
-    # Keyed by library name so noise defaults only apply to the
-    # correct library (S2 fix, Wave 5 review).
-    _NOISE_FUNCS_BY_LIB = {
-        "exec": {
-            "FindPort", "FindSemaphore", "FindTask", "GetMsg",
-            "PutMsg", "ObtainSemaphore", "ReleaseSemaphore",
-            "AllocMem", "OpenLibrary",
-            # Phase 5 additions
-            "FreeMem", "AllocVec", "FreeVec",
-            # Phase 5 device I/O additions
-            "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
-            # Phase 9 additions
-            "ReplyMsg",
-            "Wait", "Signal", "CloseLibrary",
-        },
-        "dos": {
-            # Phase 5 additions
-            "Read", "Write",
-            "UnLock",
-        },
-        "bsdsocket": {
-            # Phase 9 additions
-            "send", "recv", "WaitSelect",
-        },
-        "graphics": {
-            "OpenFont",
-        },
-    }
+    @staticmethod
+    def _get_non_basic_funcs():
+        """Return the set of non-basic function names for dim styling.
 
-    # Flat set for _format_item() dim styling (all libs combined)
-    _NOISE_FUNCS = {
-        fn for fns in _NOISE_FUNCS_BY_LIB.values() for fn in fns
-    }
+        Non-basic functions (Detail + Verbose + Manual) are rendered
+        with dim text in the FUNCTIONS column to visually distinguish
+        them from the default Basic tier functions.
+
+        Tier membership is constant at runtime, so this is computed
+        once at grid creation and cached in self._non_basic_funcs.
+        """
+        from .trace_tiers import TIER_DETAIL, TIER_VERBOSE, TIER_MANUAL
+        return TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL
 
     def _build_items(self, count_dict):
         """Build toggle items from a name->count dict."""
@@ -151,15 +138,21 @@ class ToggleGrid:
         return items
 
     def _apply_noise_defaults(self):
-        """Noise functions start unchecked in the grid.
+        """Set initial checked state from daemon-disabled functions.
 
-        Only applies to functions belonging to a library with
-        defined noise functions (S2 fix, Wave 5 review).
+        Functions disabled at the daemon level start unchecked.
+        Uses self._daemon_disabled_funcs (set of "lib.func" strings)
+        populated from TRACE STATUS via _prepopulate_from_status().
+
+        This is more correct than a hardcoded list: if the user has
+        manually enabled a function via trace enable, the grid shows
+        it as checked (matching daemon state) rather than unchecked
+        (matching a stale list).
         """
-        noise_for_lib = self._NOISE_FUNCS_BY_LIB.get(
-            self.selected_lib, set())
+        lib = self.selected_lib or ""
         for item in self.func_items:
-            if item["name"] in noise_for_lib:
+            qualified = "{}.{}".format(lib, item["name"])
+            if qualified in self._daemon_disabled_funcs:
                 item["enabled"] = False
 
     def _mark_daemon_disabled(self):
@@ -174,6 +167,17 @@ class ToggleGrid:
             item["daemon_disabled"] = (
                 qualified in self._daemon_disabled_funcs)
 
+    def _mark_non_basic(self):
+        """Mark function items that are outside the Basic tier.
+
+        Non-basic functions are rendered with dim text in _format_item()
+        to visually distinguish them from the default Basic tier, even
+        when they are enabled. Uses the cached _non_basic_funcs set
+        computed from tier definitions at grid creation.
+        """
+        for item in self.func_items:
+            item["non_basic"] = item["name"] in self._non_basic_funcs
+
     def update_func_items(self, discovered_funcs_for_lib, lib_name):
         """Update function items when the user switches libraries.
 
@@ -186,6 +190,7 @@ class ToggleGrid:
         self.func_items = self._build_items(discovered_funcs_for_lib)
         self._apply_noise_defaults()
         self._mark_daemon_disabled()
+        self._mark_non_basic()
 
     def _items_for_category(self, cat_idx):
         """Return the item list for a given category index."""
@@ -385,6 +390,20 @@ class ToggleGrid:
 
         return " ".join(parts) if parts else ""
 
+    def _func_header_label(self):
+        """Build the FUNCTIONS column header with tier context.
+
+        Returns a label like "FUNCTIONS (exec) [basic]" showing the
+        selected library and the current tier level. If no library
+        is selected, returns "FUNCTIONS [basic]".
+        """
+        from .trace_tiers import TIER_NAMES
+        tier_name = TIER_NAMES.get(self._tier_level, "?")
+        if self.selected_lib:
+            return "FUNCTIONS ({}) [{}]".format(
+                self.selected_lib, tier_name)
+        return "FUNCTIONS [{}]".format(tier_name)
+
     def _available_item_rows(self, term_rows):
         """Compute the number of item rows that fit in the viewport.
 
@@ -476,10 +495,12 @@ class ToggleGrid:
         if len(text) > width:
             text = text[:width]
 
-        # Color: highlighted = reverse, disabled = dim
+        # Color: highlighted = reverse, disabled or non-basic = dim.
+        # Non-basic functions are dimmed even when enabled to visually
+        # distinguish them from the default Basic tier (Phase 9c).
         if highlighted:
             text = cw.reverse(text)
-        elif not item["enabled"]:
+        elif not item["enabled"] or item.get("non_basic"):
             text = cw.dim(text)
 
         return text
@@ -646,8 +667,8 @@ class ToggleGrid:
         headers = []
         for cat_idx in visible_cats:
             label = self.categories[cat_idx]
-            if label == "FUNCTIONS" and self.selected_lib:
-                label = "FUNCTIONS ({})".format(self.selected_lib)
+            if label == "FUNCTIONS":
+                label = self._func_header_label()
             if cat_idx == self.active_category:
                 label = cw.reverse(label)
             headers.append(label + " " * max(
@@ -708,10 +729,10 @@ class ToggleGrid:
         # Headers
         left_label = self.categories[left_idx]
         right_label = self.categories[right_idx]
-        if left_label == "FUNCTIONS" and self.selected_lib:
-            left_label = "FUNCTIONS ({})".format(self.selected_lib)
-        if right_label == "FUNCTIONS" and self.selected_lib:
-            right_label = "FUNCTIONS ({})".format(self.selected_lib)
+        if left_label == "FUNCTIONS":
+            left_label = self._func_header_label()
+        if right_label == "FUNCTIONS":
+            right_label = self._func_header_label()
 
         if left_idx == self.active_category:
             left_label = cw.reverse(left_label)
@@ -755,8 +776,8 @@ class ToggleGrid:
 
         cat = self.categories[self.active_category]
         label = cat
-        if cat == "FUNCTIONS" and self.selected_lib:
-            label = "FUNCTIONS ({})".format(self.selected_lib)
+        if cat == "FUNCTIONS":
+            label = self._func_header_label()
         lines.append(cw.reverse(label))
         lines.append("")
 

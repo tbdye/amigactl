@@ -56,6 +56,7 @@ static void cleanup_files(void)
     DeleteFile((STRPTR)"RAM:atrace_test_p8dir");
     DeleteFile((STRPTR)"RAM:atrace_test_seek");
     DeleteFile((STRPTR)"RAM:atrace_test_examine_dir");
+    DeleteFile((STRPTR)"RAM:atrace_test_close_path");
 }
 
 /* ---- Library bases ---- */
@@ -103,9 +104,14 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* Block 4: FindTask
-     * NULL argument = self-lookup, always succeeds. */
+     * FindTask(NULL) should be filtered by the NULL-argument filter
+     * (no event produced).  FindTask with a name verifies that named
+     * lookups still produce events.  "Shell Process" may not exist,
+     * but atrace captures the call regardless of success. */
     {
-        FindTask(NULL);
+        FindTask(NULL);  /* filtered -- no event expected */
+        Delay(1);
+        FindTask((STRPTR)"Shell Process");  /* event expected */
     }
 
     Delay(1);
@@ -133,10 +139,12 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* Block 6: OpenLibrary
-     * Open dos.library version 0, then close it. */
+     * Open dos.library version 36 (AmigaOS 2.0+), then close it.
+     * Using v36 instead of v0 so the event passes the daemon's v0
+     * suppression filter at Basic tier (Phase 9d WS6). */
     {
         struct Library *lib;
-        lib = OpenLibrary((STRPTR)"dos.library", 0);
+        lib = OpenLibrary((STRPTR)"dos.library", 36);
         if (lib)
             CloseLibrary(lib);
     }
@@ -152,11 +160,14 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* Block 8: GetMsg (empty port)
-     * Create a port, call GetMsg with no messages queued, delete port. */
+     * Create a named port, call GetMsg with no messages queued, delete.
+     * The port name "atrace_test_port" enables pointer resolution
+     * validation -- atrace resolves port->ln_Name into string_data. */
     {
         struct MsgPort *port;
         port = CreateMsgPort();
         if (port) {
+            port->mp_Node.ln_Name = (char *)"atrace_test_port";
             GetMsg(port);
             DeleteMsgPort(port);
         }
@@ -165,8 +176,9 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* Block 9: PutMsg + GetMsg (with message)
-     * Create two ports, send a message from one to the other,
-     * retrieve it, then clean up. */
+     * Create two named ports, send a message from one to the other,
+     * retrieve it, then clean up.  Named ports enable pointer
+     * resolution validation for PutMsg/GetMsg/DeleteMsgPort. */
     {
         struct MsgPort *recv_port;
         struct MsgPort *reply_port;
@@ -176,6 +188,9 @@ int main(int argc, char **argv)
         recv_port = CreateMsgPort();
         reply_port = CreateMsgPort();
         if (recv_port && reply_port) {
+            recv_port->mp_Node.ln_Name = (char *)"atrace_test_recv";
+            reply_port->mp_Node.ln_Name = (char *)"atrace_test_reply";
+
             memset(&msg, 0, sizeof(msg));
             msg.mn_Node.ln_Type = NT_MESSAGE;
             msg.mn_ReplyPort = reply_port;
@@ -193,15 +208,19 @@ int main(int argc, char **argv)
 
     Delay(1);
 
-    /* Block 10: ObtainSemaphore + ReleaseSemaphore
-     * Stack-allocated semaphore, initialized with InitSemaphore. */
+    /* Block 10: ObtainSemaphore + ReleaseSemaphore (named)
+     * Use the atrace_patches system semaphore (always exists when
+     * atrace is loaded) to validate pointer resolution -- atrace
+     * resolves sem->ln_Name into string_data. */
     {
-        struct SignalSemaphore sem;
-        memset(&sem, 0, sizeof(sem));
-        InitSemaphore(&sem);
-
-        ObtainSemaphore(&sem);
-        ReleaseSemaphore(&sem);
+        struct SignalSemaphore *sem;
+        Forbid();
+        sem = FindSemaphore((STRPTR)"atrace_patches");
+        Permit();
+        if (sem) {
+            ObtainSemaphore(sem);
+            ReleaseSemaphore(sem);
+        }
     }
 
     Delay(1);
@@ -219,7 +238,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * dos.library tests (blocks 12-29, 31 -- block 30 AddDosEntry skipped)
+     * dos.library tests (blocks 12-29, 31, 67)
      * ================================================================ */
 
     /* Block 12: Open (Read, success)
@@ -967,23 +986,34 @@ int main(int argc, char **argv)
      * ================================================================ */
 
     /* Block 56: LockPubScreen
-     * Lock the default public screen (NULL name), then unlock.
-     * Requires IntuitionBase to be open.
+     * LockPubScreen(NULL) should be filtered by the NULL-argument
+     * filter (no event produced).  LockPubScreen("Workbench") verifies
+     * that named lookups still produce events with the screen name.
      *
      * Note: The Phase 5 intuition test blocks (37-40) open
      * IntuitionBase once per section and share it across blocks.
      * This block is in a separate Phase 9 section, so it follows
      * the same pattern of opening IntuitionBase for its section.
-     * The Phase 5 section already closed its IntuitionBase at line
-     * 681, so a fresh open is required here. */
+     * The Phase 5 section already closed its IntuitionBase, so a
+     * fresh open is required here. */
     {
         struct Library *IntuitionBase;
         IntuitionBase = OpenLibrary((STRPTR)"intuition.library", 37);
         if (IntuitionBase) {
             struct Screen *scr;
+
+            /* NULL call -- filtered, no event expected */
             scr = LockPubScreen(NULL);
             if (scr)
                 UnlockPubScreen(NULL, scr);
+
+            Delay(1);
+
+            /* Named call -- event expected with "Workbench" in args */
+            scr = LockPubScreen((STRPTR)"Workbench");
+            if (scr)
+                UnlockPubScreen((STRPTR)"Workbench", scr);
+
             CloseLibrary(IntuitionBase);
         }
     }
@@ -1250,6 +1280,97 @@ int main(int argc, char **argv)
             CloseLibrary(SocketBase);
         }
     }
+
+    /* ================================================================
+     * Phase 9: dos.library test (block 67)
+     * ================================================================ */
+
+    /* Block 67: AddDosEntry
+     * Create a temporary assign entry, add it to the DOS list,
+     * then remove and free it.  LockDosList/UnLockDosList are
+     * required around AddDosEntry/RemDosEntry per the API. */
+    {
+        struct DosList *dl;
+        dl = MakeDosEntry((STRPTR)"atrace_test_assign", DLT_DIRECTORY);
+        if (dl) {
+            if (LockDosList(LDF_ASSIGNS | LDF_WRITE)) {
+                if (AddDosEntry(dl)) {
+                    RemDosEntry(dl);
+                }
+                UnLockDosList(LDF_ASSIGNS | LDF_WRITE);
+            }
+            FreeDosEntry(dl);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9: intuition.library tests (block 68)
+     * ================================================================ */
+
+    /* Block 68: CloseWorkBench + OpenWorkBench
+     * Close the Workbench screen, then reopen it.
+     * CloseWorkBench may fail if windows are open on Workbench --
+     * that's OK, we still generate the trace event. */
+    {
+        struct Library *IntuitionBase;
+        IntuitionBase = OpenLibrary((STRPTR)"intuition.library", 37);
+        if (IntuitionBase) {
+            CloseWorkBench();
+            Delay(25);  /* Let close complete */
+            OpenWorkBench();
+            Delay(25);  /* Let reopen complete */
+            CloseLibrary(IntuitionBase);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 9d tests (blocks 69-71)
+     * ================================================================ */
+
+    /* Block 69: OpenLibrary v0 suppression test
+     * Open utility.library with version 0. This event should be
+     * suppressed at Basic tier (daemon-side v0 success filter) and
+     * visible at Detail tier. See Phase 9d WS6. */
+    {
+        struct Library *lib;
+        lib = OpenLibrary((STRPTR)"utility.library", 0);
+        if (lib)
+            CloseLibrary(lib);
+    }
+
+    Delay(1);
+
+    /* Block 70: CurrentDir volume name resolution
+     * Lock RAM: (known volume), pass to CurrentDir, restore original.
+     * Trace should show "RAM:" or "RAM:?" for the CurrentDir event. */
+    {
+        BPTR lock, old;
+        lock = Lock((STRPTR)"RAM:", SHARED_LOCK);
+        if (lock) {
+            old = CurrentDir(lock);
+            CurrentDir(old);  /* restore */
+            UnLock(lock);
+        }
+    }
+
+    Delay(1);
+
+    /* Block 71: Close path resolution
+     * Open a distinctive file, then Close it.
+     * Trace should show the file path on Close via fh_cache. */
+    {
+        BPTR fh;
+        fh = Open((STRPTR)"RAM:atrace_test_close_path", MODE_NEWFILE);
+        if (fh)
+            Close(fh);
+        DeleteFile((STRPTR)"RAM:atrace_test_close_path");
+    }
+
+    Delay(1);
 
     cleanup_files();
     return 0;

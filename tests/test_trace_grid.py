@@ -19,7 +19,8 @@ from amigactl.trace_ui import TerminalState, _visible_len
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_grid(libs=None, funcs=None, procs=None, initial_lib=None):
+def _make_grid(libs=None, funcs=None, procs=None, initial_lib=None,
+               daemon_disabled_funcs=None, tier_level=1):
     """Create a ToggleGrid with test data.
 
     Defaults provide a minimal three-category grid.
@@ -30,7 +31,9 @@ def _make_grid(libs=None, funcs=None, procs=None, initial_lib=None):
         funcs = {"Open": 12, "Lock": 8, "Close": 6}
     if procs is None:
         procs = {"bbs": 89, "Shell Process": 43, "ramlib": 10}
-    return ToggleGrid(libs, funcs, procs, initial_lib=initial_lib)
+    return ToggleGrid(libs, funcs, procs, initial_lib=initial_lib,
+                      daemon_disabled_funcs=daemon_disabled_funcs,
+                      tier_level=tier_level)
 
 
 def _make_terminal_state(rows=24, cols=80):
@@ -78,8 +81,8 @@ class TestToggleGrid:
         assert names == ["exec", "dos", "icon"]
 
     def test_noise_defaults_unchecked(self):
-        """Noise functions start with enabled=False."""
-        # Include some noise functions in the func dict
+        """Daemon-disabled functions start with enabled=False."""
+        # Include some daemon-disabled functions in the func dict
         funcs = {
             "Open": 12,
             "AllocMem": 128,
@@ -87,20 +90,24 @@ class TestToggleGrid:
             "FindPort": 30,
             "Lock": 8,
         }
-        grid = _make_grid(funcs=funcs, initial_lib="exec")
+        daemon_disabled = {
+            "exec.AllocMem", "exec.GetMsg", "exec.FindPort",
+        }
+        grid = _make_grid(funcs=funcs, initial_lib="exec",
+                          daemon_disabled_funcs=daemon_disabled)
 
-        noise_names = {"AllocMem", "GetMsg", "FindPort"}
+        disabled_names = {"AllocMem", "GetMsg", "FindPort"}
         for item in grid.func_items:
-            if item["name"] in noise_names:
+            if item["name"] in disabled_names:
                 assert not item["enabled"], \
                     "{} should start unchecked".format(item["name"])
             else:
                 assert item["enabled"], \
                     "{} should start checked".format(item["name"])
 
-    def test_freemem_in_noise(self):
-        """FreeMem IS in the noise function set (Phase 5)."""
-        assert "FreeMem" in ToggleGrid._NOISE_FUNCS
+    def test_freemem_in_non_basic(self):
+        """FreeMem IS in the non-basic function set (TIER_MANUAL)."""
+        assert "FreeMem" in ToggleGrid._get_non_basic_funcs()
 
     def test_toggle_at_cursor(self):
         """Toggling an item flips its enabled state."""
@@ -150,10 +157,8 @@ class TestToggleGrid:
         grid.none()  # Disables only LIBRARIES items
 
         # FUNCTIONS and PROCESSES should be unaffected
-        # (Functions may have noise defaults, but non-noise should be enabled)
-        non_noise_funcs = [item for item in grid.func_items
-                           if item["name"] not in ToggleGrid._NOISE_FUNCS]
-        assert all(item["enabled"] for item in non_noise_funcs)
+        # (No daemon_disabled_funcs passed, so all funcs start enabled)
+        assert all(item["enabled"] for item in grid.func_items)
         assert all(item["enabled"] for item in grid.proc_items)
 
     def test_build_filter_whitelist(self):
@@ -242,8 +247,9 @@ class TestToggleGrid:
         assert "bbs" not in cmd
 
     def test_update_func_items(self):
-        """Switching library updates function items and reapplies noise."""
-        grid = _make_grid()
+        """Switching library updates function items and reapplies defaults."""
+        daemon_disabled = {"exec.AllocMem", "exec.FindPort"}
+        grid = _make_grid(daemon_disabled_funcs=daemon_disabled)
         new_funcs = {"AllocMem": 128, "FindPort": 47, "LoadSeg": 3}
         grid.update_func_items(new_funcs, "exec")
 
@@ -253,9 +259,9 @@ class TestToggleGrid:
         assert "FindPort" in names
         assert "LoadSeg" in names
 
-        # Noise functions should be disabled after update
+        # Daemon-disabled functions should be disabled after update
         for item in grid.func_items:
-            if item["name"] in ToggleGrid._NOISE_FUNCS:
+            if item["name"] in {"AllocMem", "FindPort"}:
                 assert not item["enabled"]
             else:
                 assert item["enabled"]
@@ -336,36 +342,44 @@ class TestToggleGrid:
         assert grid.user_interacted is True
         assert grid.has_user_changes() is False
 
-    def test_noise_defaults_scoped_to_exec(self):
-        """Noise defaults only apply when selected_lib is exec (S2 fix)."""
+    def test_daemon_disabled_scoped_to_lib(self):
+        """Daemon-disabled defaults are scoped by library prefix."""
         funcs = {"AllocMem": 100, "GetMsg": 50, "Open": 12}
-        # dos library: noise funcs should NOT be disabled
-        grid = _make_grid(funcs=funcs)
-        grid_dos = ToggleGrid({"dos": 100}, funcs, {}, initial_lib="dos")
+        # Daemon has exec.AllocMem and exec.GetMsg disabled
+        daemon_disabled = {"exec.AllocMem", "exec.GetMsg"}
+
+        # dos library: daemon_disabled has exec.* not dos.*, so all enabled
+        grid_dos = ToggleGrid({"dos": 100}, funcs, {},
+                              initial_lib="dos",
+                              daemon_disabled_funcs=daemon_disabled)
         for item in grid_dos.func_items:
             assert item["enabled"], \
                 "{} should be enabled for dos library".format(item["name"])
 
-        # exec library: noise funcs SHOULD be disabled
+        # exec library: AllocMem and GetMsg should be disabled
         grid_exec = ToggleGrid({"exec": 100}, funcs, {},
-                               initial_lib="exec")
+                               initial_lib="exec",
+                               daemon_disabled_funcs=daemon_disabled)
         for item in grid_exec.func_items:
-            if item["name"] in ToggleGrid._NOISE_FUNCS:
+            if item["name"] in {"AllocMem", "GetMsg"}:
                 assert not item["enabled"], \
                     "{} should be disabled for exec".format(item["name"])
             else:
                 assert item["enabled"]
 
-    def test_openlibrary_in_noise(self):
-        """OpenLibrary is in the noise function set."""
-        assert "OpenLibrary" in ToggleGrid._NOISE_FUNCS
+    def test_openlibrary_is_basic_tier(self):
+        """OpenLibrary is in the Basic tier (not non-basic)."""
+        non_basic = ToggleGrid._get_non_basic_funcs()
+        assert "OpenLibrary" not in non_basic
 
-    def test_openlibrary_disabled_by_default(self):
-        """OpenLibrary disabled by default for exec."""
+    def test_daemon_disabled_reflected_in_grid(self):
+        """Daemon-disabled functions start unchecked in grid."""
         funcs = {
             "OpenLibrary": 50, "Open": 12,
         }
-        grid = _make_grid(funcs=funcs, initial_lib="exec")
+        daemon_disabled = {"exec.OpenLibrary"}
+        grid = _make_grid(funcs=funcs, initial_lib="exec",
+                          daemon_disabled_funcs=daemon_disabled)
 
         for item in grid.func_items:
             if item["name"] == "OpenLibrary":
@@ -710,21 +724,22 @@ class TestToggleGridRendering:
         # LIBRARIES is active -- should have reverse ANSI
         assert "\033[7m" in header
 
-    def test_noise_func_dim(self):
-        """Disabled noise functions are rendered dim (S7)."""
+    def test_non_basic_func_dim(self):
+        """Non-basic functions are rendered dim (Phase 9c)."""
         funcs = {"AllocMem": 128, "Open": 12}
         grid = _make_grid(funcs=funcs, initial_lib="exec")
         cw = ColorWriter(force_color=True)
 
-        # AllocMem is noise for exec, should be disabled
+        # AllocMem is TIER_MANUAL (non-basic), should be marked non_basic
         alloc_item = None
         for item in grid.func_items:
             if item["name"] == "AllocMem":
                 alloc_item = item
                 break
         assert alloc_item is not None
-        assert not alloc_item["enabled"]
+        assert alloc_item.get("non_basic")
 
+        # Non-basic items are dimmed even when enabled
         text = grid._format_item(alloc_item, cw, 30)
         # Should have dim ANSI code
         assert "\033[2m" in text
@@ -1932,3 +1947,122 @@ class TestViewportScrolling:
                 "step {}: cursor {} beyond rendered items "
                 "(offset={}, count={})".format(
                     step, pos, offset, item_count))
+
+
+# ---------------------------------------------------------------------------
+# TestGridTierIntegration
+# ---------------------------------------------------------------------------
+
+class TestGridTierIntegration:
+    """Tests for toggle grid tier awareness (Phase 9c)."""
+
+    def test_grid_daemon_disabled_determines_defaults(self):
+        """Grid uses daemon_disabled_funcs for initial state."""
+        grid = _make_grid(
+            libs={"exec": 100},
+            funcs={"PutMsg": 50, "OpenLibrary": 80},
+            procs={"Shell Process": 20},
+            initial_lib="exec",
+            daemon_disabled_funcs={"exec.PutMsg"})
+        # PutMsg should be unchecked (daemon-disabled)
+        putmsg = next(i for i in grid.func_items
+                      if i["name"] == "PutMsg")
+        assert not putmsg["enabled"]
+        # OpenLibrary should be checked (not daemon-disabled)
+        openlib = next(i for i in grid.func_items
+                       if i["name"] == "OpenLibrary")
+        assert openlib["enabled"]
+
+    def test_grid_tier_level_in_func_header(self):
+        """Grid FUNCTIONS header includes tier label."""
+        grid = _make_grid(initial_lib="exec", tier_level=1)
+        label = grid._func_header_label()
+        assert "[basic]" in label
+        assert "(exec)" in label
+
+    def test_grid_tier_level_detail_in_func_header(self):
+        """Grid FUNCTIONS header shows 'detail' for tier 2."""
+        grid = _make_grid(initial_lib="dos", tier_level=2)
+        label = grid._func_header_label()
+        assert "[detail]" in label
+        assert "(dos)" in label
+
+    def test_grid_tier_level_verbose_in_func_header(self):
+        """Grid FUNCTIONS header shows 'verbose' for tier 3."""
+        grid = _make_grid(tier_level=3)
+        label = grid._func_header_label()
+        assert "[verbose]" in label
+
+    def test_grid_func_header_no_lib(self):
+        """Grid FUNCTIONS header without selected library."""
+        grid = _make_grid(tier_level=2)
+        # No initial_lib, so selected_lib is None
+        label = grid._func_header_label()
+        assert "FUNCTIONS [detail]" == label
+
+    def test_non_basic_funcs_marked(self):
+        """Non-basic functions are marked with non_basic=True."""
+        funcs = {"Open": 12, "PutMsg": 5, "AllocMem": 3}
+        grid = _make_grid(funcs=funcs, initial_lib="exec")
+        for item in grid.func_items:
+            if item["name"] == "Open":
+                # Open is Basic tier
+                assert not item.get("non_basic")
+            elif item["name"] == "PutMsg":
+                # PutMsg is Detail tier (non-basic)
+                assert item.get("non_basic")
+            elif item["name"] == "AllocMem":
+                # AllocMem is Manual tier (non-basic)
+                assert item.get("non_basic")
+
+    def test_non_basic_dimmed_in_render(self):
+        """Non-basic functions are rendered dim even when enabled."""
+        funcs = {"AllocMem": 128, "Open": 12}
+        grid = _make_grid(funcs=funcs, initial_lib="exec")
+        cw = ColorWriter(force_color=True)
+
+        alloc_item = next(
+            i for i in grid.func_items if i["name"] == "AllocMem")
+        # AllocMem should be enabled but dimmed (non-basic)
+        assert alloc_item["enabled"]
+        text = grid._format_item(alloc_item, cw, 30)
+        assert "\033[2m" in text  # dim ANSI code
+
+    def test_basic_func_not_dimmed(self):
+        """Basic-tier functions are NOT dimmed when enabled."""
+        funcs = {"Open": 12}
+        grid = _make_grid(funcs=funcs, initial_lib="dos")
+        cw = ColorWriter(force_color=True)
+
+        open_item = next(
+            i for i in grid.func_items if i["name"] == "Open")
+        assert open_item["enabled"]
+        text = grid._format_item(open_item, cw, 30)
+        # Should NOT have dim ANSI code
+        assert "\033[2m" not in text
+
+    def test_non_basic_updated_on_lib_switch(self):
+        """Non-basic marking is refreshed when switching libraries."""
+        funcs1 = {"Open": 12}
+        grid = _make_grid(funcs=funcs1, initial_lib="dos")
+
+        # Switch to exec library with different functions
+        funcs2 = {"AllocMem": 50, "OpenLibrary": 30}
+        grid.update_func_items(funcs2, "exec")
+
+        for item in grid.func_items:
+            if item["name"] == "AllocMem":
+                assert item.get("non_basic")
+            elif item["name"] == "OpenLibrary":
+                assert not item.get("non_basic")
+
+    def test_func_header_rendered_in_three_column(self):
+        """Three-column rendering includes tier label in FUNCTIONS header."""
+        grid = _make_grid(initial_lib="exec", tier_level=2)
+        grid.active_category = 1  # FUNCTIONS
+        cw = ColorWriter(force_color=False)
+        lines = grid._build_lines(120, cw)
+        # First line is the header row
+        header = lines[0]
+        assert "[detail]" in header
+        assert "(exec)" in header

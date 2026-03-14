@@ -6,9 +6,10 @@
  * from the patch descriptor.
  *
  * The stub consists of three regions:
- *   1. Prefix (196 bytes): fast-path checks, task filter, register save,
- *      ring buffer slot reservation, EClock capture, event header fields.
- *      Identical for all functions.
+ *   1. Prefix (196 bytes standard, 204 with NULL-argument filter):
+ *      fast-path checks, task filter, optional NULL-arg skip,
+ *      register save, ring buffer slot reservation, EClock capture,
+ *      event header fields.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
  *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
@@ -286,8 +287,13 @@ int stub_generate_and_install(
 {
     UBYTE *stub_mem;
     UWORD *p;
-    UWORD var_buf[50];    /* Worst case: 4-arg(12) + arg_count(3) + flags(3) + string(11) + task_name(16) + valid(2) = 47 */
+    UWORD var_buf[120];   /* Worst case: 4-arg(12) + arg_count(3) + flags(3) +
+                           *   dual-string(28) + cli_CommandName(47) + valid(2) = 95
+                           *   (DEREF_LOCK_VOLUME path: 93 words -- CurrentDir is 1-arg)
+                           *   120 provides ample margin.
+                           *   (Phase 9d: cli_CommandName + DEREF_LOCK_VOLUME) */
     int var_words;
+    int prefix_bytes;     /* 196 standard, 204 with NULL-argument filter */
     int total_bytes;
     int alloc_size;
     int suffix_start;     /* byte offset where suffix begins in assembled stub */
@@ -295,6 +301,12 @@ int stub_generate_and_install(
     APTR old_addr;
 
     /* ---- 1. Build variable region ---- */
+
+    /* Phase 9b: NULL-argument filter extends the prefix by 8 bytes */
+    prefix_bytes = STUB_PREFIX_BYTES;
+    if (patch->skip_null_arg != 0) {
+        prefix_bytes = STUB_PREFIX_BYTES + 8;  /* 204 */
+    }
 
     var_words = 0;
 
@@ -308,9 +320,17 @@ int stub_generate_and_install(
         var_buf[var_words++] = entry_arg_ofs;          /* dest entry offset */
     }
 
-    /* arg_count immediate: move.b #<count>, 32(a5) */
+    /* arg_count immediate: move.b #<count>, 32(a5)
+     * Phase 9b: IORequest and TextAttr deref capture an extra field in
+     * args[1], so arg_count is forced to 2 for those functions. */
     {
-        UBYTE actual_count = (patch->arg_count > 4) ? 4 : patch->arg_count;
+        UBYTE actual_count;
+        if (patch->name_deref_type == DEREF_IOREQUEST ||
+            patch->name_deref_type == DEREF_TEXTATTR) {
+            actual_count = 2;
+        } else {
+            actual_count = (patch->arg_count > 4) ? 4 : patch->arg_count;
+        }
         var_buf[var_words++] = 0x1B7C;                /* move.b #imm, d16(a5) */
         var_buf[var_words++] = (UWORD)actual_count;   /* immediate byte value */
         var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, arg_count);
@@ -321,51 +341,390 @@ int stub_generate_and_install(
     var_buf[var_words++] = 0x0001;                    /* FLAG_HAS_ECLOCK      */
     var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, flags);
 
-    /* String capture (if any string argument) */
-    if (patch->string_args != 0) {
-        /* Find the first string argument (lowest set bit) */
-        int str_arg_idx;
-        WORD str_frame_ofs;
-
-        for (str_arg_idx = 0; str_arg_idx < (int)patch->arg_count; str_arg_idx++) {
-            if (patch->string_args & (1 << str_arg_idx))
-                break;
-        }
-        str_frame_ofs = reg_to_frame_offset(patch->arg_regs[str_arg_idx]);
-
-        var_buf[var_words++] = 0x206F;                /* movea.l d16(sp), a0 */
-        var_buf[var_words++] = (UWORD)str_frame_ofs;  /* source frame offset */
-        var_buf[var_words++] = 0x43ED;                /* lea d16(a5), a1 */
-        var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
-        /* NULL check: if a0 == 0, skip to clr.b (displacement = 8 bytes) */
-        var_buf[var_words++] = 0x4A88;                /* tst.l a0 */
-        var_buf[var_words++] = 0x6708;                /* beq.s +8 (skip to clr.b) */
-        var_buf[var_words++] = 0x703E;                /* moveq #62, d0 */
-        var_buf[var_words++] = 0x12D8;                /* move.b (a0)+, (a1)+ */
-        var_buf[var_words++] = 0x57C8;                /* dbeq d0, .strcopy */
-        var_buf[var_words++] = 0xFFFC;                /* displacement -4 */
-        var_buf[var_words++] = 0x4211;                /* clr.b (a1) */
+    /* Phase 9b: indirect string capture and direct string capture
+     * are mutually exclusive. A function has one or the other, never both. */
+    if (patch->string_args != 0 && patch->name_deref_type != 0) {
+        /* Programming error -- should never happen */
+        return -1;
     }
 
-    /* Task name capture: copy ThisTask->tc_Node.ln_Name into entry->task_name.
+    /* Phase 9b: indirect string capture (Groups A/B/C).
+     * Dereferences struct pointers to capture human-readable names
+     * (e.g. library name, device name, font name) into string_data. */
+    if (patch->name_deref_type != 0) {
+        WORD frame_ofs = reg_to_frame_offset(patch->arg_regs[0]);
+
+        switch (patch->name_deref_type) {
+        case DEREF_LN_NAME:
+            /* Group A: one-level deref, struct->ln_Name (offset 10)
+             * 36 bytes, 18 words.
+             * Used by: CloseLibrary, ObtainSemaphore, ReleaseSemaphore,
+             *          GetMsg, PutMsg, DeleteMsgPort */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            var_buf[var_words++] = 0x2068;      /* movea.l 10(a0), a0    */
+            var_buf[var_words++] = 0x000A;      /* [10 = ln_Name offset] */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            break;
+
+        case DEREF_IOREQUEST:
+            /* Group B: IORequest two-level deref + io_Command capture
+             * 54 bytes, 27 words.
+             * ioReq -> io_Device (offset 20) -> ln_Name (offset 10)
+             * Also captures io_Command (UWORD at offset 28) into args[1].
+             * Used by: DoIO, SendIO, WaitIO, AbortIO, CheckIO, CloseDevice */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x672A;      /* beq.s +42 .skip_name  */
+            /* io_Command capture (UWORD at IORequest+28 -> args[1]) */
+            var_buf[var_words++] = 0x7000;      /* moveq #0, d0          */
+            var_buf[var_words++] = 0x3028;      /* move.w d16(a0), d0    */
+            var_buf[var_words++] = 0x001C;      /* [28 = io_Command ofs] */
+            var_buf[var_words++] = 0x2B40;      /* move.l d0, d16(a5)    */
+            var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, args) + 4);
+            /* First deref: io_Device at offset 20 */
+            var_buf[var_words++] = 0x2068;      /* movea.l d16(a0), a0   */
+            var_buf[var_words++] = 0x0014;      /* [20 = io_Device ofs]  */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            /* Second deref: ln_Name at offset 10 */
+            var_buf[var_words++] = 0x2068;      /* movea.l d16(a0), a0   */
+            var_buf[var_words++] = 0x000A;      /* [10 = ln_Name ofs]    */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            /* String copy */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            /* .skip_name: */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            /* .done: */
+            break;
+
+        case DEREF_TEXTATTR:
+            /* Group C: TextAttr->ta_Name (offset 0) + ta_YSize capture
+             * 44 bytes, 22 words.
+             * Also captures ta_YSize (UWORD at offset 4) into args[1].
+             * Used by: OpenFont */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6720;      /* beq.s +32 .skip_name  */
+            /* ta_YSize capture (UWORD at TextAttr+4 -> args[1]) */
+            var_buf[var_words++] = 0x7000;      /* moveq #0, d0          */
+            var_buf[var_words++] = 0x3028;      /* move.w d16(a0), d0    */
+            var_buf[var_words++] = 0x0004;      /* [4 = ta_YSize offset] */
+            var_buf[var_words++] = 0x2B40;      /* move.l d0, d16(a5)    */
+            var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, args) + 4);
+            /* ta_Name deref: offset 0, use (a0) mode */
+            var_buf[var_words++] = 0x2050;      /* movea.l (a0), a0      */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            /* String copy */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            /* .skip_name: */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            /* .done: */
+            break;
+
+        case DEREF_LOCK_VOLUME:
+            /* Lock BPTR -> fl_Volume -> dol_Name BSTR -> volume name string
+             * Three BPTR dereferences with NULL checks at each level.
+             * Appends ":" to volume name for AmigaOS convention.
+             *
+             * Offsets (verified from NDK dos/dosextens.h):
+             *   FileLock->fl_Volume at offset 16 (BPTR)
+             *   DosList->dol_Name at offset 40 (BPTR to BSTR)
+             *
+             * 35 words = 70 bytes.
+             * Uses a0, a1, d0 as scratch (saved by MOVEM). */
+
+            /* Load lock BPTR from arg0 frame slot */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x2008;      /* move.l a0, d0         */
+            var_buf[var_words++] = 0x673C;      /* beq.s +60 .skip_vol   */
+
+            /* BADDR the lock: BPTR -> FileLock* */
+            var_buf[var_words++] = 0xE580;      /* asl.l #2, d0          */
+            var_buf[var_words++] = 0x2040;      /* movea.l d0, a0        */
+
+            /* Read fl_Volume (BPTR at FileLock offset 16) */
+            var_buf[var_words++] = 0x2028;      /* move.l 16(a0), d0     */
+            var_buf[var_words++] = 0x0010;
+            var_buf[var_words++] = 0x6732;      /* beq.s +50 .skip_vol   */
+
+            /* BADDR the volume DosList entry */
+            var_buf[var_words++] = 0xE580;      /* asl.l #2, d0          */
+            var_buf[var_words++] = 0x2040;      /* movea.l d0, a0        */
+
+            /* Read dol_Name (BPTR to BSTR at DosList offset 40) */
+            var_buf[var_words++] = 0x2028;      /* move.l 40(a0), d0     */
+            var_buf[var_words++] = 0x0028;
+            var_buf[var_words++] = 0x6726;      /* beq.s +38 .skip_vol   */
+
+            /* BADDR the BSTR */
+            var_buf[var_words++] = 0xE580;      /* asl.l #2, d0          */
+            var_buf[var_words++] = 0x2040;      /* movea.l d0, a0        */
+
+            /* Read BSTR: first byte is length */
+            var_buf[var_words++] = 0x7000;      /* moveq #0, d0          */
+            var_buf[var_words++] = 0x1018;      /* move.b (a0)+, d0      */
+            var_buf[var_words++] = 0x671C;      /* beq.s +28 .skip_vol   */
+
+            /* Clamp to 61 chars (64 - ":" - NUL - 1 safety) */
+            var_buf[var_words++] = 0xB07C;      /* cmp.w #61, d0         */
+            var_buf[var_words++] = 0x003D;
+            var_buf[var_words++] = 0x6302;      /* bls.s +2 .len_ok      */
+            var_buf[var_words++] = 0x703D;      /* moveq #61, d0         */
+            /* .len_ok: */
+
+            /* Copy volume name into string_data (offset 34 from a5) */
+            var_buf[var_words++] = 0x43ED;      /* lea 34(a5), a1        */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x5340;      /* subq.w #1, d0         */
+            /* .vol_copy: */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x51C8;      /* dbf d0, .vol_copy     */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+
+            /* Append ":" and NUL-terminate */
+            var_buf[var_words++] = 0x12FC;      /* move.b #':', (a1)+    */
+            var_buf[var_words++] = 0x003A;      /* ':' = 0x3A            */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .vol_done    */
+
+            /* .skip_vol: */
+            var_buf[var_words++] = 0x422D;      /* clr.b 34(a5)          */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            /* .vol_done: */
+            break;
+        }
+    } else if (patch->string_args != 0) {
+        /* Count string arguments */
+        int str_count = 0;
+        int bit;
+        for (bit = 0; bit < (int)patch->arg_count; bit++) {
+            if (patch->string_args & (1 << bit))
+                str_count++;
+        }
+
+        if (str_count == 1) {
+            /* Single string: full 63-byte capture (existing behavior) */
+            int str_arg_idx;
+            WORD str_frame_ofs;
+
+            for (str_arg_idx = 0; str_arg_idx < (int)patch->arg_count; str_arg_idx++) {
+                if (patch->string_args & (1 << str_arg_idx))
+                    break;
+            }
+            str_frame_ofs = reg_to_frame_offset(patch->arg_regs[str_arg_idx]);
+
+            var_buf[var_words++] = 0x206F;                /* movea.l d16(sp), a0 */
+            var_buf[var_words++] = (UWORD)str_frame_ofs;  /* source frame offset */
+            var_buf[var_words++] = 0x43ED;                /* lea d16(a5), a1 */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            /* NULL check: if a0 == 0, skip to clr.b (displacement = 8 bytes) */
+            var_buf[var_words++] = 0x4A88;                /* tst.l a0 */
+            var_buf[var_words++] = 0x6708;                /* beq.s +8 (skip to clr.b) */
+            var_buf[var_words++] = 0x703E;                /* moveq #62, d0 */
+            var_buf[var_words++] = 0x12D8;                /* move.b (a0)+, (a1)+ */
+            var_buf[var_words++] = 0x57C8;                /* dbeq d0, .strcopy */
+            var_buf[var_words++] = 0xFFFC;                /* displacement -4 */
+            var_buf[var_words++] = 0x4211;                /* clr.b (a1) */
+        } else if (str_count == 2) {
+            /* Dual string: split string_data into two 32-byte halves.
+             * First string: string_data[0..31]  (offset 34(a5), max 31 chars)
+             * Second string: string_data[32..63] (offset 66(a5), max 31 chars)
+             *
+             * Each half has: load arg, lea dest, tst NULL, beq.s .null,
+             * moveq #30 d0, copy loop (move.b + dbeq), clr.b NUL,
+             * bra.s .next, .null: clr.b field.
+             *
+             * Branch displacements (verified):
+             *   beq.s +12: skips moveq(2) + move.b(2) + dbeq(4) + clr.b(2)
+             *              + bra.s(2) = 12 bytes -> lands on .null clr.b
+             *   bra.s +4:  skips .null block = clr.b d16(a5) (4 bytes)
+             *              -> lands on next string block or .done */
+            int args_found = 0;
+            WORD str_frame_offsets[2];
+
+            for (bit = 0; bit < (int)patch->arg_count && args_found < 2; bit++) {
+                if (patch->string_args & (1 << bit)) {
+                    str_frame_offsets[args_found] = reg_to_frame_offset(
+                        patch->arg_regs[bit]);
+                    args_found++;
+                }
+            }
+
+            /* First string capture: arg0 -> string_data[0..31] */
+            var_buf[var_words++] = 0x206F;                        /* movea.l d16(sp), a0 */
+            var_buf[var_words++] = (UWORD)str_frame_offsets[0];
+            var_buf[var_words++] = 0x43ED;                        /* lea 34(a5), a1 */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x4A88;                        /* tst.l a0 */
+            var_buf[var_words++] = 0x670C;                        /* beq.s +12 (.null1) */
+            var_buf[var_words++] = 0x701E;                        /* moveq #30, d0 */
+            var_buf[var_words++] = 0x12D8;                        /* move.b (a0)+, (a1)+ */
+            var_buf[var_words++] = 0x57C8;                        /* dbeq d0, .copy1 */
+            var_buf[var_words++] = 0xFFFC;                        /* displacement -4 */
+            var_buf[var_words++] = 0x4211;                        /* clr.b (a1) */
+            var_buf[var_words++] = 0x6004;                        /* bra.s +4 (.str2) */
+            /* .null1: */
+            var_buf[var_words++] = 0x422D;                        /* clr.b 34(a5) */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+
+            /* Second string capture: arg1 -> string_data[32..63] */
+            /* .str2: */
+            var_buf[var_words++] = 0x206F;                        /* movea.l d16(sp), a0 */
+            var_buf[var_words++] = (UWORD)str_frame_offsets[1];
+            var_buf[var_words++] = 0x43ED;                        /* lea 66(a5), a1 */
+            var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, string_data) + 32);
+            var_buf[var_words++] = 0x4A88;                        /* tst.l a0 */
+            var_buf[var_words++] = 0x670C;                        /* beq.s +12 (.null2) */
+            var_buf[var_words++] = 0x701E;                        /* moveq #30, d0 */
+            var_buf[var_words++] = 0x12D8;                        /* move.b (a0)+, (a1)+ */
+            var_buf[var_words++] = 0x57C8;                        /* dbeq d0, .copy2 */
+            var_buf[var_words++] = 0xFFFC;                        /* displacement -4 */
+            var_buf[var_words++] = 0x4211;                        /* clr.b (a1) */
+            var_buf[var_words++] = 0x6004;                        /* bra.s +4 (.done2) */
+            /* .null2: */
+            var_buf[var_words++] = 0x422D;                        /* clr.b 66(a5) */
+            var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, string_data) + 32);
+            /* .done2: */
+        }
+    }
+
+    /* Task name capture: cli_CommandName resolution with fallback.
+     * Tries pr_CLI -> cli_CommandName (BSTR) first for CLI processes,
+     * falls back to tc_Node.ln_Name for non-CLI processes/tasks.
      * a6 = SysBase (from prefix byte 186), a5 = entry pointer.
-     * Uses a0, a1, d0 as scratch (all saved by MOVEM). */
-    var_buf[var_words++] = 0x206E;  /* movea.l 276(a6), a0  ThisTask         */
+     * Uses a0, a1, d0 as scratch (all saved by MOVEM).
+     *
+     * All memory reads are in the pre-call variable region where
+     * reads work correctly (see MEMORY.md note about post-call
+     * handler memory read freezes).
+     *
+     * BSTR handling: AmigaOS BSTRs are BPTRs (longword-aligned
+     * pointers divided by 4). lsl.l #2 converts to real address.
+     * First byte is length, followed by string data. No NUL
+     * terminator in the BSTR itself.
+     *
+     * NT_PROCESS guard: A plain Task struct is only 92 bytes.
+     * pr_CLI is at Process offset 172, which is 80 bytes past the
+     * end of a plain Task.  We must verify tc_Node.ln_Type == 13
+     * (NT_PROCESS) before reading pr_CLI, otherwise a plain Task
+     * calling a patched exec.library function would read garbage.
+     *
+     * Offsets:
+     *   276(a6) = SysBase->ThisTask (Process*)
+     *   8(a0)   = tc_Node.ln_Type (UBYTE, NT_PROCESS=13)
+     *   172(a0) = pr_CLI (BPTR to CommandLineInterface)
+     *   16(a1)  = cli_CommandName (BPTR to BSTR)
+     *   10(a0)  = tc_Node.ln_Name (C string pointer)
+     *   106(a5) = entry->task_name (22-byte field)
+     *
+     * 47 words = 94 bytes. Net growth: +31 words (+62 bytes) per stub.
+     */
+
+    /* --- Try CLI path first --- */
+    var_buf[var_words++] = 0x206E;  /* movea.l 276(a6), a0  ThisTask            */
     var_buf[var_words++] = 0x0114;
-    var_buf[var_words++] = 0x2068;  /* movea.l 10(a0), a0   ln_Name          */
+
+    /* Guard: only Processes have pr_CLI at offset 172 */
+    var_buf[var_words++] = 0x0C28;  /* cmpi.b #13, 8(a0)    NT_PROCESS check    */
+    var_buf[var_words++] = 0x000D;  /* #13 = NT_PROCESS                         */
+    var_buf[var_words++] = 0x0008;  /* offset 8 = tc_Node.ln_Type               */
+    var_buf[var_words++] = 0x6632;  /* bne.s +50 (.use_task_name)               */
+
+    var_buf[var_words++] = 0x2028;  /* move.l 172(a0), d0   pr_CLI (BPTR)       */
+    var_buf[var_words++] = 0x00AC;
+    var_buf[var_words++] = 0x672C;  /* beq.s +44 (.use_task_name)               */
+
+    /* BADDR: BPTR -> real pointer */
+    var_buf[var_words++] = 0xE580;  /* asl.l #2, d0                             */
+    var_buf[var_words++] = 0x2240;  /* movea.l d0, a1       a1 = CLI struct     */
+
+    var_buf[var_words++] = 0x2029;  /* move.l 16(a1), d0    cli_CommandName BPTR */
+    var_buf[var_words++] = 0x0010;
+    var_buf[var_words++] = 0x6722;  /* beq.s +34 (.use_task_name)               */
+
+    /* BADDR the BSTR */
+    var_buf[var_words++] = 0xE580;  /* asl.l #2, d0                             */
+    var_buf[var_words++] = 0x2240;  /* movea.l d0, a1       a1 = BSTR pointer   */
+
+    /* Read BSTR: first byte is length */
+    var_buf[var_words++] = 0x7000;  /* moveq #0, d0                             */
+    var_buf[var_words++] = 0x1019;  /* move.b (a1)+, d0     d0 = string length  */
+    var_buf[var_words++] = 0x6718;  /* beq.s +24 (.use_task_name)               */
+
+    /* Clamp to 21 chars (task_name field is 22 bytes with NUL) */
+    var_buf[var_words++] = 0xB07C;  /* cmp.w #21, d0                            */
+    var_buf[var_words++] = 0x0015;
+    var_buf[var_words++] = 0x6302;  /* bls.s +2 (.cli_len_ok)                   */
+    var_buf[var_words++] = 0x7015;  /* moveq #21, d0                            */
+    /* .cli_len_ok: */
+
+    /* Copy BSTR data into entry->task_name */
+    var_buf[var_words++] = 0x41ED;  /* lea 106(a5), a0      &entry->task_name   */
+    var_buf[var_words++] = 0x006A;
+    var_buf[var_words++] = 0x5340;  /* subq.w #1, d0        adjust for dbf      */
+    /* .cli_copy: */
+    var_buf[var_words++] = 0x10D9;  /* move.b (a1)+, (a0)+                      */
+    var_buf[var_words++] = 0x51C8;  /* dbf d0, .cli_copy                        */
+    var_buf[var_words++] = 0xFFFC;  /* displacement -4                           */
+    var_buf[var_words++] = 0x4210;  /* clr.b (a0)           NUL-terminate       */
+    var_buf[var_words++] = 0x6020;  /* bra.s +32 (.name_done)                   */
+
+    /* --- Fallback: tc_Node.ln_Name --- */
+    /* .use_task_name: */
+    var_buf[var_words++] = 0x206E;  /* movea.l 276(a6), a0  reload ThisTask     */
+    var_buf[var_words++] = 0x0114;
+    var_buf[var_words++] = 0x2068;  /* movea.l 10(a0), a0   ln_Name             */
     var_buf[var_words++] = 0x000A;
-    var_buf[var_words++] = 0x2008;  /* move.l a0, d0        NULL test         */
-    var_buf[var_words++] = 0x6710;  /* beq.s +16 (.tn_skip -> clr.b 106(a5)) */
-    var_buf[var_words++] = 0x43ED;  /* lea 106(a5), a1      &entry->task_name */
+    var_buf[var_words++] = 0x2008;  /* move.l a0, d0        NULL check          */
+    var_buf[var_words++] = 0x6710;  /* beq.s +16 (.name_clear)                  */
+    var_buf[var_words++] = 0x43ED;  /* lea 106(a5), a1      &entry->task_name   */
     var_buf[var_words++] = 0x006A;
-    var_buf[var_words++] = 0x7014;  /* moveq #20, d0        max 20 chars      */
-    var_buf[var_words++] = 0x12D8;  /* move.b (a0)+, (a1)+  .tn_copy          */
-    var_buf[var_words++] = 0x57C8;  /* dbeq d0, .tn_copy                      */
-    var_buf[var_words++] = 0xFFFC;  /* displacement -4                        */
-    var_buf[var_words++] = 0x4211;  /* clr.b (a1)           NUL terminate     */
-    var_buf[var_words++] = 0x6004;  /* bra.s +4 (.tn_done)                    */
-    var_buf[var_words++] = 0x422D;  /* clr.b 106(a5)        NUL empty name    */
+    var_buf[var_words++] = 0x7014;  /* moveq #20, d0        max 21 chars        */
+    /* .tn_copy: */
+    var_buf[var_words++] = 0x12D8;  /* move.b (a0)+, (a1)+                      */
+    var_buf[var_words++] = 0x57C8;  /* dbeq d0, .tn_copy                        */
+    var_buf[var_words++] = 0xFFFC;  /* displacement -4                           */
+    var_buf[var_words++] = 0x4211;  /* clr.b (a1)           NUL-terminate       */
+    var_buf[var_words++] = 0x6004;  /* bra.s +4 (.name_done)                    */
+    /* .name_clear: */
+    var_buf[var_words++] = 0x422D;  /* clr.b 106(a5)        empty task_name     */
     var_buf[var_words++] = 0x006A;
+    /* .name_done: */
 
     /* Set valid=2 BEFORE the suffix's trampoline calls the original function.
      * This must happen pre-call because blocking functions (e.g. dos.RunCommand)
@@ -386,7 +745,7 @@ int stub_generate_and_install(
 
     /* ---- 2. Calculate total size and allocate ---- */
 
-    total_bytes = STUB_PREFIX_BYTES + (var_words * 2) + STUB_SUFFIX_BYTES;
+    total_bytes = prefix_bytes + (var_words * 2) + STUB_SUFFIX_BYTES;
     alloc_size = (total_bytes + 3) & ~3;  /* ULONG-align */
 
     stub_mem = (UBYTE *)AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
@@ -395,11 +754,67 @@ int stub_generate_and_install(
 
     /* ---- 3. Assemble: prefix + variable + suffix ---- */
 
-    CopyMem((APTR)stub_prefix, (APTR)stub_mem, STUB_PREFIX_BYTES);
-    CopyMem((APTR)var_buf, (APTR)(stub_mem + STUB_PREFIX_BYTES),
+    /* Phase 9b: NULL-argument filter is inserted at byte 56, between
+     * the task filter check and the MOVEM save.  This placement is
+     * critical: the .disabled path only pops saved_a5, so the NULL
+     * check branch to .disabled must fire BEFORE the MOVEM push.
+     *
+     * For functions without skip_null_arg, the full 196-byte prefix
+     * template is copied as a single block (no change from before).
+     * For functions with skip_null_arg, the prefix is split:
+     *   bytes 0-55:   fast-path checks + task filter (copied first)
+     *   bytes 56-63:  NULL-argument check (emitted inline)
+     *   bytes 64-203: MOVEM save through event header (template 56-195)
+     */
+#define NULL_INSERT_POINT  56  /* byte offset where NULL check is inserted */
+
+    if (patch->skip_null_arg != 0) {
+        UWORD *null_check;
+        UWORD cmpa_opcode;
+
+        /* Copy pre-MOVEM portion (bytes 0-55) */
+        CopyMem((APTR)stub_prefix, (APTR)stub_mem, NULL_INSERT_POINT);
+
+        /* Emit 8-byte NULL-argument check at byte 56 */
+        null_check = (UWORD *)(stub_mem + NULL_INSERT_POINT);
+
+        /* NULL-argument check: compare register to zero.
+         * For address registers: cmpa.w #0, An (4 bytes)
+         *   CMPA format: 1011 rrr 011 111 100
+         *   a0: 0xB0FC, a1: 0xB2FC
+         *   CMPA.W sign-extends immediate to 32 bits -- full-width test.
+         * For data registers: tst.l Dn (2 bytes) + nop (2 bytes)
+         *   TST.L format: 0100 1010 10 000 rrr
+         *   d0: 0x4A80, d1: 0x4A81
+         *   Must use .l -- .w would only test low 16 bits, causing
+         *   false NULL matches for BPTRs like 0x00010000. */
+        if (patch->skip_null_arg >= REG_A0) {
+            /* Address register: cmpa.w #0, An (4 bytes: opcode + immediate) */
+            cmpa_opcode = 0xB0FC | ((patch->skip_null_arg - REG_A0) << 9);
+            null_check[0] = cmpa_opcode;  /* cmpa.w #0, An        */
+            null_check[1] = 0x0000;       /* immediate 0           */
+        } else {
+            /* Data register: tst.l Dn (2 bytes) + nop (2 bytes) */
+            cmpa_opcode = 0x4A80 | (patch->skip_null_arg - REG_D0);
+            null_check[0] = cmpa_opcode;  /* tst.l Dn              */
+            null_check[1] = 0x4E71;       /* nop (pad to 4 bytes)  */
+        }
+        null_check[2] = 0x6700;       /* beq.w .disabled      */
+        null_check[3] = 0x0000;       /* displacement (patched below) */
+
+        /* Copy post-MOVEM portion (template bytes 56-195 -> stub bytes 64-203) */
+        CopyMem((APTR)((UBYTE *)stub_prefix + NULL_INSERT_POINT),
+                (APTR)(stub_mem + NULL_INSERT_POINT + 8),
+                STUB_PREFIX_BYTES - NULL_INSERT_POINT);
+    } else {
+        /* No NULL filter -- copy full prefix template as before */
+        CopyMem((APTR)stub_prefix, (APTR)stub_mem, STUB_PREFIX_BYTES);
+    }
+
+    CopyMem((APTR)var_buf, (APTR)(stub_mem + prefix_bytes),
             var_words * 2);
 
-    suffix_start = STUB_PREFIX_BYTES + (var_words * 2);
+    suffix_start = prefix_bytes + (var_words * 2);
     CopyMem((APTR)stub_suffix, (APTR)(stub_mem + suffix_start),
             STUB_SUFFIX_BYTES);
 
@@ -407,67 +822,86 @@ int stub_generate_and_install(
 
     /* ---- 4. Patch addresses and displacements ---- */
 
-    /* PATCH_ADDR -- 4 occurrences:
-     *   3 in prefix (fixed offsets), 1 in suffix (suffix-relative) */
+    /* Phase 9b: for NULL-filtered functions, all prefix byte offsets
+     * at or after NULL_INSERT_POINT (56) are shifted by +8 because the
+     * 8-byte NULL check was inserted there.  ns (null_shift) is 0 or 8. */
     {
-        ULONG pa = (ULONG)patch;
-        patch_addr(p, PATCH_OFF_1, pa);     /* prefix: enable check */
-        patch_addr(p, PATCH_OFF_2, pa);     /* prefix: use_count inc */
-        patch_addr(p, PATCH_OFF_3, pa);     /* prefix: lib_id/lvo copy */
-        /* occurrence 4 is in suffix at suffix-relative offset PATCH_SUFFIX_REL */
-        patch_addr(p, suffix_start + PATCH_SUFFIX_REL, pa);
-    }
+        int ns = (patch->skip_null_arg != 0) ? 8 : 0;
 
-    /* ANCHOR_ADDR -- 1 occurrence (prefix, fixed offset) */
-    patch_addr(p, ANCHOR_OFF_1, (ULONG)anchor);
+        /* PATCH_ADDR -- 4 occurrences:
+         *   3 in prefix (fixed offsets), 1 in suffix (suffix-relative) */
+        {
+            ULONG pa = (ULONG)patch;
+            patch_addr(p, PATCH_OFF_1, pa);          /* prefix byte 4: enable check (< 56, no shift) */
+            patch_addr(p, PATCH_OFF_2 + ns, pa);     /* prefix byte 102: use_count inc (>= 56, shift) */
+            patch_addr(p, PATCH_OFF_3 + ns, pa);     /* prefix byte 170: lib_id/lvo copy (>= 56, shift) */
+            /* occurrence 4 is in suffix at suffix-relative offset PATCH_SUFFIX_REL */
+            patch_addr(p, suffix_start + PATCH_SUFFIX_REL, pa);
+        }
 
-    /* RING_ENTRIES_ADDR -- 1 occurrence (prefix, fixed offset) */
-    patch_addr(p, ENTRIES_OFF_1, (ULONG)entries);
+        /* ANCHOR_ADDR -- 1 occurrence (prefix byte 18, < 56, no shift) */
+        patch_addr(p, ANCHOR_OFF_1, (ULONG)anchor);
 
-    /* TIMER_BASE_ADDR -- 1 occurrence (prefix, EClock block) */
-    patch_addr(p, TIMER_BASE_OFF, (ULONG)anchor->timer_base);
+        /* RING_ENTRIES_ADDR -- 1 occurrence (prefix byte 130, >= 56, shift) */
+        patch_addr(p, ENTRIES_OFF_1 + ns, (ULONG)entries);
 
-    /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block) */
-    if (dos_base != 0) {
-        patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL, dos_base);
-    }
+        /* TIMER_BASE_ADDR -- 1 occurrence (prefix byte 138, >= 56, shift) */
+        patch_addr(p, TIMER_BASE_OFF + ns, (ULONG)anchor->timer_base);
 
-    /* Struct field displacements (prefix -- patched from offsetof) */
-    p[DISP_ENABLED / 2]       = (UWORD)offsetof(struct atrace_patch, enabled);
-    p[DISP_USE_COUNT_INC / 2] = (UWORD)offsetof(struct atrace_patch, use_count);
-    p[DISP_GLOBAL_ENABLE / 2] = (UWORD)offsetof(struct atrace_anchor, global_enable);
-    p[DISP_FILTER_TASK_1 / 2] = (UWORD)offsetof(struct atrace_anchor, filter_task);
-    p[DISP_FILTER_TASK_2 / 2] = (UWORD)offsetof(struct atrace_anchor, filter_task);
-    p[DISP_RING / 2]          = (UWORD)offsetof(struct atrace_anchor, ring);
-    p[DISP_EVENT_SEQ_RD / 2]  = (UWORD)offsetof(struct atrace_anchor, event_sequence);
-    p[DISP_EVENT_SEQ_WR / 2]  = (UWORD)offsetof(struct atrace_anchor, event_sequence);
-    p[DISP_WRITE_POS_RD / 2]  = (UWORD)offsetof(struct atrace_ringbuf, write_pos);
-    p[DISP_CAPACITY / 2]      = (UWORD)offsetof(struct atrace_ringbuf, capacity);
-    p[DISP_READ_POS / 2]      = (UWORD)offsetof(struct atrace_ringbuf, read_pos);
-    p[DISP_WRITE_POS_WR / 2]  = (UWORD)offsetof(struct atrace_ringbuf, write_pos);
+        /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block -- no shift) */
+        if (dos_base != 0) {
+            patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL, dos_base);
+        }
 
-    /* Suffix displacement patches (suffix-relative offsets) */
-    {
-        int s = suffix_start;
-        p[(s + SUFFIX_DISP_USE_COUNT_DEC) / 2] =
-            (UWORD)offsetof(struct atrace_patch, use_count);
-        p[(s + SUFFIX_DISP_OVERFLOW) / 2] =
-            (UWORD)offsetof(struct atrace_ringbuf, overflow);
-    }
+        /* Struct field displacements (prefix -- patched from offsetof).
+         * Offsets < 56 are unshifted; offsets >= 56 are shifted by ns. */
+        p[DISP_ENABLED / 2]            = (UWORD)offsetof(struct atrace_patch, enabled);       /* byte 10, no shift */
+        p[(DISP_USE_COUNT_INC + ns) / 2] = (UWORD)offsetof(struct atrace_patch, use_count);   /* byte 108, shift */
+        p[DISP_GLOBAL_ENABLE / 2]      = (UWORD)offsetof(struct atrace_anchor, global_enable); /* byte 24, no shift */
+        p[DISP_FILTER_TASK_1 / 2]      = (UWORD)offsetof(struct atrace_anchor, filter_task);   /* byte 32, no shift */
+        p[DISP_FILTER_TASK_2 / 2]      = (UWORD)offsetof(struct atrace_anchor, filter_task);   /* byte 48, no shift */
+        p[(DISP_RING + ns) / 2]        = (UWORD)offsetof(struct atrace_anchor, ring);          /* byte 70, shift */
+        p[(DISP_EVENT_SEQ_RD + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 112, shift */
+        p[(DISP_EVENT_SEQ_WR + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 116, shift */
+        p[(DISP_WRITE_POS_RD + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 74, shift */
+        p[(DISP_CAPACITY + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, capacity);     /* byte 82, shift */
+        p[(DISP_READ_POS + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, read_pos);     /* byte 90, shift */
+        p[(DISP_WRITE_POS_WR + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 98, shift */
 
-    /* Branch displacements (prefix to suffix) */
-    {
-        int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED;
-        int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW;
+        /* Suffix displacement patches (suffix-relative offsets -- no shift) */
+        {
+            int s = suffix_start;
+            p[(s + SUFFIX_DISP_USE_COUNT_DEC) / 2] =
+                (UWORD)offsetof(struct atrace_patch, use_count);
+            p[(s + SUFFIX_DISP_OVERFLOW) / 2] =
+                (UWORD)offsetof(struct atrace_ringbuf, overflow);
+        }
 
-        /* beq.w .disabled at byte 12: displacement word at byte 14 */
-        p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
-        /* beq.w .disabled at byte 26: displacement word at byte 28 */
-        p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
-        /* bne.w .disabled at byte 52: displacement word at byte 54 */
-        p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
-        /* beq.w .overflow at byte 92: displacement word at byte 94 */
-        p[BEQ_OVERFLOW / 2]   = (UWORD)(overflow_byte - (92 + 2));
+        /* Branch displacements (prefix to suffix).
+         * Branches at bytes < 56 are unshifted in position but their
+         * displacements grow because the target (.disabled/.overflow)
+         * moved further away.  The beq.w .overflow at byte 92 shifts
+         * to byte 92+ns. */
+        {
+            int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED;
+            int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW;
+
+            /* beq.w .disabled at byte 12: displacement word at byte 14 (< 56, no pos shift) */
+            p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
+            /* beq.w .disabled at byte 26: displacement word at byte 28 (< 56, no pos shift) */
+            p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
+            /* bne.w .disabled at byte 52: displacement word at byte 54 (< 56, no pos shift) */
+            p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
+            /* beq.w .overflow at byte 92 (>= 56, shifts to 92+ns): displacement word at 94+ns */
+            p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (92 + ns + 2));
+
+            /* Phase 9b: NULL-argument filter beq.w .disabled at byte 56 */
+            if (patch->skip_null_arg != 0) {
+                /* beq.w at byte 60 (NULL_INSERT_POINT + 4), displacement at byte 62 */
+                p[(NULL_INSERT_POINT + 6) / 2] =
+                    (UWORD)(disabled_byte - (NULL_INSERT_POINT + 4 + 2));
+            }
+        }
     }
 
     /* ---- 5. Flush and install ---- */

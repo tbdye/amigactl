@@ -52,44 +52,53 @@ extern int stub_generate_and_install(
     struct atrace_event *entries,
     ULONG dos_base);
 
-/* Functions that are auto-disabled by default due to high frequency.
- * These are enabled automatically when filter_task is set (TRACE RUN),
- * because per-task volume is manageable. The user can also manually
- * enable them via "atrace_loader ENABLE <funcname>".
+/* --- Output Tier Tables ---
  *
- * MUST match the noise_func_names table in daemon/trace.c exactly. */
-static const char *noise_func_names[] = {
-    "FindPort",
-    "FindSemaphore",
-    "FindTask",
-    "GetMsg",
-    "PutMsg",
-    "ObtainSemaphore",
-    "ReleaseSemaphore",
-    "AllocMem",
-    "OpenLibrary",
-    /* Phase 5 additions */
-    "FreeMem",
-    "AllocVec",
-    "FreeVec",
-    "Read",
-    "Write",
-    /* Phase 5 device I/O additions */
-    "DoIO",
-    "SendIO",
-    "WaitIO",
-    "AbortIO",
-    "CheckIO",
-    /* Phase 9 additions */
-    "ReplyMsg",
-    "send",
-    "recv",
-    "WaitSelect",
-    "Wait",
-    "Signal",
+ * Functions are organized into progressive verbosity tiers.
+ * At install time, only Basic-tier functions are enabled by default.
+ * Detail, Verbose, and Manual functions are auto-disabled.
+ *
+ * The Python client (trace_tiers.py) is the source of truth for
+ * tier membership. These tables MUST stay in sync.
+ *
+ * NOTE: The daemon (trace.c) retains a unified noise_func_names[]
+ * table for TRACE STATUS reporting. That table should be updated
+ * to match the union of Detail + Verbose + Manual tiers.
+ */
+
+/* Detail tier: deeper debugging, noisy for casual use (15 functions) */
+static const char *tier_detail_funcs[] = {
+    /* exec.library */
+    "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
+    "PutMsg", "GetMsg",
+    "ObtainSemaphore", "ReleaseSemaphore", "ReplyMsg",
     "CloseLibrary",
-    "UnLock",
-    "OpenFont",
+    /* dos.library */
+    "Examine", "Seek",
+    /* intuition.library */
+    "ModifyIDCMP",
+    /* bsdsocket.library */
+    "sendto", "recvfrom",
+    NULL  /* sentinel */
+};
+
+/* Verbose tier: high-volume burst events (4 functions) */
+static const char *tier_verbose_funcs[] = {
+    /* dos.library */
+    "ExNext",
+    /* bsdsocket.library */
+    "send", "recv", "WaitSelect",
+    NULL  /* sentinel */
+};
+
+/* Manual tier: extreme event rate, task filter only (13 functions) */
+static const char *tier_manual_funcs[] = {
+    /* exec.library */
+    "AllocMem", "FreeMem", "AllocVec", "FreeVec",
+    "Wait", "Signal",
+    "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+    /* dos.library */
+    "Read", "Write",
     NULL  /* sentinel */
 };
 
@@ -409,6 +418,8 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             for (ri = 0; ri < 8; ri++)
                 p->arg_regs[ri] = func->arg_regs[ri];
             p->string_args = func->string_args;
+            p->name_deref_type = func->name_deref_type;
+            p->skip_null_arg = func->skip_null_arg;
 
             if (stub_generate_and_install(anchor, p, libbase, entries,
                                           saved_dos_base) < 0) {
@@ -439,20 +450,39 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             patches[idx].enabled = 1;
         }
     } else {
-        /* Auto-disable noise functions for system-wide usability.
-         * These are auto-enabled when filter_task is set (TRACE RUN). */
-        const char **np;
+        /* Auto-disable non-Basic tier functions.
+         * Basic-tier functions stay enabled (the default).
+         * Detail, Verbose, and Manual functions are disabled
+         * for system-wide usability. Users can enable them
+         * via tier switching (keys 1/2/3) or individually
+         * via the toggle grid. */
+        const char **tier_tables[] = {
+            tier_detail_funcs,
+            tier_verbose_funcs,
+            tier_manual_funcs,
+            NULL
+        };
+        const char ***tp;
         int noise_count = 0;
-        for (np = noise_func_names; *np; np++) {
-            int idx = find_patch_by_name(NULL, *np);
-            if (idx >= 0 && idx < total_patches) {
-                patches[idx].enabled = 0;
-                noise_count++;
+
+        for (tp = tier_tables; *tp; tp++) {
+            const char **np;
+            for (np = *tp; *np; np++) {
+                int idx = find_patch_by_name(NULL, *np);
+                if (idx >= 0 && idx < total_patches) {
+                    patches[idx].enabled = 0;
+                    noise_count++;
+                }
             }
         }
         if (noise_count > 0)
-            printf("Auto-disabled %d noise functions "
-                   "(use ENABLE to override)\n", noise_count);
+            printf("Auto-disabled %d non-basic functions "
+                   "(tiers: detail=%d, verbose=%d, manual=%d)\n",
+                   noise_count,
+                   /* count sentinel-terminated arrays */
+                   (int)(sizeof(tier_detail_funcs)/sizeof(char*) - 1),
+                   (int)(sizeof(tier_verbose_funcs)/sizeof(char*) - 1),
+                   (int)(sizeof(tier_manual_funcs)/sizeof(char*) - 1));
     }
 
     /* 7. Register the semaphore -- makes atrace discoverable */

@@ -285,7 +285,7 @@ int main(int argc, char **argv)
         tv.tv_micro = 0;
         if (trace_any_active(&daemon)) {
             tv.tv_secs = 0;
-            tv.tv_micro = 100000;  /* 100ms */
+            tv.tv_micro = 20000;  /* 20ms */
         }
         sigmask = SIGBREAKF_CTRL_C;
         if (g_proc_sigbit >= 0)

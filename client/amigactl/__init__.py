@@ -1676,6 +1676,33 @@ class AmigaConnection:
             if not was_blocking:
                 self._sock.setblocking(False)
 
+    def send_inline(self, cmd):
+        # type: (str) -> None
+        """Send a bare inline command during an active trace stream.
+
+        Fire-and-forget: no response is expected. Handles non-blocking
+        sockets like send_filter(): temporarily sets socket to blocking
+        mode with a short timeout for the sendall() call, then restores
+        non-blocking mode.
+
+        Args:
+            cmd: The command string to send (e.g. "TIER 2").
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        was_blocking = self._sock.getblocking()
+        try:
+            if not was_blocking:
+                self._sock.settimeout(2.0)
+            send_command(self._sock, cmd)
+        except (BlockingIOError, OSError):
+            # Fire-and-forget: silently drop if send fails.
+            pass
+        finally:
+            if not was_blocking:
+                self._sock.setblocking(False)
+
     def trace_enable(self, funcs=None):
         # type: (Optional[List[str]]) -> None
         """Enable atrace globally, or enable specific functions.

@@ -813,6 +813,12 @@ class TraceViewer:
         self.daemon_disabled_funcs = set()  # Daemon-disabled functions in "lib.func" format (Fix 3)
         self.user_enabled_funcs = set()  # Functions user explicitly enabled, "lib.func" format (Fix 3)
 
+        # Output tier state (Phase 9c)
+        from .trace_tiers import TIER_BASIC_LEVEL
+        self.current_tier = TIER_BASIC_LEVEL  # Default: Basic
+        self.manual_additions = set()  # func_name strings enabled outside tier
+        self.manual_removals = set()   # func_name strings disabled within tier
+
         # Resize handling (C7 fix)
         self._resize_pending = False
 
@@ -888,6 +894,9 @@ class TraceViewer:
                 self._draw_status_bar()
                 self._draw_header()
                 self._draw_hotkey_bar()
+                # Apply initial tier if not Basic (Phase 9c)
+                if self.current_tier > 1:
+                    self._apply_initial_tier()
                 self._event_loop()
             except KeyboardInterrupt:
                 self._stop_trace()
@@ -1229,6 +1238,12 @@ class TraceViewer:
         elif key == "c":
             if not self.paused:
                 self._clear_events()
+        elif key == "1":
+            self._switch_tier(1)
+        elif key == "2":
+            self._switch_tier(2)
+        elif key == "3":
+            self._switch_tier(3)
         elif key == "\r" or key == "\n":
             if self.paused:
                 self._open_detail_view()
@@ -1500,6 +1515,27 @@ class TraceViewer:
 
     # ---- Status and hotkey bars ----
 
+    def _tier_label(self):
+        """Build the tier label for the status bar.
+
+        Returns a string like "[basic]", "[detail]",
+        "[detail+PutMsg]", "[basic-OpenFont]",
+        "[detail+AllocMem,PutMsg]", "[basic-OpenFont+AllocMem]".
+        """
+        from .trace_tiers import TIER_NAMES
+
+        name = TIER_NAMES.get(self.current_tier, "?")
+
+        parts = []
+        if self.manual_removals:
+            parts.append("-" + ",".join(sorted(self.manual_removals)))
+        if self.manual_additions:
+            parts.append("+" + ",".join(sorted(self.manual_additions)))
+
+        if parts:
+            return "[{}{}]".format(name, "".join(parts))
+        return "[{}]".format(name)
+
     def _draw_status_bar(self):
         """Render the status bar (top line) based on current mode.
 
@@ -1548,7 +1584,8 @@ class TraceViewer:
                     'search: "{}"'.format(self.search_pattern))
 
             elapsed = self._elapsed_str()
-            parts = ["TRACE: " + shown_text]
+            tier_label = self._tier_label()
+            parts = ["TRACE " + tier_label + ": " + shown_text]
             if filter_parts:
                 parts.append(" | ".join(filter_parts))
             parts.append(elapsed)
@@ -1604,15 +1641,15 @@ class TraceViewer:
             errors_text = "[e] errors"
 
         full = ("  [Tab] filters  [/] search  {}  {}  "
-                "{}  [c] clear  [S] save  [t] time  [?] help  "
-                "[q] quit").format(
+                "{}  [c] clear  [S] save  [1/2/3] tier  [t] time  "
+                "[?] help  [q] quit").format(
                     pause_text, stats_text, errors_text)
 
         if len(full) <= self.term.cols:
             return full
 
         # Abbreviated
-        short = "[Tab]filt [/]srch {} {} {} [c] [S] [t] [?] [q]".format(
+        short = "[Tab]filt [/]srch {} {} {} [c] [S] [123] [t] [?] [q]".format(
             "[p]PAUS" if self.paused else "[p]",
             "[s]STAT" if self.stats_mode else "[s]",
             "[e]ERR" if self.errors_filter else "[e]")
@@ -1621,7 +1658,7 @@ class TraceViewer:
             return short
 
         # Minimal
-        return "[Tab] [/] [p] [s] [e] [c] [t] [?] [q]"
+        return "[Tab] [/] [p] [s] [e] [c] [123] [t] [?] [q]"
 
     # ---- Filter methods ----
 
@@ -1763,6 +1800,209 @@ class TraceViewer:
                         return False
 
         return True
+
+    def _switch_tier(self, new_level):
+        """Switch to a different output tier.
+
+        Computes the delta between current effective function set and
+        the new clean tier, sends ENABLE=/DISABLE= via send_filter(),
+        and updates state.
+
+        Uses conn.send_filter(raw=...) instead of conn.trace_enable()
+        / conn.trace_disable() because the socket is in non-blocking
+        mode during streaming. send_filter() is fire-and-forget and
+        handles non-blocking sockets correctly. trace_enable() uses
+        _send_command() which calls read_response(), which would fail
+        on a non-blocking socket (BlockingIOError or reading trace
+        DATA chunks instead of the expected OK response).
+
+        The FILTER command must include the current filter state
+        (LIB=/FUNC=/PROC=/ERRORS) alongside ENABLE=/DISABLE= because
+        parse_extended_filter() in the daemon resets all per-session
+        filter state at the start of every FILTER command. Sending
+        just FILTER ENABLE=... without the rest would clear any active
+        LIB/FUNC/PROC filters.
+
+        Args:
+            new_level: Target tier level (1, 2, or 3).
+        """
+        from .trace_tiers import compute_tier_switch
+
+        if new_level == self.current_tier and not self.manual_additions \
+                and not self.manual_removals:
+            return  # Already at this tier with no manual overrides
+
+        to_enable, to_disable = compute_tier_switch(
+            self.current_tier, new_level,
+            self.manual_additions, self.manual_removals)
+
+        # Build FILTER command with ENABLE=/DISABLE= alongside
+        # the current filter state. This follows the same pattern
+        # as _apply_grid_filters() which builds a complete filter
+        # command including all current state.
+        filter_parts = []
+
+        # Reconstruct current filter state from grid (if used)
+        if self.grid is not None:
+            grid_cmd = self.grid.build_filter_command()
+            if grid_cmd:
+                filter_parts.append(grid_cmd)
+
+        if to_enable:
+            filter_parts.append(
+                "ENABLE=" + ",".join(sorted(to_enable)))
+        if to_disable:
+            filter_parts.append(
+                "DISABLE=" + ",".join(sorted(to_disable)))
+
+        if self.errors_filter:
+            filter_parts.append("ERRORS")
+
+        if filter_parts:
+            try:
+                self.conn.send_filter(
+                    raw=" ".join(filter_parts))
+            except Exception:
+                pass  # Best-effort (fire-and-forget)
+
+        # Update state
+        self.current_tier = new_level
+        self.manual_additions = set()
+        self.manual_removals = set()
+
+        # Notify daemon of tier level for content-based filtering
+        # (e.g., OpenLibrary v0 suppression at Basic tier).
+        # Uses bare "TIER <n>" inline command, handled by
+        # trace_handle_input() alongside STOP and FILTER.
+        try:
+            self.conn.send_inline("TIER {}".format(new_level))
+        except Exception:
+            pass  # Best-effort (fire-and-forget during streaming)
+
+        # Update discovered info: mark newly disabled as daemon-disabled,
+        # mark newly enabled as not daemon-disabled.
+        for func in to_disable:
+            for lib, funcs_dict in self.discovered_funcs.items():
+                if func in funcs_dict:
+                    self.daemon_disabled_funcs.add(
+                        "{}.{}".format(lib, func))
+                    break
+        for func in to_enable:
+            for lib, funcs_dict in self.discovered_funcs.items():
+                if func in funcs_dict:
+                    self.daemon_disabled_funcs.discard(
+                        "{}.{}".format(lib, func))
+                    break
+
+        self._status_dirty = True
+        self._draw_status_bar()
+        self._draw_hotkey_bar()
+
+    def _update_manual_overrides(self):
+        """Update manual_additions/manual_removals from daemon state.
+
+        Compares the effective daemon-side enabled/disabled state
+        against the current tier's expected function set. Functions
+        enabled outside the tier are manual additions; functions
+        disabled within the tier are manual removals.
+
+        Called after _apply_grid_filters() (Enter key in grid) to
+        track when grid toggles create tier deviations. Also called
+        after _switch_tier(), where it will find empty sets (correct
+        -- a tier switch is a clean reset that clears overrides).
+        """
+        from .trace_tiers import functions_for_tier
+        tier_funcs = functions_for_tier(self.current_tier)
+
+        self.manual_additions = set()
+        self.manual_removals = set()
+
+        for lib_name, funcs_dict in self.discovered_funcs.items():
+            for func_name in funcs_dict:
+                qualified = "{}.{}".format(lib_name, func_name)
+                in_tier = func_name in tier_funcs
+                daemon_disabled = qualified in self.daemon_disabled_funcs
+                if not daemon_disabled and not in_tier:
+                    # Enabled but not in tier = manual addition
+                    self.manual_additions.add(func_name)
+                elif daemon_disabled and in_tier:
+                    # Disabled but in tier = manual removal
+                    self.manual_removals.add(func_name)
+
+        self._status_dirty = True
+
+    def _apply_initial_tier(self):
+        """Send ENABLE commands for the initial tier if above Basic.
+
+        Called once at startup when --detail or --verbose was specified.
+        The loader already disabled non-Basic functions, so we only
+        need to enable the functions in the target tier that are
+        currently disabled.
+
+        Uses conn.send_filter(raw=...) because the socket is already
+        in non-blocking mode (set by trace_start_raw()). The FILTER
+        command with ENABLE= is fire-and-forget: no response expected,
+        and send_filter() handles non-blocking sockets correctly.
+
+        IMPORTANT: The FILTER command resets per-session filter state
+        (parse_extended_filter() clears LIB/FUNC/PROC/ERRORS at the
+        start of every call). If the user specified initial filters
+        (e.g. trace start --detail LIB=dos), those filters were set
+        by TRACE START's parse_filters() call. We must reconstruct
+        and include them in the FILTER command to avoid losing them.
+
+        The initial filter kwargs are stored in self._initial_filters
+        (set by the caller before run()). If no initial filters were
+        specified, only ENABLE= is sent.
+        """
+        from .trace_tiers import functions_for_tier, TIER_BASIC
+
+        target_funcs = functions_for_tier(self.current_tier)
+        to_enable = target_funcs - TIER_BASIC  # Already enabled by loader
+
+        if to_enable:
+            parts = []
+            # Reconstruct initial filters to prevent FILTER reset
+            # from clearing them. self._initial_filters is set by
+            # the caller (e.g., shell.py) before viewer.run().
+            if hasattr(self, '_initial_filters'):
+                f = self._initial_filters
+                if f.get("lib"):
+                    parts.append("LIB={}".format(f["lib"]))
+                if f.get("func"):
+                    parts.append("FUNC={}".format(f["func"]))
+                if f.get("proc"):
+                    parts.append("PROC={}".format(f["proc"]))
+                if f.get("errors_only"):
+                    parts.append("ERRORS")
+
+            parts.append(
+                "ENABLE=" + ",".join(sorted(to_enable)))
+
+            try:
+                self.conn.send_filter(raw=" ".join(parts))
+            except Exception:
+                pass  # Best-effort (fire-and-forget)
+
+        # Notify daemon of tier level for content-based filtering
+        # (e.g., OpenLibrary v0 suppression at Basic tier).
+        # Only needed when starting above Basic (tier 1 is the daemon
+        # default, so sending it would be redundant).
+        if self.current_tier != 1:
+            try:
+                self.conn.send_inline(
+                    "TIER {}".format(self.current_tier))
+            except Exception:
+                pass  # Best-effort (fire-and-forget during streaming)
+
+        if to_enable:
+            # Update daemon_disabled tracking
+            for func in to_enable:
+                for lib, funcs_dict in self.discovered_funcs.items():
+                    if func in funcs_dict:
+                        self.daemon_disabled_funcs.discard(
+                            "{}.{}".format(lib, func))
+                        break
 
     def _send_current_filter(self):
         """Send a FILTER command reflecting the current filter state.
@@ -2265,6 +2505,7 @@ class TraceViewer:
             "    e       Toggle ERRORS filter (show only errors)",
             "    c       Clear all events and reset counters",
             "    S       Save scrollback to log file",
+            "    1/2/3   Switch output tier (basic/detail/verbose)",
             "    ?       Toggle this help screen",
             "    q       Stop trace and exit viewer",
             "",
@@ -2283,6 +2524,13 @@ class TraceViewer:
             "    Esc         Cancel without applying",
             "",
             "  Process filtering is client-side only.",
+            "",
+            "  Output tiers:",
+            "    1 = Basic:   SnoopDOS-equivalent (49 functions)",
+            "    2 = Detail:  Basic + resource lifecycle (63 functions)",
+            "    3 = Verbose: Detail + high-volume I/O (67 functions)",
+            "    Manual-tier functions (13) are never auto-enabled.",
+            "    Use the toggle grid to enable them individually.",
         ]
         self._help_scroll_pos = 0
         self._render_help()
@@ -2426,7 +2674,8 @@ class TraceViewer:
         self.grid = ToggleGrid(
             self.discovered_libs, initial_funcs,
             self.discovered_procs, initial_lib=initial_lib,
-            daemon_disabled_funcs=self.daemon_disabled_funcs)
+            daemon_disabled_funcs=self.daemon_disabled_funcs,
+            tier_level=self.current_tier)
         if initial_lib:
             # C5 fix (R4): Set focused_lib_index to match initial lib
             for i, item in enumerate(self.grid.lib_items):
@@ -2458,6 +2707,7 @@ class TraceViewer:
             self._pre_grid_disabled_funcs = None  # [R6-SF3 fix]
             self._pre_grid_noise_suppressed = None
             self._apply_grid_filters()
+            self._update_manual_overrides()
 
             # Update noise state unconditionally -- noise changes are
             # client-side only and not gated by has_user_changes().

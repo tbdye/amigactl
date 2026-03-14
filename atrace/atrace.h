@@ -31,6 +31,13 @@
 #define FLAG_HAS_ECLOCK     0x01    /* EClock timestamp fields are valid */
 #define FLAG_HAS_IOERR      0x02    /* IoErr field is valid (Phase 8) */
 
+/* Indirect name deref types for func_info.name_deref_type */
+#define DEREF_NONE       0   /* No indirect string capture */
+#define DEREF_LN_NAME    1   /* One-level: struct->ln_Name (offset 10) */
+#define DEREF_IOREQUEST  2   /* Two-level: IORequest->io_Device->ln_Name + io_Command */
+#define DEREF_TEXTATTR   3   /* TextAttr->ta_Name (offset 0) + ta_YSize */
+#define DEREF_LOCK_VOLUME  4   /* Lock BPTR -> fl_Volume -> dol_Name BSTR */
+
 /* ---- struct atrace_anchor ----
  *
  * Top-level structure, found via named semaphore.
@@ -136,19 +143,21 @@ struct atrace_event {
 
 /* ---- struct atrace_patch ----
  *
- *   lib_id:       offset  0,  1 byte  (UBYTE)
- *   padding0:     offset  1,  1 byte  (UBYTE)
- *   lvo_offset:   offset  2,  2 bytes (WORD)
- *   func_id:      offset  4,  2 bytes (UWORD)
- *   arg_count:    offset  6,  2 bytes (UWORD)
- *   enabled:      offset  8,  4 bytes (ULONG)
- *   use_count:    offset 12,  4 bytes (ULONG)
- *   original:     offset 16,  4 bytes (APTR)
- *   stub_code:    offset 20,  4 bytes (APTR)
- *   stub_size:    offset 24,  4 bytes (ULONG)
- *   arg_regs[8]:  offset 28,  8 bytes (UBYTE * 8)
- *   string_args:  offset 36,  1 byte  (UBYTE)
- *   padding[3]:   offset 37,  3 bytes
+ *   lib_id:           offset  0,  1 byte  (UBYTE)
+ *   padding0:         offset  1,  1 byte  (UBYTE)
+ *   lvo_offset:       offset  2,  2 bytes (WORD)
+ *   func_id:          offset  4,  2 bytes (UWORD)
+ *   arg_count:        offset  6,  2 bytes (UWORD)
+ *   enabled:          offset  8,  4 bytes (ULONG)
+ *   use_count:        offset 12,  4 bytes (ULONG)
+ *   original:         offset 16,  4 bytes (APTR)
+ *   stub_code:        offset 20,  4 bytes (APTR)
+ *   stub_size:        offset 24,  4 bytes (ULONG)
+ *   arg_regs[8]:      offset 28,  8 bytes (UBYTE * 8)
+ *   string_args:      offset 36,  1 byte  (UBYTE)
+ *   name_deref_type:  offset 37,  1 byte  (UBYTE, Phase 9b)
+ *   skip_null_arg:    offset 38,  1 byte  (UBYTE, Phase 9b)
+ *   padding_end:      offset 39,  1 byte
  *   Total: 40 bytes
  */
 struct atrace_patch {
@@ -164,19 +173,23 @@ struct atrace_patch {
     ULONG stub_size;
     UBYTE arg_regs[8];
     UBYTE string_args;
-    UBYTE padding_end[3];
+    UBYTE name_deref_type;     /* Phase 9b: indirect name capture type */
+    UBYTE skip_null_arg;       /* Phase 9b: NULL-arg filter register */
+    UBYTE padding_end;
 };
 
 /* ---- struct func_info ----
  *
- *   name:         offset  0,  4 bytes (const char *)
- *   lvo_offset:   offset  4,  2 bytes (WORD)
- *   arg_count:    offset  6,  1 byte  (UBYTE)
- *   arg_regs[8]:  offset  7,  8 bytes (UBYTE * 8)
- *   ret_reg:      offset 15,  1 byte  (UBYTE)
- *   string_args:  offset 16,  1 byte  (UBYTE)
- *   padding:      offset 17,  1 byte  (UBYTE)
- *   Total: 18 bytes
+ *   name:             offset  0,  4 bytes (const char *)
+ *   lvo_offset:       offset  4,  2 bytes (WORD)
+ *   arg_count:        offset  6,  1 byte  (UBYTE)
+ *   arg_regs[8]:      offset  7,  8 bytes (UBYTE * 8)
+ *   ret_reg:          offset 15,  1 byte  (UBYTE)
+ *   string_args:      offset 16,  1 byte  (UBYTE)
+ *   name_deref_type:  offset 17,  1 byte  (UBYTE, Phase 9b)
+ *   skip_null_arg:    offset 18,  1 byte  (UBYTE, Phase 9b)
+ *   padding:          offset 19,  1 byte  (UBYTE)
+ *   Total: 20 bytes
  */
 struct func_info {
     const char *name;
@@ -185,6 +198,8 @@ struct func_info {
     UBYTE arg_regs[8];
     UBYTE ret_reg;
     UBYTE string_args;
+    UBYTE name_deref_type;     /* Phase 9b: indirect name capture type */
+    UBYTE skip_null_arg;       /* Phase 9b: NULL-arg filter register */
     UBYTE padding;
 };
 
