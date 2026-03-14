@@ -42,16 +42,16 @@ class TestTierDefinitions:
         assert not (TIER_VERBOSE & TIER_MANUAL)
 
     def test_basic_count(self):
-        assert len(TIER_BASIC) == 48
+        assert len(TIER_BASIC) == 43
 
     def test_detail_count(self):
-        assert len(TIER_DETAIL) == 15
+        assert len(TIER_DETAIL) == 11
 
     def test_verbose_count(self):
-        assert len(TIER_VERBOSE) == 4
+        assert len(TIER_VERBOSE) == 2
 
     def test_manual_count(self):
-        assert len(TIER_MANUAL) == 13
+        assert len(TIER_MANUAL) == 24
 
     def test_union_equals_all(self):
         """The four tiers together contain all 80 functions."""
@@ -178,13 +178,13 @@ class TestComputeTierSwitch:
 
     def test_manual_removals_cleared(self):
         """Manual removals are removed from old_effective."""
-        # On Detail with PutMsg manually disabled, switch to Basic.
-        # PutMsg is in Detail (not Basic), so it would normally be
+        # On Detail with Examine manually disabled, switch to Basic.
+        # Examine is in Detail (not Basic), so it would normally be
         # disabled. But it was already manually removed from
         # old_effective, so it's not in to_disable.
         to_enable, to_disable = compute_tier_switch(
-            2, 1, manual_removals={"PutMsg"})
-        assert "PutMsg" not in to_disable
+            2, 1, manual_removals={"Examine"})
+        assert "Examine" not in to_disable
 
     def test_manual_addition_with_same_tier(self):
         """Switching same tier with manual addition disables the addition."""
@@ -227,16 +227,13 @@ class TestTierForFunction:
 
     def test_detail_function(self):
         """Detail-tier function returns 2."""
-        assert tier_for_function("PutMsg") == 2
-        assert tier_for_function("GetMsg") == 2
         assert tier_for_function("Examine") == 2
+        assert tier_for_function("CloseLibrary") == 2
+        assert tier_for_function("sendto") == 2
 
     def test_verbose_function(self):
         """Verbose-tier function returns 3."""
         assert tier_for_function("ExNext") == 3
-        assert tier_for_function("send") == 3
-        assert tier_for_function("recv") == 3
-        assert tier_for_function("WaitSelect") == 3
 
     def test_manual_function(self):
         """Manual-tier function returns None."""
@@ -244,6 +241,10 @@ class TestTierForFunction:
         assert tier_for_function("FreeMem") is None
         assert tier_for_function("Wait") is None
         assert tier_for_function("Read") is None
+        assert tier_for_function("ReplyMsg") is None
+        assert tier_for_function("send") is None
+        assert tier_for_function("recv") is None
+        assert tier_for_function("WaitSelect") is None
 
     def test_unknown_function(self):
         """Unknown function returns None."""

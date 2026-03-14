@@ -8,6 +8,7 @@ levels. Tier membership is the authoritative source of truth for:
 - Toggle grid tier awareness (trace_grid.py)
 
 Tier assignments are finalized after Phase 9b empirical testing.
+Phase 9d audit moved idle-firing functions to Manual tier.
 """
 
 # --- Tier level constants ---
@@ -20,15 +21,14 @@ TIER_VERBOSE_LEVEL = 3
 # Functions where a single event provides immediate diagnostic value.
 # SnoopDOS-equivalent + atrace extensions. DEFAULT on trace start.
 TIER_BASIC = frozenset({
-    # dos.library (19)
-    "Open", "Close", "Lock", "UnLock", "DeleteFile", "Execute",
+    # dos.library (18)
+    "Open", "Close", "Lock", "DeleteFile", "Execute",
     "GetVar", "FindVar", "LoadSeg", "NewLoadSeg", "CreateDir",
     "MakeLink", "Rename", "RunCommand", "SetVar", "DeleteVar",
     "SystemTagList", "AddDosEntry", "CurrentDir",
-    # exec.library (8)
+    # exec.library (5)
     "OpenDevice", "CloseDevice", "OpenLibrary",
     "OpenResource", "FindResident",
-    "FindPort", "FindSemaphore", "FindTask",
     # intuition.library (10)
     "OpenWindow", "CloseWindow", "OpenScreen", "CloseScreen",
     "ActivateWindow", "WindowToFront", "WindowToBack",
@@ -36,20 +36,16 @@ TIER_BASIC = frozenset({
     # bsdsocket.library (10)
     "socket", "bind", "listen", "accept", "connect", "shutdown",
     "CloseSocket", "setsockopt", "getsockopt", "IoctlSocket",
-    # graphics.library (1)
-    "OpenFont",
 })
 
 # --- Tier 2: Detail ---
 # Deeper debugging functions, noisy for casual use.
 TIER_DETAIL = frozenset({
-    # exec.library (10)
+    # exec.library (5)
     "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
-    "PutMsg", "GetMsg",
-    "ObtainSemaphore", "ReleaseSemaphore", "ReplyMsg",
     "CloseLibrary",
-    # dos.library (2)
-    "Examine", "Seek",
+    # dos.library (3)
+    "UnLock", "Examine", "Seek",
     # intuition.library (1)
     "ModifyIDCMP",
     # bsdsocket.library (2)
@@ -61,20 +57,24 @@ TIER_DETAIL = frozenset({
 TIER_VERBOSE = frozenset({
     # dos.library (1)
     "ExNext",
-    # bsdsocket.library (3)
-    "send", "recv", "WaitSelect",
+    # graphics.library (1)
+    "OpenFont",
 })
 
 # --- Manual ---
 # Extreme event rate functions, only useful with task filtering.
 # Never auto-enabled by any tier.
 TIER_MANUAL = frozenset({
-    # exec.library (11)
+    # exec.library (19)
+    "FindPort", "FindSemaphore", "FindTask",
+    "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
     "AllocMem", "FreeMem", "AllocVec", "FreeVec",
     "Wait", "Signal", "DoIO", "SendIO", "WaitIO", "AbortIO",
-    "CheckIO",
+    "CheckIO", "ReplyMsg",
     # dos.library (2)
     "Read", "Write",
+    # bsdsocket.library (3)
+    "send", "recv", "WaitSelect",
 })
 
 # --- Derived sets and validation ---

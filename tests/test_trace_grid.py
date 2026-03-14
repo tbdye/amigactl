@@ -2009,7 +2009,7 @@ class TestGridTierIntegration:
                 # Open is Basic tier
                 assert not item.get("non_basic")
             elif item["name"] == "PutMsg":
-                # PutMsg is Detail tier (non-basic)
+                # PutMsg is Manual tier (non-basic)
                 assert item.get("non_basic")
             elif item["name"] == "AllocMem":
                 # AllocMem is Manual tier (non-basic)

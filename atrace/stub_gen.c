@@ -471,7 +471,7 @@ int stub_generate_and_install(
             var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
             var_buf[var_words++] = (UWORD)frame_ofs;
             var_buf[var_words++] = 0x2008;      /* move.l a0, d0         */
-            var_buf[var_words++] = 0x673C;      /* beq.s +60 .skip_vol   */
+            var_buf[var_words++] = 0x673A;      /* beq.s +58 .skip_vol   */
 
             /* BADDR the lock: BPTR -> FileLock* */
             var_buf[var_words++] = 0xE580;      /* asl.l #2, d0          */
@@ -480,7 +480,7 @@ int stub_generate_and_install(
             /* Read fl_Volume (BPTR at FileLock offset 16) */
             var_buf[var_words++] = 0x2028;      /* move.l 16(a0), d0     */
             var_buf[var_words++] = 0x0010;
-            var_buf[var_words++] = 0x6732;      /* beq.s +50 .skip_vol   */
+            var_buf[var_words++] = 0x6730;      /* beq.s +48 .skip_vol   */
 
             /* BADDR the volume DosList entry */
             var_buf[var_words++] = 0xE580;      /* asl.l #2, d0          */
@@ -705,7 +705,6 @@ int stub_generate_and_install(
     var_buf[var_words++] = 0x6020;  /* bra.s +32 (.name_done)                   */
 
     /* --- Fallback: tc_Node.ln_Name --- */
-    /* .use_task_name: */
     var_buf[var_words++] = 0x206E;  /* movea.l 276(a6), a0  reload ThisTask     */
     var_buf[var_words++] = 0x0114;
     var_buf[var_words++] = 0x2068;  /* movea.l 10(a0), a0   ln_Name             */

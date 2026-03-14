@@ -1359,23 +1359,25 @@ class TestDosFunctions:
                 "Expected path in Close args, got: {}".format(ev_args))
 
     def test_lock(self, trace_events):
-        """Lock("RAM:", Shared) -- status O."""
-        matches = _find_events(trace_events, "Lock", '"RAM:",Shared')
+        """Lock("RAM:nonexistent_dir/file", ACCESS_READ) -- status E.
+
+        Tests the failed Lock case from atrace_test block 44.
+        Successful Lock calls are suppressed at Basic tier (the default
+        tier used by the trace_events fixture), so we validate the
+        failure path instead.
+        """
+        matches = _find_events(
+            trace_events, "Lock", '"RAM:nonexistent_dir/file"')
         assert len(matches) >= 1, (
-            "No Lock('RAM:',Shared) event found in {} events".format(
-                len(trace_events)))
-        # Filter for successful events -- internal DOS cleanup operations
-        # (e.g. Lock during DeleteFile of nonexistent files) can produce
-        # earlier Lock("RAM:",Shared) events with status E.
-        ok_matches = [ev for ev in matches if ev["status"] == "O"]
-        assert len(ok_matches) >= 1, (
-            "No successful Lock('RAM:',Shared) event found. "
-            "All Lock events: {}".format(
-                [(e["seq"], e["retval"], e["status"]) for e in matches]))
-        ev = ok_matches[0]
+            "No Lock('RAM:nonexistent_dir/file') event found in "
+            "{} events".format(len(trace_events)))
+        ev = matches[0]
+        assert ev["status"] == "E", (
+            "Expected status 'E' (error), got: {}".format(ev["status"]))
         assert ev["lib"] == "dos"
-        assert _HEX_PTR.match(ev["retval"]), (
-            "Expected hex pointer retval, got: {}".format(ev["retval"]))
+        assert ev["retval"].startswith("NULL"), (
+            "Expected retval starting with 'NULL' for failed Lock, "
+            "got: {}".format(ev["retval"]))
 
     def test_deletefile(self, trace_events):
         """DeleteFile("RAM:atrace_test_delete") -- status O."""

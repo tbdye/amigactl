@@ -1695,18 +1695,18 @@ class TestPhase5bHeaderComments:
         assert result["text"] == "atrace v2, 2026-03-06 19:33:38"
 
     def test_header_comment_filter_none(self):
-        """Filter header with (none) is parsed as type='comment'."""
-        result = self._feed_chunk("# filter: (none)")
+        """Filter header with tier-only is parsed as type='comment'."""
+        result = self._feed_chunk("# filter: tier=basic")
         assert result is not None
         assert result["type"] == "comment"
-        assert result["text"] == "filter: (none)"
+        assert result["text"] == "filter: tier=basic"
 
     def test_header_comment_with_filter(self):
-        """Filter header with PROC= filter is parsed correctly."""
-        result = self._feed_chunk("# filter: PROC=DirectoryOpus")
+        """Filter header with tier and PROC= filter is parsed correctly."""
+        result = self._feed_chunk("# filter: tier=basic, PROC=DirectoryOpus")
         assert result is not None
         assert result["type"] == "comment"
-        assert result["text"] == "filter: PROC=DirectoryOpus"
+        assert result["text"] == "filter: tier=basic, PROC=DirectoryOpus"
 
     def test_header_comment_enabled_deviation(self):
         """Enabled deviation header is parsed correctly."""

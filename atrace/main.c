@@ -66,15 +66,13 @@ extern int stub_generate_and_install(
  * to match the union of Detail + Verbose + Manual tiers.
  */
 
-/* Detail tier: deeper debugging, noisy for casual use (15 functions) */
+/* Detail tier: deeper debugging, noisy for casual use (11 functions) */
 static const char *tier_detail_funcs[] = {
     /* exec.library */
     "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
-    "PutMsg", "GetMsg",
-    "ObtainSemaphore", "ReleaseSemaphore", "ReplyMsg",
     "CloseLibrary",
     /* dos.library */
-    "Examine", "Seek",
+    "UnLock", "Examine", "Seek",
     /* intuition.library */
     "ModifyIDCMP",
     /* bsdsocket.library */
@@ -82,23 +80,28 @@ static const char *tier_detail_funcs[] = {
     NULL  /* sentinel */
 };
 
-/* Verbose tier: high-volume burst events (4 functions) */
+/* Verbose tier: high-volume burst events (2 functions) */
 static const char *tier_verbose_funcs[] = {
     /* dos.library */
     "ExNext",
-    /* bsdsocket.library */
-    "send", "recv", "WaitSelect",
+    /* graphics.library */
+    "OpenFont",
     NULL  /* sentinel */
 };
 
-/* Manual tier: extreme event rate, task filter only (13 functions) */
+/* Manual tier: extreme event rate, task filter only (24 functions) */
 static const char *tier_manual_funcs[] = {
     /* exec.library */
+    "FindPort", "FindSemaphore", "FindTask",
+    "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
     "AllocMem", "FreeMem", "AllocVec", "FreeVec",
     "Wait", "Signal",
     "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+    "ReplyMsg",
     /* dos.library */
     "Read", "Write",
+    /* bsdsocket.library */
+    "send", "recv", "WaitSelect",
     NULL  /* sentinel */
 };
 

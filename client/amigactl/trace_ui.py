@@ -2793,10 +2793,15 @@ class TraceViewer:
                         self.grid.update_func_items(
                             self.discovered_funcs[lib], lib)
                         # [R3-MF3 fix]: Restore new library's state.
-                        if self.disabled_funcs is not None:
+                        # Only override daemon-disabled defaults when
+                        # the library was previously visited (has an
+                        # entry in disabled_funcs). Unvisited libraries
+                        # keep their daemon-disabled defaults from
+                        # update_func_items() -> _apply_noise_defaults().
+                        if self.disabled_funcs is not None \
+                                and lib in self.disabled_funcs:
                             disabled_for_lib = \
-                                self.disabled_funcs.get(
-                                    lib, set())
+                                self.disabled_funcs[lib]
                             for item in self.grid.func_items:
                                 item["enabled"] = (
                                     item["name"]
@@ -2875,38 +2880,54 @@ class TraceViewer:
                             sorted(all_disabled_funcs)))
                     filter_cmd = " ".join(parts)
 
-            # Fix 3: Send ENABLE/DISABLE for daemon-disabled functions that
-            # the user has toggled. Uses user_enabled_funcs to track what
-            # the user has explicitly enabled at the daemon level.
+            # Fix 3: Send ENABLE/DISABLE for daemon-disabled functions
+            # that the user has toggled. Scans ALL libraries in
+            # disabled_funcs (not just the current grid view) so that
+            # toggles made in previously-viewed libraries are sent.
+            # Uses user_enabled_funcs to track what the user has
+            # explicitly enabled at the daemon level.
             enable_funcs = []
             disable_funcs = []
 
-            selected_lib = self.grid.selected_lib or ""
-            for item in self.grid.func_items:
-                fname = item["name"]
-                qualified = "{}.{}".format(selected_lib, fname)
-                if item["enabled"] and qualified in self.daemon_disabled_funcs:
-                    # User wants it ON but daemon has it OFF -> ENABLE
-                    enable_funcs.append(fname)
-                elif not item["enabled"] and qualified in self.user_enabled_funcs:
-                    # User previously enabled it, now wants it OFF -> DISABLE
-                    disable_funcs.append(fname)
+            if self.disabled_funcs:
+                for lib_name, disabled_set in self.disabled_funcs.items():
+                    funcs_for_lib = self.discovered_funcs.get(
+                        lib_name, {})
+                    for fname in funcs_for_lib:
+                        qualified = "{}.{}".format(lib_name, fname)
+                        is_disabled = fname in disabled_set
+                        if not is_disabled and \
+                                qualified in self.daemon_disabled_funcs:
+                            # User wants it ON but daemon has it
+                            # OFF -> ENABLE
+                            enable_funcs.append(fname)
+                        elif is_disabled and \
+                                qualified in self.user_enabled_funcs:
+                            # User previously enabled it, now wants
+                            # it OFF -> DISABLE
+                            disable_funcs.append(fname)
 
             if enable_funcs:
                 filter_cmd += " ENABLE=" + ",".join(enable_funcs)
                 # Update tracking (use "lib.func" format)
                 for f in enable_funcs:
-                    qualified = "{}.{}".format(selected_lib, f)
-                    self.daemon_disabled_funcs.discard(qualified)
-                    self.user_enabled_funcs.add(qualified)
+                    for lib_name in self.disabled_funcs:
+                        qualified = "{}.{}".format(lib_name, f)
+                        if qualified in self.daemon_disabled_funcs:
+                            self.daemon_disabled_funcs.discard(
+                                qualified)
+                            self.user_enabled_funcs.add(qualified)
 
             if disable_funcs:
                 filter_cmd += " DISABLE=" + ",".join(disable_funcs)
                 # Update tracking (use "lib.func" format)
                 for f in disable_funcs:
-                    qualified = "{}.{}".format(selected_lib, f)
-                    self.daemon_disabled_funcs.add(qualified)
-                    self.user_enabled_funcs.discard(qualified)
+                    for lib_name in self.disabled_funcs:
+                        qualified = "{}.{}".format(lib_name, f)
+                        if qualified in self.user_enabled_funcs:
+                            self.daemon_disabled_funcs.add(qualified)
+                            self.user_enabled_funcs.discard(
+                                qualified)
 
             if filter_cmd:
                 if self.errors_filter:

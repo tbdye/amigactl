@@ -618,7 +618,7 @@ class TestTraceRun:
 class TestNoiseDefaults:
     """Tests for noise function auto-disable defaults (Phase 4/9c).
 
-    After loading atrace, 32 non-Basic tier functions should be
+    After loading atrace, 37 non-Basic tier functions should be
     disabled by default.  These tests verify the default state and
     user override behavior.
     """
@@ -637,17 +637,19 @@ class TestNoiseDefaults:
             # exec.library -- TIER_DETAIL
             "exec.AllocSignal", "exec.FreeSignal",
             "exec.CreateMsgPort", "exec.DeleteMsgPort",
+            "exec.CloseLibrary",
+            # exec.library -- TIER_MANUAL
+            "exec.FindPort", "exec.FindSemaphore", "exec.FindTask",
             "exec.PutMsg", "exec.GetMsg",
             "exec.ObtainSemaphore", "exec.ReleaseSemaphore",
-            "exec.ReplyMsg", "exec.CloseLibrary",
-            # exec.library -- TIER_MANUAL
             "exec.AllocMem", "exec.FreeMem",
             "exec.AllocVec", "exec.FreeVec",
             "exec.Wait", "exec.Signal",
             "exec.DoIO", "exec.SendIO", "exec.WaitIO",
             "exec.AbortIO", "exec.CheckIO",
+            "exec.ReplyMsg",
             # dos.library -- TIER_DETAIL
-            "dos.Examine", "dos.Seek",
+            "dos.UnLock", "dos.Examine", "dos.Seek",
             # dos.library -- TIER_VERBOSE
             "dos.ExNext",
             # dos.library -- TIER_MANUAL
@@ -656,9 +658,11 @@ class TestNoiseDefaults:
             "intuition.ModifyIDCMP",
             # bsdsocket.library -- TIER_DETAIL
             "bsdsocket.sendto", "bsdsocket.recvfrom",
-            # bsdsocket.library -- TIER_VERBOSE
+            # bsdsocket.library -- TIER_MANUAL
             "bsdsocket.send", "bsdsocket.recv",
             "bsdsocket.WaitSelect",
+            # graphics.library -- TIER_VERBOSE
+            "graphics.OpenFont",
         }
         for patch in patches:
             if patch["name"] in noise_names:
@@ -771,10 +775,11 @@ class TestTraceRunPhase4:
 
         RunCommand executes the command in the daemon's own process
         context, so the task-level filter captures only that process's
-        events.  With cli_CommandName capture, the task name field
-        reflects the running command's basename (e.g. "List") rather
-        than the process name ("amigactld").  We verify that all events
-        come from a single consistent task, confirming the filter works.
+        events.  With cli_CommandName capture, the task name string may
+        change mid-execution (e.g. from "amigactld" to "List") as
+        RunCommand updates the CLI command name.  We verify that all
+        events share the same process ID prefix (the "[N]" bracket
+        number), confirming the filter works correctly.
         """
         conn = AmigaConnection(amiga_host, amiga_port)
         conn.connect()
@@ -787,15 +792,23 @@ class TestTraceRunPhase4:
 
             conn.trace_run("C:List SYS:", collect)
 
-            # All events should come from a single task — the daemon's
-            # process running the command.  The name may be "amigactld"
-            # or the command basename (e.g. "List") depending on whether
-            # cli_CommandName is set during execution.
+            # All events should come from a single process.  The task
+            # name string may vary (e.g. "[8] amigactld" early, then
+            # "[8] List" after RunCommand sets cli_CommandName), but
+            # the process ID in brackets must be consistent.
             assert len(events) > 0, "No events received"
-            task_names = {ev.get("task", "") for ev in events}
-            assert len(task_names) == 1, \
-                "Events from multiple tasks (filter leak): {}".format(
-                    task_names)
+            proc_ids = set()
+            for ev in events:
+                task = ev.get("task", "")
+                # Extract "[N]" process ID prefix from task name
+                bracket_end = task.find("]")
+                if bracket_end >= 0:
+                    proc_ids.add(task[:bracket_end + 1])
+                else:
+                    proc_ids.add(task)
+            assert len(proc_ids) == 1, \
+                "Events from multiple processes (filter leak): {}".format(
+                    {ev.get("task", "") for ev in events})
         finally:
             conn.close()
 
@@ -1829,8 +1842,8 @@ class TestTraceFilterComment:
             sig.alarm(0)
             sig.signal(sig.SIGALRM, old_handler)
 
-    def test_filter_clear_emits_none_comment(self, amiga_host, amiga_port):
-        """Empty FILTER emits a '# filter: (none)' comment."""
+    def test_filter_clear_emits_tier_only_comment(self, amiga_host, amiga_port):
+        """Empty FILTER emits a '# filter: tier=basic' comment."""
         import signal as sig
 
         old_handler = sig.signal(sig.SIGALRM, _timeout_handler)
@@ -1860,11 +1873,14 @@ class TestTraceFilterComment:
 
                 comments = [r for r in results
                             if r.get("type") == "comment"]
-                none_comments = [c for c in comments
-                                 if "filter: (none)" in c.get("text", "")]
+                tier_comments = [c for c in comments
+                                 if "filter: tier=" in c.get("text", "")
+                                 and "LIB=" not in c.get("text", "")
+                                 and "FUNC=" not in c.get("text", "")
+                                 and "PROC=" not in c.get("text", "")]
 
-                assert len(none_comments) >= 1, (
-                    "Expected a '# filter: (none)' comment after "
+                assert len(tier_comments) >= 1, (
+                    "Expected a '# filter: tier=...' comment after "
                     "clearing filters, got comments: {}".format(
                         [c.get("text") for c in comments]))
             finally:
@@ -2790,10 +2806,10 @@ class TestTierFiltering:
     Tests restore state to defaults on completion.
 
     Representative functions per tier:
-    - Basic:   Open, Close, Lock, UnLock, FindPort (should always appear by default)
-    - Detail:  GetMsg, Examine, Seek (disabled by default)
+    - Basic:   Open, Close, Lock (should always appear by default)
+    - Detail:  UnLock, Examine, Seek (disabled by default)
     - Verbose: ExNext (disabled by default)
-    - Manual:  AllocMem, Read (disabled by default, never auto-enabled)
+    - Manual:  AllocMem, GetMsg, FindPort, Read (disabled, never auto-enabled)
 
     These tests live in test_trace.py (not test_trace_app.py) because
     they manage their own TRACE START/STOP lifecycle per test via
@@ -2824,7 +2840,7 @@ class TestTierFiltering:
 
         After atrace install, non-Basic functions are auto-disabled.
         Running atrace_test should produce Basic-tier events (Open,
-        Close, Lock, UnLock, etc.) but NOT Detail/Verbose/Manual tier
+        Close, Lock, etc.) but NOT Detail/Verbose/Manual tier
         events (GetMsg, Examine, ExNext, AllocMem, Read).
         """
         import signal as sig
@@ -2837,8 +2853,8 @@ class TestTierFiltering:
             try:
                 # Verify defaults: noise functions should be disabled
                 status = conn.trace_status()
-                assert status.get("noise_disabled", 0) >= 32, (
-                    "Expected at least 32 noise functions disabled, "
+                assert status.get("noise_disabled", 0) >= 37, (
+                    "Expected at least 37 noise functions disabled, "
                     "got {}".format(status.get("noise_disabled", 0)))
 
                 events = []
@@ -2863,7 +2879,7 @@ class TestTierFiltering:
                         basic_expected, basic_found, func_names))
 
                 # Detail tier functions should NOT appear (disabled)
-                detail_absent = {"GetMsg", "Examine", "Seek"}
+                detail_absent = {"Examine", "Seek", "CloseLibrary"}
                 detail_leaked = detail_absent & func_names
                 assert len(detail_leaked) == 0, (
                     "Detail tier functions should not appear with "
@@ -2878,7 +2894,8 @@ class TestTierFiltering:
 
                 # Manual tier functions should NOT appear
                 manual_absent = {"AllocMem", "FreeMem", "AllocVec",
-                                 "FreeVec", "Read", "Write"}
+                                 "FreeVec", "GetMsg", "PutMsg",
+                                 "ObtainSemaphore", "Read", "Write"}
                 manual_leaked = manual_absent & func_names
                 assert len(manual_leaked) == 0, (
                     "Manual tier functions should not appear with "
@@ -2894,8 +2911,8 @@ class TestTierFiltering:
         """Enabling Detail tier functions makes them produce events.
 
         Start from default (Basic only), enable Detail tier functions
-        (GetMsg, Examine, Seek), run atrace_test, verify Detail events
-        appear alongside Basic events.
+        (Examine, Seek, CloseLibrary), run atrace_test, verify Detail
+        events appear alongside Basic events.
         """
         import signal as sig
         from amigactl.trace_tiers import TIER_DETAIL
@@ -2934,7 +2951,7 @@ class TestTierFiltering:
                 # atrace_test exercises Examine and Seek.  At least
                 # one Detail function should appear from the test
                 # app's activity.
-                detail_expected = {"Examine", "Seek", "GetMsg"}
+                detail_expected = {"Examine", "Seek", "CloseLibrary"}
                 detail_found = detail_expected & func_names
                 assert len(detail_found) >= 1, (
                     "Expected at least 1 of {} after enabling Detail "
@@ -2948,7 +2965,8 @@ class TestTierFiltering:
                     "Verbose tier functions should not appear when only "
                     "Detail is enabled: {}".format(verbose_leaked))
 
-                manual_absent = {"AllocMem", "FreeMem", "Read", "Write"}
+                manual_absent = {"AllocMem", "FreeMem", "GetMsg",
+                                 "PutMsg", "Read", "Write"}
                 manual_leaked = manual_absent & func_names
                 assert len(manual_leaked) == 0, (
                     "Manual tier functions should not appear when only "
@@ -3017,7 +3035,8 @@ class TestTierFiltering:
                     "found none. All funcs: {}".format(func_names))
 
                 # Manual should still NOT appear
-                manual_absent = {"AllocMem", "FreeMem", "Read", "Write"}
+                manual_absent = {"AllocMem", "FreeMem", "GetMsg",
+                                 "PutMsg", "Read", "Write"}
                 manual_leaked = manual_absent & func_names
                 assert len(manual_leaked) == 0, (
                     "Manual tier functions should not appear when only "

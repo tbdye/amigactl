@@ -5361,8 +5361,8 @@ class TestTierSwitching:
         viewer.conn.send_filter.assert_called_once()
         raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
         assert "ENABLE=" in raw_arg
-        assert "PutMsg" in raw_arg
-        assert "GetMsg" in raw_arg
+        assert "Examine" in raw_arg
+        assert "CloseLibrary" in raw_arg
         assert viewer.current_tier == 2
 
     def test_switch_tier_basic_to_verbose(self):
@@ -5373,7 +5373,7 @@ class TestTierSwitching:
         raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
         assert "ENABLE=" in raw_arg
         # Detail functions
-        assert "PutMsg" in raw_arg
+        assert "Examine" in raw_arg
         # Verbose functions
         assert "ExNext" in raw_arg
         assert viewer.current_tier == 3
@@ -5386,7 +5386,7 @@ class TestTierSwitching:
         viewer.conn.send_filter.assert_called_once()
         raw_arg = viewer.conn.send_filter.call_args[1]["raw"]
         assert "DISABLE=" in raw_arg
-        assert "PutMsg" in raw_arg
+        assert "Examine" in raw_arg
         assert viewer.current_tier == 1
 
     def test_switch_tier_clears_manual(self):
@@ -5516,22 +5516,22 @@ class TestTierSwitching:
         viewer = _make_viewer()
         # Populate discovered_funcs so the lookup works
         viewer.discovered_funcs = {
-            "exec": {"PutMsg": 10, "GetMsg": 5}
+            "exec": {"AllocSignal": 10, "CloseLibrary": 5}
         }
         viewer.current_tier = 2
         viewer._switch_tier(1)
-        # PutMsg and GetMsg are Detail tier, should be daemon-disabled now
-        assert "exec.PutMsg" in viewer.daemon_disabled_funcs
-        assert "exec.GetMsg" in viewer.daemon_disabled_funcs
+        # AllocSignal and CloseLibrary are Detail tier, should be daemon-disabled now
+        assert "exec.AllocSignal" in viewer.daemon_disabled_funcs
+        assert "exec.CloseLibrary" in viewer.daemon_disabled_funcs
 
     def test_switch_up_removes_from_daemon_disabled(self):
         """Switching tier up removes funcs from daemon_disabled_funcs."""
         viewer = _make_viewer()
         viewer.discovered_funcs = {
-            "exec": {"PutMsg": 10, "GetMsg": 5}
+            "exec": {"AllocSignal": 10, "CloseLibrary": 5}
         }
-        viewer.daemon_disabled_funcs = {"exec.PutMsg", "exec.GetMsg"}
+        viewer.daemon_disabled_funcs = {"exec.AllocSignal", "exec.CloseLibrary"}
         viewer._switch_tier(2)
-        # PutMsg and GetMsg should no longer be daemon-disabled
-        assert "exec.PutMsg" not in viewer.daemon_disabled_funcs
-        assert "exec.GetMsg" not in viewer.daemon_disabled_funcs
+        # AllocSignal and CloseLibrary should no longer be daemon-disabled
+        assert "exec.AllocSignal" not in viewer.daemon_disabled_funcs
+        assert "exec.CloseLibrary" not in viewer.daemon_disabled_funcs

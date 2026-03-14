@@ -337,22 +337,28 @@ static int find_patch_index_by_name(const char *name)
 static const char *noise_func_names[] = {
     /* Detail tier: exec.library */
     "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
-    "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
-    "ReplyMsg", "CloseLibrary",
+    "CloseLibrary",
     /* Detail tier: dos.library */
-    "Examine", "Seek",
+    "UnLock", "Examine", "Seek",
     /* Detail tier: intuition.library */
     "ModifyIDCMP",
     /* Detail tier: bsdsocket.library */
     "sendto", "recvfrom",
     /* Verbose tier */
-    "ExNext", "send", "recv", "WaitSelect",
+    "ExNext",
+    /* Verbose tier: graphics.library */
+    "OpenFont",
     /* Manual tier: exec.library */
+    "FindPort", "FindSemaphore", "FindTask",
+    "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
     "AllocMem", "FreeMem", "AllocVec", "FreeVec",
     "Wait", "Signal",
     "DoIO", "SendIO", "WaitIO", "AbortIO", "CheckIO",
+    "ReplyMsg",
     /* Manual tier: dos.library */
     "Read", "Write",
+    /* Manual tier: bsdsocket.library */
+    "send", "recv", "WaitSelect",
     NULL
 };
 
@@ -1884,10 +1890,22 @@ static const char *lib_id_to_name(int lib_id)
  * Header format:
  *   # atrace v2, 2026-03-06 19:33:38
  *   # command: C:atrace_test           (TRACE RUN only)
- *   # filter: PROC=control LIB=dos ERRORS
+ *   # filter: tier=basic                (no explicit filters)
+ *   # filter: tier=detail, PROC=control LIB=dos ERRORS
  *   # enabled: GetMsg, PutMsg (normally noise-disabled)
  *   # disabled: ModifyIDCMP (manually disabled)
  */
+
+/* Return human-readable name for the current tier level. */
+static const char *tier_name(int level)
+{
+    switch (level) {
+    case 1:  return "basic";
+    case 2:  return "detail";
+    case 3:  return "verbose";
+    default: return "?";
+    }
+}
 
 /* Build a human-readable filter description string from trace_state.
  * Returns the length written to buf (0 if no filters active).
@@ -2031,16 +2049,18 @@ static int emit_trace_header(LONG fd, struct trace_state *ts,
             return -1;
     }
 
-    /* Line 3: active filter description */
+    /* Line 3: active filter description (always includes tier) */
     {
         char filter_desc[384];
         int flen;
 
         flen = build_filter_desc(ts, filter_desc, sizeof(filter_desc));
         if (flen == 0) {
-            snprintf(line, sizeof(line), "# filter: (none)");
+            snprintf(line, sizeof(line), "# filter: tier=%s",
+                     tier_name(g_current_tier));
         } else {
-            snprintf(line, sizeof(line), "# filter: %s", filter_desc);
+            snprintf(line, sizeof(line), "# filter: tier=%s, %s",
+                     tier_name(g_current_tier), filter_desc);
         }
         if (send_trace_data_chunk(fd, line) < 0)
             return -1;
@@ -3161,7 +3181,7 @@ static char format_retval(struct atrace_event *ev,
         const char *err_name = dos_error_name(ioerr_code);
         if (err_name) {
             snprintf(buf + cur_len, bufsz - cur_len,
-                     " (%s, %d)", err_name, ioerr_code);
+                     " (%d, %s)", ioerr_code, err_name);
         } else {
             snprintf(buf + cur_len, bufsz - cur_len,
                      " (err %d)", ioerr_code);
@@ -3558,6 +3578,28 @@ void trace_poll_events(struct daemon_state *d)
             ring->read_pos = pos;
             total_consumed++;
             g_self_filtered++;  /* Reuse counter for all daemon-side suppression */
+            continue;
+        }
+
+        /* dos.Lock success suppression at Basic tier.
+         * At Basic tier, successful Lock calls (retval != 0) are
+         * high-volume noise from path resolution during normal
+         * operation. Failed Locks (retval == 0) always pass through
+         * for diagnostic value. At Detail tier and above, all Lock
+         * events are shown. */
+        if (g_current_tier == 1 &&
+            ev->lib_id == LIB_DOS &&
+            ev->lvo_offset == -84 &&        /* Lock */
+            ev->retval != 0) {              /* success */
+            ev->valid = 0;
+            if (pos == g_inflight_stall_pos) {
+                g_inflight_stall_pos = 0xFFFFFFFF;
+                g_inflight_stall_count = 0;
+            }
+            pos = (pos + 1) % ring->capacity;
+            ring->read_pos = pos;
+            total_consumed++;
+            g_self_filtered++;
             continue;
         }
 
@@ -4708,10 +4750,12 @@ int trace_handle_input(struct daemon_state *d, int idx)
                                           sizeof(filter_desc));
                 if (flen > 0) {
                     snprintf(fline, sizeof(fline),
-                             "# filter: %s", filter_desc);
+                             "# filter: tier=%s, %s",
+                             tier_name(g_current_tier), filter_desc);
                 } else {
                     snprintf(fline, sizeof(fline),
-                             "# filter: (none)");
+                             "# filter: tier=%s",
+                             tier_name(g_current_tier));
                 }
                 send_trace_data_chunk(c->fd, fline);
             }
@@ -4729,10 +4773,18 @@ int trace_handle_input(struct daemon_state *d, int idx)
             while (*tier_arg == ' ' || *tier_arg == '\t')
                 tier_arg++;
             if (*tier_arg >= '1' && *tier_arg <= '3') {
-                g_current_tier = *tier_arg - '0';
+                int new_tier = *tier_arg - '0';
+                if (new_tier != g_current_tier) {
+                    char tline[128];
+                    g_current_tier = new_tier;
+                    /* Emit tier change notification to the stream */
+                    snprintf(tline, sizeof(tline),
+                             "# tier changed: %s",
+                             tier_name(g_current_tier));
+                    send_trace_data_chunk(c->fd, tline);
+                }
             }
-            /* No response -- fire-and-forget like FILTER.
-             * Invalid values silently ignored. */
+            /* Invalid values silently ignored. */
             continue;
         }
 
