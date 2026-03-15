@@ -101,10 +101,10 @@ class ToggleGrid:
         # Mark daemon-disabled items (Fix 3)
         self._mark_daemon_disabled()
 
-        # Mark non-basic functions for dim styling (Phase 9c)
+        # Mark non-basic functions for dim styling
         self._mark_non_basic()
 
-        # S5 fix (Wave 5): Snapshot the initial filter output so we
+        # Snapshot the initial filter output so we
         # can detect whether the user actually changed anything.
         # Opening and closing the grid with no changes should be a
         # no-op (no FILTER sent to daemon).
@@ -309,7 +309,7 @@ class ToggleGrid:
     def has_user_changes(self):
         """Return True if the user changed anything from the initial state.
 
-        S5 fix (Wave 5): When the grid is opened and closed without
+        When the grid is opened and closed without
         any user interaction, no FILTER should be sent. This compares
         the current filter output against the initial snapshot taken
         at construction time.
@@ -345,7 +345,7 @@ class ToggleGrid:
         the daemon FILTER command.
 
         FUNC= filters use library-scoped "lib.func" format for
-        unambiguous daemon-side matching (Phase 7b, Feature 8b.1).
+        unambiguous daemon-side matching.
         """
         parts = []
 
@@ -497,7 +497,7 @@ class ToggleGrid:
 
         # Color: highlighted = reverse, disabled or non-basic = dim.
         # Non-basic functions are dimmed even when enabled to visually
-        # distinguish them from the default Basic tier (Phase 9c).
+        # distinguish them from the default Basic tier.
         if highlighted:
             text = cw.reverse(text)
         elif not item["enabled"] or item.get("non_basic"):
@@ -638,7 +638,7 @@ class ToggleGrid:
 
         Layout:
           LIBRARIES          FUNCTIONS (dos)     PROCESSES
-          [x] exec     234   [x] Open       12   [x] bbs      89
+          [x] exec     234   [x] Open       12   [x] myapp    89
           [ ] dos      187   [ ] Lock        8   [ ] Shell    43
 
         When NOISE is the active category (index 3), the visible

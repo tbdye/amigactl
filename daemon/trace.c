@@ -5,7 +5,7 @@
  * TRACE ENABLE/DISABLE, and per-client event filtering.
  * Follows the TAIL module pattern (tail.c).
  *
- * Phase 2: function name lookup, task name cache, per-function
+ * Function name lookup, task name cache, per-function
  * argument formatting, per-patch STATUS reporting, server-side
  * filters (LIB, FUNC, PROC, ERRORS), ENABLE/DISABLE commands.
  */
@@ -89,18 +89,18 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "FreeMem",          LIB_EXEC, -210, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "AllocVec",         LIB_EXEC, -684, ERR_CHECK_NULL,  0, RET_PTR      },
     { "exec", "FreeVec",          LIB_EXEC, -690, ERR_CHECK_VOID,  0, RET_VOID     },
-    /* Extended exec.library (Phase 9) */
+    /* Extended exec.library */
     { "exec", "Wait",           LIB_EXEC, -318, ERR_CHECK_ANY,   0, RET_PTR      },
     { "exec", "Signal",         LIB_EXEC, -324, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "AllocSignal",    LIB_EXEC, -330, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     { "exec", "FreeSignal",     LIB_EXEC, -336, ERR_CHECK_VOID,  0, RET_VOID     },
     { "exec", "CreateMsgPort",  LIB_EXEC, -666, ERR_CHECK_NULL,  0, RET_PTR      },
     { "exec", "DeleteMsgPort",  LIB_EXEC, -672, ERR_CHECK_VOID,  1, RET_VOID     },
-    /* Lifecycle closers exec.library (Phase 9) */
+    /* Lifecycle closers - exec.library */
     { "exec", "CloseLibrary",   LIB_EXEC, -414, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "CloseDevice",    LIB_EXEC, -450, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "ReplyMsg",       LIB_EXEC, -378, ERR_CHECK_VOID,  0, RET_VOID     },
-    /* exec.library additions (Phase 10) */
+    /* exec.library additions */
     { "exec", "AddPort",    LIB_EXEC, -354, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "WaitPort",   LIB_EXEC, -384, ERR_CHECK_ANY,   1, RET_MSG_PTR  },
     /* dos.library functions (26) */
@@ -124,12 +124,12 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "CurrentDir",        LIB_DOS,  -126, ERR_CHECK_VOID,  1, RET_OLD_LOCK },
     { "dos", "Read",              LIB_DOS,   -42, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
     { "dos", "Write",             LIB_DOS,   -48, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
-    /* dos.library additions (Phase 9) */
+    /* dos.library additions */
     { "dos", "UnLock",          LIB_DOS,   -90, ERR_CHECK_VOID,  0, RET_VOID     },
     { "dos", "Examine",         LIB_DOS,  -102, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "ExNext",          LIB_DOS,  -108, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Seek",            LIB_DOS,   -66, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
-    /* dos.library additions (Phase 10) */
+    /* dos.library additions */
     { "dos", "SetProtection", LIB_DOS, -186, ERR_CHECK_NULL, 1, RET_BOOL_DOS },
     { "dos", "UnLoadSeg",     LIB_DOS, -156, ERR_CHECK_VOID, 0, RET_VOID     },
     /* intuition.library functions (14) */
@@ -143,13 +143,13 @@ static const struct trace_func_entry func_table[] = {
     { "intuition", "ModifyIDCMP",    LIB_INTUITION, -150, ERR_CHECK_VOID, 0, RET_VOID     },
     { "intuition", "OpenWorkBench",  LIB_INTUITION, -210, ERR_CHECK_ANY,  0, RET_PTR      },
     { "intuition", "CloseWorkBench", LIB_INTUITION,  -78, ERR_CHECK_ANY,  0, RET_BOOL_DOS },
-    /* intuition.library addition (Phase 9) */
+    /* intuition.library addition */
     { "intuition", "LockPubScreen", LIB_INTUITION, -510, ERR_CHECK_NULL, 1, RET_PTR },
-    /* intuition.library additions (Phase 10) */
+    /* intuition.library additions */
     { "intuition", "OpenWindowTagList",  LIB_INTUITION, -606, ERR_CHECK_NULL, 1, RET_PTR  },
     { "intuition", "OpenScreenTagList",  LIB_INTUITION, -612, ERR_CHECK_NULL, 1, RET_PTR  },
     { "intuition", "UnlockPubScreen",    LIB_INTUITION, -516, ERR_CHECK_VOID, 1, RET_VOID },
-    /* bsdsocket.library functions (Phase 9) */
+    /* bsdsocket.library functions */
     { "bsdsocket", "socket",       LIB_BSDSOCKET,  -30, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "bind",         LIB_BSDSOCKET,  -36, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "listen",       LIB_BSDSOCKET,  -42, ERR_CHECK_NEG1, 0, RET_IO_LEN },
@@ -167,9 +167,9 @@ static const struct trace_func_entry func_table[] = {
     { "bsdsocket", "WaitSelect",   LIB_BSDSOCKET, -126, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     /* graphics.library functions (2) */
     { "graphics", "OpenFont",     LIB_GRAPHICS,  -72, ERR_CHECK_NULL,  1, RET_PTR },
-    /* graphics.library addition (Phase 10) */
+    /* graphics.library addition */
     { "graphics", "CloseFont", LIB_GRAPHICS, -78, ERR_CHECK_VOID, 0, RET_VOID },
-    /* icon.library functions (Phase 10) */
+    /* icon.library functions */
     { "icon", "GetDiskObject",  LIB_ICON, -78, ERR_CHECK_NULL, 1, RET_PTR      },
     { "icon", "PutDiskObject",  LIB_ICON, -84, ERR_CHECK_NULL, 1, RET_BOOL_DOS },
     { "icon", "FreeDiskObject", LIB_ICON, -90, ERR_CHECK_VOID, 0, RET_VOID     },
@@ -179,7 +179,7 @@ static const struct trace_func_entry func_table[] = {
      * FALSE is a normal expected result, not an error condition.
      * ERR_CHECK_NONE prevents FALSE returns from appearing in
      * ERRORS-only filtered output. */
-    /* workbench.library functions (Phase 10)
+    /* workbench.library functions
      * Note: RemoveAppIcon, RemoveAppWindow, RemoveAppMenuItem return
      * standard BOOL (TRUE=1), not DOSTRUE (-1). RET_BOOL_DOS handles
      * both correctly: it formats any non-zero return as "OK". */
@@ -193,7 +193,7 @@ static const struct trace_func_entry func_table[] = {
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
 
-/* ---- DOS error code lookup (Phase 8) ---- */
+/* ---- DOS error code lookup ---- */
 
 /* Standard AmigaOS DOS error code names.
  * Returns NULL for unknown codes. */
@@ -376,13 +376,13 @@ static const char *noise_func_names[] = {
     "ModifyIDCMP",
     /* Detail tier: bsdsocket.library */
     "sendto", "recvfrom",
-    /* Phase 10 additions: Detail tier */
+    /* Detail tier additions */
     "UnLoadSeg", "UnlockPubScreen",
     /* Verbose tier */
     "ExNext",
     /* Verbose tier: graphics.library */
     "OpenFont",
-    /* Phase 10 addition: Verbose tier */
+    /* Verbose tier addition */
     "CloseFont",
     /* Manual tier: exec.library */
     "FindPort", "FindSemaphore", "FindTask",
@@ -395,7 +395,7 @@ static const char *noise_func_names[] = {
     "Read", "Write",
     /* Manual tier: bsdsocket.library */
     "send", "recv", "WaitSelect",
-    /* Phase 10 additions: Manual tier */
+    /* Manual tier additions */
     "AddPort", "WaitPort",
     NULL
 };
@@ -480,7 +480,7 @@ static const char *task_history_lookup(APTR task_ptr)
  *
  * For CLI processes (pr_TaskNum > 0), reads the command name BSTR
  * from the CLI structure. The basename is extracted (path prefix
- * stripped). This matches SnoopDOS behavior.
+ * stripped).
  *
  * Must be called under Forbid() -- the CLI structure is owned by
  * the process and could be freed if the process exits. */
@@ -890,9 +890,9 @@ static const char *resolve_task_name(APTR task_ptr)
     /* Cache miss after refresh -- attempt direct dereference under Forbid.
      * This handles short-lived tasks that started and exited between
      * cache refreshes. The Forbid prevents the task from being
-     * removed while we read its name (same approach as Phase 1).
+     * removed while we read its name.
      * If the task has already exited, the pointer may be stale --
-     * this is the same risk as Phase 1 and is acceptable on
+     * this is acceptable on
      * single-CPU 68k where Forbid blocks FreeMem completions. */
     task = (struct Task *)task_ptr;
     Forbid();
@@ -981,8 +981,7 @@ static int parse_filters(const char *args, struct trace_state *ts)
     ts->filter_errors_only = 0;
     ts->filter_procname[0] = '\0';
 
-    /* Clear extended filter state (safe even before Wave 5 adds
-     * parse_extended_filter, because trace_filter_match checks
+    /* Clear extended filter state (safe because trace_filter_match checks
      * use_extended_filter before accessing these fields) */
     ts->use_extended_filter = 0;
 
@@ -1104,7 +1103,7 @@ static int parse_filters(const char *args, struct trace_state *ts)
     return 0;
 }
 
-/* ---- Extended filter parsing (Wave 5) ---- */
+/* ---- Extended filter parsing ---- */
 
 /* Advance past the current token to the next whitespace.
  * Returns pointer to the first space/tab, or end of string. */
@@ -3373,7 +3372,7 @@ static void format_args(struct atrace_event *ev,
  * Writes the formatted retval string to buf, and returns a status
  * character ('O', 'E', or '-') for the wire protocol.
  *
- * Phase 8: Uses single-return pattern so the IoErr append epilogue
+ * Uses single-return pattern so the IoErr append epilogue
  * executes for all code paths. */
 static char format_retval(struct atrace_event *ev,
                            const struct trace_func_entry *fe,
@@ -3532,7 +3531,7 @@ static char format_retval(struct atrace_event *ev,
         break;
     }
 
-    /* Phase 8: append IoErr info for dos.library failures.
+    /* Append IoErr info for dos.library failures.
      * The status == 'E' check is essential -- the stub captures IoErr
      * whenever retval==0, which includes valid returns (CurrentDir,
      * GetVar, RunCommand, etc.). The daemon suppresses display for
@@ -4237,14 +4236,14 @@ static int trace_cmd_status(struct client *c)
              (unsigned long)g_poll_count);
     send_payload_line(c->fd, line);
 
-    /* Phase 4: filter_task status */
+    /* filter_task status */
     if (g_anchor->version >= 2) {
         snprintf(line, sizeof(line), "filter_task=0x%08lx",
                  (unsigned long)g_anchor->filter_task);
         send_payload_line(c->fd, line);
     }
 
-    /* Phase 6: anchor version and EClock info */
+    /* Anchor version and EClock info */
     snprintf(line, sizeof(line), "anchor_version=%d",
              (int)g_anchor->version);
     send_payload_line(c->fd, line);
@@ -4255,7 +4254,7 @@ static int trace_cmd_status(struct client *c)
         send_payload_line(c->fd, line);
     }
 
-    /* Phase 8: IoErr capture capability */
+    /* IoErr capture capability */
     if (g_anchor->version >= 4) {
         send_payload_line(c->fd, "ioerr_capture=1");
     }
@@ -4642,7 +4641,7 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
      * (filter_task != NULL), we skip the filter_task write, falling
      * back to daemon-side filtering only (the existing run_task_ptr
      * check in trace_poll_events). The ring buffer may overflow in
-     * this case, same as Phase 3.
+     * this case.
      *
      * Noise functions are left at their current enable/disable state.
      * Even with stub-level task filtering, auto-enabling noise
@@ -5125,7 +5124,7 @@ int trace_handle_input(struct daemon_state *d, int idx)
             char *filter_args = p + 6;
             while (*filter_args == ' ' || *filter_args == '\t')
                 filter_args++;
-            /* Parse extended FILTER (Wave 5). Handles both simple
+            /* Parse extended FILTER. Handles both simple
              * and extended syntax (commas, blacklists). When no
              * commas or -LIB=/-FUNC= prefixes, delegates to
              * parse_filters() for backward compatibility. Resets

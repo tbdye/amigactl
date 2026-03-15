@@ -146,7 +146,7 @@ The interactive shell starts automatically when no subcommand is given, or
 explicitly with the `shell` subcommand:
 
     $ client/amigactl.sh --host 192.168.6.200
-    Connected to 192.168.6.200 (amigactld 0.7.0)
+    Connected to 192.168.6.200 (amigactld 0.8.0)
     Type "help" for a list of commands, "exit" to disconnect.
     amiga@192.168.6.200:SYS:> ls
     C/  Devs/  Expansion/  L/  Libs/  Locale/  Prefs/  S/  System/  T/
@@ -335,7 +335,6 @@ with AmigaConnection("192.168.6.200") as amiga:
     amiga.makedir("RAM:mydir")
     prot = amiga.protect("RAM:mydir")
 
-    # File operations (new in 0.7)
     amiga.copy("SYS:C/Dir", "RAM:Dir")
     data = amiga.read("SYS:C/Dir", offset=100, length=50)
     amiga.append("RAM:logfile.txt", b"new log entry\n")
@@ -366,7 +365,6 @@ with AmigaConnection("192.168.6.200") as amiga:
     tasks = amiga.tasks()
     amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
 
-    # System queries (new in 0.7)
     ver = amiga.libver("exec.library")
     val = amiga.env("Workbench")
     amiga.setenv("MyVar", "hello")

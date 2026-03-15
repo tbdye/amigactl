@@ -813,7 +813,7 @@ class TraceViewer:
         self.daemon_disabled_funcs = set()  # Daemon-disabled functions in "lib.func" format (Fix 3)
         self.user_enabled_funcs = set()  # Functions user explicitly enabled, "lib.func" format (Fix 3)
 
-        # Output tier state (Phase 9c)
+        # Output tier state
         from .trace_tiers import TIER_BASIC_LEVEL
         self.current_tier = TIER_BASIC_LEVEL  # Default: Basic
         self.manual_additions = set()  # func_name strings enabled outside tier
@@ -842,7 +842,7 @@ class TraceViewer:
         # Segment/filename annotation (Fix 9)
         self.segment_resolver = SegmentResolver()
 
-        # Trace session metadata from header comments (Phase 6)
+        # Trace session metadata from header comments
         self.eclock_freq = 0          # EClock frequency in Hz
         self.timestamp_precision = ""  # "microsecond" or ""
 
@@ -894,7 +894,7 @@ class TraceViewer:
                 self._draw_status_bar()
                 self._draw_header()
                 self._draw_hotkey_bar()
-                # Apply initial tier if not Basic (Phase 9c)
+                # Apply initial tier if not Basic
                 if self.current_tier > 1:
                     self._apply_initial_tier()
                 self._event_loop()
@@ -1396,12 +1396,12 @@ class TraceViewer:
         """
         event = self._annotated_event(event)
         if hasattr(self, 'layout'):
-            # Wave 6: adaptive layout with pre-formatted timestamp
+            # Adaptive layout with pre-formatted timestamp
             time_str = self._format_timestamp(event)
             formatted = self.layout.format_event(
                 event, self.cw, time_str=time_str)
         else:
-            # Waves 3-5: use existing format_trace_event()
+            # Fallback: use existing format_trace_event()
             formatted = format_trace_event(event, self.cw)
         self.term.write_event(formatted)
 
@@ -2549,7 +2549,7 @@ class TraceViewer:
             "  Process filtering is client-side only.",
             "",
             "  Output tiers:",
-            "    1 = Basic:   SnoopDOS-equivalent (49 functions)",
+            "    1 = Basic:   Core diagnostics (49 functions)",
             "    2 = Detail:  Basic + resource lifecycle (63 functions)",
             "    3 = Verbose: Detail + high-volume I/O (67 functions)",
             "    Manual-tier functions (13) are never auto-enabled.",
@@ -2859,7 +2859,7 @@ class TraceViewer:
         send_command() directly. This goes through the proper API
         and does not depend on conn._sock internals.
 
-        S5 fix (Wave 5): Only send FILTER when the user has actually
+        Only send FILTER when the user has actually
         changed something from the grid's initial state. Opening and
         immediately closing the grid (with noise defaults) is a no-op.
         This prevents noise defaults from replacing initial TRACE START
@@ -2879,7 +2879,7 @@ class TraceViewer:
             # [R3-MF3 fix]: Build FUNC= filter from all libraries'
             # disabled functions, not just the grid's current
             # func_items. Uses lib.func format for daemon
-            # disambiguation (Phase 7b, Feature 8b.1).
+            # disambiguation.
             if self.disabled_funcs:
                 # Collect all disabled functions across all libraries,
                 # using dotted lib.func format for daemon disambiguation.
@@ -3020,13 +3020,11 @@ class TraceViewer:
         Called from the event loop when _resize_pending is True.
         Safe to do I/O here (we are between select() iterations).
 
-        S3 fix (R4): Only recreate ColumnLayout if self.layout already
-        exists. During Waves 3-5 (before Wave 6 initializes self.layout
-        in __init__), self.layout does not exist and _display_event()
-        uses the non-adaptive format_trace_event() path. Creating a
-        ColumnLayout here during those waves would switch _display_event()
-        to the adaptive path, which depends on Wave 6 code (e.g.,
-        get_lib_color()) that has not been written yet.
+        Only recreate ColumnLayout if self.layout already exists.
+        If layout has not been initialized, _display_event() uses the
+        non-adaptive format_trace_event() fallback path. Creating a
+        ColumnLayout prematurely would switch _display_event() to the
+        adaptive path before required dependencies are available.
         """
         self.term._update_size()
         if self.term.rows < 5:

@@ -31,7 +31,7 @@
 
 /* Event flags (offset 33) */
 #define FLAG_HAS_ECLOCK     0x01    /* EClock timestamp fields are valid */
-#define FLAG_HAS_IOERR      0x02    /* IoErr field is valid (Phase 8) */
+#define FLAG_HAS_IOERR      0x02    /* IoErr field is valid */
 
 /* Indirect name deref types for func_info.name_deref_type */
 #define DEREF_NONE       0   /* No indirect string capture */
@@ -82,13 +82,13 @@ struct atrace_anchor {
     volatile ULONG event_sequence;
     volatile ULONG events_consumed;
 
-    /* Phase 4: stub-level task filter.
+    /* Stub-level task filter.
      * NULL = trace all tasks, non-NULL = trace only matching task.
      * Set by daemon during TRACE RUN; stubs compare SysBase->ThisTask
      * against this value before writing to the ring buffer. */
     volatile APTR filter_task;
 
-    /* Phase 6: EClock timestamp support */
+    /* EClock timestamp support */
     ULONG eclock_freq;            /* EClock frequency in Hz (from ReadEClock) */
     struct Device *timer_base;    /* timer.device base (for stub ReadEClock calls) */
 };
@@ -122,7 +122,7 @@ struct atrace_ringbuf {
  *   arg_count:    offset  32,  1 byte  (UBYTE)
  *   flags:        offset  33,  1 byte  (UBYTE, FLAG_HAS_ECLOCK etc.)
  *   string_data:  offset  34, 64 bytes (char[64])
- *   ioerr:        offset  98,  1 byte  (UBYTE, reserved for Phase 8)
+ *   ioerr:        offset  98,  1 byte  (UBYTE)
  *   reserved1:    offset  99,  1 byte  (UBYTE, alignment)
  *   eclock_lo:    offset 100,  4 bytes (ULONG, low 32 bits of EClock)
  *   eclock_hi:    offset 104,  2 bytes (UWORD, low 16 bits of ev_hi)
@@ -161,8 +161,8 @@ struct atrace_event {
  *   stub_size:        offset 24,  4 bytes (ULONG)
  *   arg_regs[8]:      offset 28,  8 bytes (UBYTE * 8)
  *   string_args:      offset 36,  1 byte  (UBYTE)
- *   name_deref_type:  offset 37,  1 byte  (UBYTE, Phase 9b)
- *   skip_null_arg:    offset 38,  1 byte  (UBYTE, Phase 9b)
+ *   name_deref_type:  offset 37,  1 byte  (UBYTE)
+ *   skip_null_arg:    offset 38,  1 byte  (UBYTE)
  *   padding_end:      offset 39,  1 byte
  *   Total: 40 bytes
  */
@@ -179,8 +179,8 @@ struct atrace_patch {
     ULONG stub_size;
     UBYTE arg_regs[8];
     UBYTE string_args;
-    UBYTE name_deref_type;     /* Phase 9b: indirect name capture type */
-    UBYTE skip_null_arg;       /* Phase 9b: NULL-arg filter register */
+    UBYTE name_deref_type;     /* Indirect name capture type */
+    UBYTE skip_null_arg;       /* NULL-arg filter register */
     UBYTE padding_end;
 };
 
@@ -192,8 +192,8 @@ struct atrace_patch {
  *   arg_regs[8]:      offset  7,  8 bytes (UBYTE * 8)
  *   ret_reg:          offset 15,  1 byte  (UBYTE)
  *   string_args:      offset 16,  1 byte  (UBYTE)
- *   name_deref_type:  offset 17,  1 byte  (UBYTE, Phase 9b)
- *   skip_null_arg:    offset 18,  1 byte  (UBYTE, Phase 9b)
+ *   name_deref_type:  offset 17,  1 byte  (UBYTE)
+ *   skip_null_arg:    offset 18,  1 byte  (UBYTE)
  *   padding:          offset 19,  1 byte  (UBYTE)
  *   Total: 20 bytes
  */
@@ -204,8 +204,8 @@ struct func_info {
     UBYTE arg_regs[8];
     UBYTE ret_reg;
     UBYTE string_args;
-    UBYTE name_deref_type;     /* Phase 9b: indirect name capture type */
-    UBYTE skip_null_arg;       /* Phase 9b: NULL-arg filter register */
+    UBYTE name_deref_type;     /* Indirect name capture type */
+    UBYTE skip_null_arg;       /* NULL-arg filter register */
     UBYTE padding;
 };
 

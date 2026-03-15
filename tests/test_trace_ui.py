@@ -989,7 +989,7 @@ class TestTraceViewer:
 
 
 # ---------------------------------------------------------------------------
-# TestSearch (Wave 4)
+# TestSearch
 # ---------------------------------------------------------------------------
 
 class TestSearch:
@@ -1168,7 +1168,7 @@ class TestSearch:
 
 
 # ---------------------------------------------------------------------------
-# TestPause (Wave 4)
+# TestPause
 # ---------------------------------------------------------------------------
 
 class TestPause:
@@ -1343,7 +1343,7 @@ class TestPause:
 
 
 # ---------------------------------------------------------------------------
-# TestTimestamp (Wave 4)
+# TestTimestamp
 # ---------------------------------------------------------------------------
 
 class TestTimestamp:
@@ -1435,7 +1435,7 @@ class TestTimestamp:
         event = _make_event(time="10:00:00.250")
         assert viewer._format_timestamp(event) == "+0.000000"
 
-    # -- Phase 6: Microsecond timestamp parsing tests --
+    # -- Microsecond timestamp parsing tests --
 
     def test_parse_time_us_6digit(self):
         """_parse_time_us parses HH:MM:SS.uuuuuu to microseconds."""
@@ -1536,11 +1536,11 @@ class TestTimestamp:
 
 
 # ---------------------------------------------------------------------------
-# TestCommentMetadata (Phase 6)
+# TestCommentMetadata
 # ---------------------------------------------------------------------------
 
 class TestCommentMetadata:
-    """Tests for header comment metadata parsing (Phase 6)."""
+    """Tests for header comment metadata parsing."""
 
     def test_eclock_freq_parsed_from_comment(self):
         """eclock_freq is extracted from header comment."""
@@ -1579,7 +1579,7 @@ class TestCommentMetadata:
 
 
 # ---------------------------------------------------------------------------
-# TestStatistics (Wave 4)
+# TestStatistics
 # ---------------------------------------------------------------------------
 
 class TestStatistics:
@@ -1920,7 +1920,7 @@ class TestGridStatePersistence:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89, "Shell": 43}
+        viewer.discovered_procs = {"myapp": 89, "Shell": 43}
 
         viewer._enter_toggle_grid()
 
@@ -2013,7 +2013,7 @@ class TestGridStatePersistence:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         # First: open grid, disable dos, apply
         viewer._enter_toggle_grid()
@@ -2264,7 +2264,7 @@ class TestGridApplyKey:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
         viewer.grid.cursor_pos[viewer.grid.active_category] = 1
@@ -2281,7 +2281,7 @@ class TestGridApplyKey:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
         viewer.grid.cursor_pos[viewer.grid.active_category] = 1
@@ -2306,7 +2306,7 @@ class TestGridEventBuffering:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
         assert viewer.grid_visible is True
@@ -2326,7 +2326,7 @@ class TestGridEventBuffering:
         viewer.layout = ColumnLayout(80)
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2349,7 +2349,7 @@ class TestGridEventBuffering:
         viewer.layout = ColumnLayout(80)
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2370,7 +2370,7 @@ class TestGridEventBuffering:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
         viewer.pause_buffer_limit = 5
@@ -2422,7 +2422,7 @@ class TestGridEventBuffering:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         # Pause first
         viewer.paused = True
@@ -2456,7 +2456,7 @@ class TestAllNonePersistence:
         viewer.discovered_funcs = {
             "exec": {"Open": 12, "Lock": 8, "Close": 6},
         }
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2499,7 +2499,7 @@ class TestAllNonePersistence:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2530,7 +2530,7 @@ class TestNewlyDiscoveredItems:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2572,7 +2572,7 @@ class TestNewlyDiscoveredItems:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2604,7 +2604,7 @@ class TestNewlyDiscoveredItems:
         viewer = _make_viewer()
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
         # All enabled, apply
@@ -2655,7 +2655,7 @@ class TestNewlyDiscoveredItems:
             "exec": {"FindResident": 50, "OpenDevice": 30},
             "dos": {"Open": 12, "Lock": 8},
         }
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         viewer._enter_toggle_grid()
 
@@ -2702,7 +2702,7 @@ class TestNewlyDiscoveredItems:
 
         # Check that send_filter was called with a command containing
         # both FindResident and Lock in a single -FUNC= clause,
-        # using dotted lib.func format (Phase 7b, Feature 8b.1).
+        # using dotted lib.func format.
         viewer.conn.send_filter.assert_called_once()
         call_args = viewer.conn.send_filter.call_args
         raw = call_args[1].get("raw", call_args[0][0]
@@ -2727,7 +2727,7 @@ class TestNewlyDiscoveredItems:
 
 
 # ---------------------------------------------------------------------------
-# TestScrollback (Wave 3, Bug 19)
+# TestScrollback
 # ---------------------------------------------------------------------------
 
 class TestScrollback:
@@ -3661,7 +3661,7 @@ class TestBugfix2:
         # shown_events unchanged
         assert viewer.shown_events == 5
 
-    # -- Wave 2 Tests: Grid hotkey bar --
+    # -- Grid hotkey bar tests --
 
     def test_enter_toggle_grid_draws_hotkey_bar(self):
         """Opening the grid draws the grid hotkey bar."""
@@ -3970,7 +3970,7 @@ class TestAutoPauseUnpause:
 
         load_ev = _make_event(
             func="LoadSeg", lib="dos",
-            args='"cnet:control"', retval="0x01d0dfb5", status="O")
+            args='"Work:control"', retval="0x01d0dfb5", status="O")
         run_ev = _make_event(
             func="RunCommand", lib="dos",
             args="seg=0x1d0dfb5,stack=4096,1", retval="rc=0", status="O")
@@ -3979,7 +3979,7 @@ class TestAutoPauseUnpause:
 
         # RunCommand event in scrollback should have _segment_annotation
         stored = list(viewer.scrollback)[-1]
-        assert stored.get("_segment_annotation") == "cnet:control"
+        assert stored.get("_segment_annotation") == "Work:control"
 
     def test_annotated_event_applies_segment(self):
         """_annotated_event inserts filename after seg=0x... in RunCommand args."""
@@ -3988,11 +3988,11 @@ class TestAutoPauseUnpause:
             "func": "RunCommand", "lib": "dos",
             "args": "seg=0x1d0dfb5,stack=4096,1",
             "retval": "rc=0", "status": "O",
-            "_segment_annotation": "cnet:control",
+            "_segment_annotation": "Work:control",
         }
         result = viewer._annotated_event(event)
         assert result is not event  # should be a copy
-        assert 'seg=0x1d0dfb5 "cnet:control"' in result["args"]
+        assert 'seg=0x1d0dfb5 "Work:control"' in result["args"]
         assert ",stack=4096,1" in result["args"]
 
 
@@ -4070,12 +4070,12 @@ class TestColumnHeader:
 
 
 # ---------------------------------------------------------------------------
-# Noise filter (Phase 7b, Feature 8b.3 — replaces shell_noise_filter)
+# Noise filter
 # ---------------------------------------------------------------------------
 
 
 class TestNoiseFilter:
-    """Tests for per-item noise filtering (Phase 7b, 8b.3).
+    """Tests for per-item noise filtering.
 
     Replaces the old boolean shell_noise_filter with a per-item
     noise_suppressed set. Each noise variable can be individually
@@ -4153,7 +4153,7 @@ class TestNoiseFilter:
         """FindVar with LV_ALIAS is suppressed when in noise_suppressed."""
         viewer = _make_viewer()
         event = {"func": "FindVar",
-                 "args": '"cnet:control",LV_ALIAS',
+                 "args": '"Work:control",LV_ALIAS',
                  "lib": "dos", "task": "[1] control", "status": "E"}
         assert not viewer._passes_client_filter(event)
 
@@ -4162,7 +4162,7 @@ class TestNoiseFilter:
         viewer = _make_viewer()
         viewer.noise_suppressed = set()
         event = {"func": "FindVar",
-                 "args": '"cnet:control",LV_ALIAS',
+                 "args": '"Work:control",LV_ALIAS',
                  "lib": "dos", "task": "[1] control", "status": "E"}
         assert viewer._passes_client_filter(event)
 
@@ -4189,7 +4189,7 @@ class TestNoiseFilter:
         viewer.noise_suppressed = viewer.noise_suppressed - {"LV_ALIAS"}
 
         event = {"func": "FindVar",
-                 "args": '"cnet:control",LV_ALIAS',
+                 "args": '"Work:control",LV_ALIAS',
                  "lib": "dos", "task": "[1] control", "status": "E"}
         assert viewer._passes_client_filter(event)
 
@@ -4296,7 +4296,7 @@ class TestHelpOverlay:
 
 
 # ---------------------------------------------------------------------------
-# TestHighlightCursor (Wave 1: event detail view)
+# TestHighlightCursor
 # ---------------------------------------------------------------------------
 
 class TestHighlightCursor:
@@ -4757,7 +4757,7 @@ class TestHighlightCursor:
 
 
 # ---------------------------------------------------------------------------
-# TestDetailView (Wave 2: event detail view overlay)
+# TestDetailView
 # ---------------------------------------------------------------------------
 
 class TestDetailView:
@@ -5167,7 +5167,7 @@ class TestDetailView:
 
 
 # ---------------------------------------------------------------------------
-# TestCommentPersistence -- Wave 2 (Feature 8b.4)
+# TestCommentPersistence
 # ---------------------------------------------------------------------------
 
 class TestCommentPersistence:
@@ -5341,7 +5341,7 @@ class TestCommentPersistence:
 # ---------------------------------------------------------------------------
 
 class TestTierSwitching:
-    """Tests for TraceViewer tier switching (Phase 9c)."""
+    """Tests for TraceViewer tier switching."""
 
     def test_initial_tier_is_basic(self):
         """Viewer starts at tier 1 (Basic)."""

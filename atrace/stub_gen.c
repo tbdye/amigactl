@@ -1,7 +1,7 @@
 /*
  * atrace -- stub template and generalized code generator
  *
- * Phase 2: parameterized code generator that emits per-function
+ * Parameterized code generator that emits per-function
  * argument copy and string capture instructions based on metadata
  * from the patch descriptor.
  *
@@ -13,7 +13,7 @@
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
  *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
- *      with IoErr capture (Phase 8), disabled path, overflow path.
+ *      with IoErr capture, disabled path, overflow path.
  *      Identical for all functions except that byte offsets shift based
  *      on variable region size.
  */
@@ -29,8 +29,8 @@
  * Prefix template -- bytes 0-195, 98 UWORD values.
  * Identical for all patched functions.
  *
- * Phase 4: 26-byte task filter check inserted at bytes 30-55.
- * Phase 6: 28-byte EClock capture block inserted at bytes 136-163,
+ * 26-byte task filter check inserted at bytes 30-55.
+ * 28-byte EClock capture block inserted at bytes 136-163,
  * shifting event fill instructions by +28 bytes (168 -> 196 bytes).
  *
  * Contains placeholder 0x0000 values at PATCH_ADDR, ANCHOR_ADDR,
@@ -47,7 +47,7 @@ static const UWORD stub_prefix[] = {
     /* 22: */ 0x4AAD, 0x0000,           /* tst.l OFS_GLOBAL_ENABLE(a5)         */
     /* 26: */ 0x6700, 0x0000,           /* beq.w .disabled                      */
 
-    /* === Phase 4: Task filter check === */
+    /* === Task filter check === */
     /* 30: */ 0x4AAD, 0x0000,           /* tst.l OFS_FILTER_TASK(a5)           */
     /* 34: */ 0x6714,                   /* beq.s .no_filter (+20)               */
     /* 36: */ 0x2F0E,                   /* move.l a6, -(sp)                     */
@@ -88,7 +88,7 @@ static const UWORD stub_prefix[] = {
     /*128: */ 0x2A7C, 0x0000, 0x0000,   /* movea.l #RING_ENTRIES_ADDR, a5      */
     /*134: */ 0xDBC2,                   /* adda.l d2, a5                        */
 
-    /* === Phase 6: EClock capture (28 bytes, 14 words) === */
+    /* === EClock capture (28 bytes, 14 words) === */
     /*136: */ 0x2C7C, 0x0000, 0x0000,   /* movea.l #TIMER_BASE, a6             */
     /*142: */ 0x518F,                   /* subq.l #8, sp                        */
     /*144: */ 0x204F,                   /* movea.l a7, a0                       */
@@ -110,7 +110,7 @@ static const UWORD stub_prefix[] = {
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
- * post-call handler with IoErr capture (Phase 8), disabled path,
+ * post-call handler with IoErr capture, disabled path,
  * overflow path.
  * 63 UWORD values, 126 bytes.
  *
@@ -141,7 +141,7 @@ static const UWORD stub_suffix[] = {
     /* 26: */ 0x206F, 0x0004,           /* movea.l 4(sp), a0    entry ptr       */
     /* 30: */ 0x2140, 0x001C,           /* move.l d0, 28(a0)    entry->retval   */
 
-    /* === Phase 8: IoErr capture (dos.library only) === */
+    /* === IoErr capture (dos.library only) === */
     /* 34: */ 0x0C28, 0x0001, 0x0001,   /* cmp.b #LIB_DOS, 1(a0)              */
     /* 40: */ 0x6620,                   /* bne.s +32            .skip_ioerr     */
     /* 42: */ 0x4A80,                   /* tst.l d0             retval == 0?    */
@@ -214,7 +214,7 @@ static const UWORD stub_suffix[] = {
 /* RING_ENTRIES_ADDR -- 1 occurrence in prefix */
 #define ENTRIES_OFF_1  130   /* entry base address                      */
 
-/* TIMER_BASE_ADDR -- 1 occurrence in prefix (Phase 6) */
+/* TIMER_BASE_ADDR -- 1 occurrence in prefix */
 #define TIMER_BASE_OFF 138   /* EClock block: movea.l #TIMER_BASE, a6  */
 
 /* ---- Prefix struct field displacement patches ---- */
@@ -260,8 +260,8 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *   1. Fixed prefix (196 bytes) - task filter, register save, ring buffer,
  *      EClock capture, event header
  *   2. Variable region - argument copy, flags, string capture, built from metadata
- *   3. Fixed suffix (126 bytes) - post-call handler with IoErr capture
- *      (Phase 8), disabled path, overflow path
+ *   3. Fixed suffix (126 bytes) - post-call handler with IoErr capture,
+ *      disabled path, overflow path
  *
  * Parameters:
  *   anchor    -- pointer to the atrace_anchor (already allocated)
@@ -270,7 +270,7 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *                arg_regs, string_args, enabled=1)
  *   libbase   -- the library base pointer for SetFunction
  *   entries   -- pointer to ring buffer entries array
- *   dos_base  -- dos.library base pointer for IoErr() (Phase 8)
+ *   dos_base  -- dos.library base pointer for IoErr()
  *
  * Returns 0 on success, -1 on failure (AllocMem failed).
  *
@@ -291,7 +291,7 @@ int stub_generate_and_install(
                            *   dual-string(28) + cli_CommandName(47) + valid(2) = 95
                            *   (DEREF_LOCK_VOLUME path: 93 words -- CurrentDir is 1-arg)
                            *   120 provides ample margin.
-                           *   (Phase 9d: cli_CommandName + DEREF_LOCK_VOLUME) */
+                           *   (cli_CommandName + DEREF_LOCK_VOLUME) */
     int var_words;
     int prefix_bytes;     /* 196 standard, 204 with NULL-argument filter */
     int total_bytes;
@@ -302,7 +302,7 @@ int stub_generate_and_install(
 
     /* ---- 1. Build variable region ---- */
 
-    /* Phase 9b: NULL-argument filter extends the prefix by 8 bytes */
+    /* NULL-argument filter extends the prefix by 8 bytes */
     prefix_bytes = STUB_PREFIX_BYTES;
     if (patch->skip_null_arg != 0) {
         prefix_bytes = STUB_PREFIX_BYTES + 8;  /* 204 */
@@ -321,7 +321,7 @@ int stub_generate_and_install(
     }
 
     /* arg_count immediate: move.b #<count>, 32(a5)
-     * Phase 9b: IORequest and TextAttr deref capture an extra field in
+     * IORequest and TextAttr deref capture an extra field in
      * args[1], so arg_count is forced to 2 for those functions. */
     {
         UBYTE actual_count;
@@ -336,19 +336,19 @@ int stub_generate_and_install(
         var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, arg_count);
     }
 
-    /* Phase 6: flags = FLAG_HAS_ECLOCK: move.b #1, 33(a5) */
+    /* flags = FLAG_HAS_ECLOCK: move.b #1, 33(a5) */
     var_buf[var_words++] = 0x1B7C;                    /* move.b #imm, d16(a5) */
     var_buf[var_words++] = 0x0001;                    /* FLAG_HAS_ECLOCK      */
     var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, flags);
 
-    /* Phase 9b: indirect string capture and direct string capture
+    /* Indirect string capture and direct string capture
      * are mutually exclusive. A function has one or the other, never both. */
     if (patch->string_args != 0 && patch->name_deref_type != 0) {
         /* Programming error -- should never happen */
         return -1;
     }
 
-    /* Phase 9b: indirect string capture (Groups A/B/C).
+    /* Indirect string capture (Groups A/B/C).
      * Dereferences struct pointers to capture human-readable names
      * (e.g. library name, device name, font name) into string_data. */
     if (patch->name_deref_type != 0) {
@@ -849,7 +849,7 @@ int stub_generate_and_install(
 
     /* ---- 3. Assemble: prefix + variable + suffix ---- */
 
-    /* Phase 9b: NULL-argument filter is inserted at byte 56, between
+    /* NULL-argument filter is inserted at byte 56, between
      * the task filter check and the MOVEM save.  This placement is
      * critical: the .disabled path only pops saved_a5, so the NULL
      * check branch to .disabled must fire BEFORE the MOVEM push.
@@ -917,7 +917,7 @@ int stub_generate_and_install(
 
     /* ---- 4. Patch addresses and displacements ---- */
 
-    /* Phase 9b: for NULL-filtered functions, all prefix byte offsets
+    /* For NULL-filtered functions, all prefix byte offsets
      * at or after NULL_INSERT_POINT (56) are shifted by +8 because the
      * 8-byte NULL check was inserted there.  ns (null_shift) is 0 or 8. */
     {
@@ -990,7 +990,7 @@ int stub_generate_and_install(
             /* beq.w .overflow at byte 92 (>= 56, shifts to 92+ns): displacement word at 94+ns */
             p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (92 + ns + 2));
 
-            /* Phase 9b: NULL-argument filter beq.w .disabled at byte 56 */
+            /* NULL-argument filter beq.w .disabled at byte 56 */
             if (patch->skip_null_arg != 0) {
                 /* beq.w at byte 60 (NULL_INSERT_POINT + 4), displacement at byte 62 */
                 p[(NULL_INSERT_POINT + 6) / 2] =

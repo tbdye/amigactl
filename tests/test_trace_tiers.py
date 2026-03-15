@@ -343,14 +343,14 @@ class TestTierName:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase10TierMembership
+# TestExtendedTierMembership
 # ---------------------------------------------------------------------------
 
-class TestPhase10TierMembership:
-    """Verify Phase 10 functions are in the correct tiers."""
+class TestExtendedTierMembership:
+    """Verify all functions are assigned to the correct tiers."""
 
-    def test_phase10_basic_functions(self):
-        """Phase 10 Basic-tier functions are in TIER_BASIC."""
+    def test_extended_basic_functions(self):
+        """Basic-tier functions are in TIER_BASIC."""
         expected_basic = {
             "GetDiskObject", "PutDiskObject", "FreeDiskObject",
             "FindToolType", "MatchToolValue",
@@ -361,38 +361,38 @@ class TestPhase10TierMembership:
         for f in expected_basic:
             assert f in TIER_BASIC, "{} not in TIER_BASIC".format(f)
 
-    def test_phase10_detail_functions(self):
-        """Phase 10 Detail-tier functions are in TIER_DETAIL."""
+    def test_extended_detail_functions(self):
+        """Detail-tier functions are in TIER_DETAIL."""
         for f in ("UnLoadSeg", "UnlockPubScreen"):
             assert f in TIER_DETAIL, "{} not in TIER_DETAIL".format(f)
 
-    def test_phase10_verbose_functions(self):
-        """Phase 10 Verbose-tier functions are in TIER_VERBOSE."""
+    def test_extended_verbose_functions(self):
+        """Verbose-tier functions are in TIER_VERBOSE."""
         for f in ("CloseFont",):
             assert f in TIER_VERBOSE, "{} not in TIER_VERBOSE".format(f)
 
-    def test_phase10_manual_functions(self):
-        """Phase 10 Manual-tier functions are in TIER_MANUAL."""
+    def test_extended_manual_functions(self):
+        """Manual-tier functions are in TIER_MANUAL."""
         for f in ("AddPort", "WaitPort"):
             assert f in TIER_MANUAL, "{} not in TIER_MANUAL".format(f)
 
-    def test_phase10_basic_tier_for_function(self):
-        """Phase 10 Basic functions return tier 1 from tier_for_function."""
+    def test_basic_tier_for_function(self):
+        """Basic functions return tier 1 from tier_for_function."""
         for f in ("SetProtection", "OpenWindowTagList",
                   "GetDiskObject", "AddAppIconA"):
             assert tier_for_function(f) == 1, \
                 "{} should be tier 1".format(f)
 
-    def test_phase10_detail_tier_for_function(self):
-        """Phase 10 Detail functions return tier 2 from tier_for_function."""
+    def test_detail_tier_for_function(self):
+        """Detail functions return tier 2 from tier_for_function."""
         assert tier_for_function("UnLoadSeg") == 2
         assert tier_for_function("UnlockPubScreen") == 2
 
-    def test_phase10_verbose_tier_for_function(self):
-        """Phase 10 Verbose functions return tier 3 from tier_for_function."""
+    def test_verbose_tier_for_function(self):
+        """Verbose functions return tier 3 from tier_for_function."""
         assert tier_for_function("CloseFont") == 3
 
-    def test_phase10_manual_tier_for_function(self):
-        """Phase 10 Manual functions return None from tier_for_function."""
+    def test_manual_tier_for_function(self):
+        """Manual functions return None from tier_for_function."""
         assert tier_for_function("AddPort") is None
         assert tier_for_function("WaitPort") is None

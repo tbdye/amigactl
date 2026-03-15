@@ -50,7 +50,7 @@ On successful connection, the daemon sends a banner line:
 AMIGACTL <version>\n
 ```
 
-`<version>` is a dotted version string (e.g., `0.7.0`).  The client
+`<version>` is a dotted version string (e.g., `0.8.0`).  The client
 SHOULD read and validate the banner before sending any commands.  The
 banner is not followed by a sentinel -- it is a single line, not a
 response envelope.
@@ -541,7 +541,7 @@ represents a single LF byte (0x0A).
 
 ```
 [TCP connection established]
-S: AMIGACTL 0.7.0\n
+S: AMIGACTL 0.8.0\n
 
 C: PING\n
 S: OK\n
@@ -549,7 +549,7 @@ S: .\n
 
 C: VERSION\n
 S: OK\n
-S: amigactld 0.7.0\n
+S: amigactld 0.8.0\n
 S: .\n
 
 C: SYSINFO\n

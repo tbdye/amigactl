@@ -58,7 +58,7 @@ def restore_trace_state(conn):
 
     Teardown restores: globally enabled, all non-noise functions
     enabled, noise functions disabled.  This matches the expected
-    default state of a freshly loaded atrace (Phase 4+).
+    default state of a freshly loaded atrace.
 
     The non-Basic function list is derived from trace_tiers.py to stay
     in sync with the authoritative tier definitions automatically.
@@ -340,7 +340,7 @@ class TestTraceStreaming:
                     chunk_len = int(line[5:])
                     data = _recv_exact(trace_sock, chunk_len)
                     text = data.decode("iso-8859-1")
-                    # Skip header comment lines (Phase 5b)
+                    # Skip header comment lines
                     while text.startswith("#"):
                         line = _read_line(trace_sock)
                         if not line.startswith("DATA "):
@@ -612,11 +612,11 @@ class TestTraceRun:
 
 
 # ---------------------------------------------------------------------------
-# TestNoiseDefaults -- Phase 4: noise function auto-disable
+# TestNoiseDefaults -- noise function auto-disable
 # ---------------------------------------------------------------------------
 
 class TestNoiseDefaults:
-    """Tests for noise function auto-disable defaults (Phase 4/9c).
+    """Tests for noise function auto-disable defaults.
 
     After loading atrace, 42 non-Basic tier functions should be
     disabled by default.  These tests verify the default state and
@@ -694,11 +694,11 @@ class TestNoiseDefaults:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceRunPhase4 -- Phase 4: task filter, noise isolation, process name
+# TestTraceRunFiltering -- task filter, noise isolation, process name
 # ---------------------------------------------------------------------------
 
-class TestTraceRunPhase4:
-    """Tests for Phase 4 TRACE RUN enhancements: task filter, noise
+class TestTraceRunFiltering:
+    """Tests for TRACE RUN filtering: task filter, noise
     isolation, and process name fix."""
 
     def test_trace_run_leaves_noise_disabled(self, amiga_host, amiga_port):
@@ -861,11 +861,11 @@ class TestTraceRunPhase4:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase4bFilters -- Phase 4b filter feature tests
+# TestFilterEnhancements -- filter feature tests
 # ---------------------------------------------------------------------------
 
-class TestPhase4bFilters:
-    """Tests for Phase 4b filter enhancements: LIB= suffix stripping
+class TestFilterEnhancements:
+    """Tests for filter enhancements: LIB= suffix stripping
     and FUNC= unknown sentinel matching.
 
     These require direct protocol interaction with TRACE RUN to verify
@@ -960,7 +960,7 @@ class TestPhase4bFilters:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceFilter -- Phase 7: mid-stream FILTER command tests
+# TestTraceFilter -- mid-stream FILTER command tests
 # ---------------------------------------------------------------------------
 
 def _timeout_handler(signum, frame):
@@ -1154,7 +1154,7 @@ def _collect_run_events_raw(session, timeout=5.0, max_events=500):
 
 
 class TestTraceFilter:
-    """Tests for mid-stream FILTER command (Phase 7).
+    """Tests for mid-stream FILTER command.
 
     These tests use the two-connection pattern: conn1 starts a global
     trace stream (TRACE START), applies a FILTER, then conn2 runs
@@ -1676,7 +1676,7 @@ class TestTraceFilter:
             conn_activity.connect()
 
             try:
-                # Phase 1: PROC=atrace_test should pass events
+                # Step 1: PROC=atrace_test should pass events
                 session = conn_trace.trace_start_raw()
                 with session:
                     conn_trace.send_filter(raw="PROC=atrace_test")
@@ -1705,7 +1705,7 @@ class TestTraceFilter:
                     matched_events = _collect_events_raw(
                         session, timeout=5.0)
 
-                    # Phase 2: PROC=nonexistent should pass no events
+                    # Step 2: PROC=nonexistent should pass no events
                     conn_trace.send_filter(raw="PROC=nonexistent")
                     time.sleep(0.5)
                     _drain_pre_filter_events(session)
@@ -1726,7 +1726,7 @@ class TestTraceFilter:
 
                     _stop_raw_session(session)
 
-                # Phase 1 assertions: events should arrive, and task
+                # Step 1 assertions: events should arrive, and task
                 # names should contain "atrace_test"
                 assert len(matched_events) > 0, (
                     "No events received with PROC=atrace_test")
@@ -1736,7 +1736,7 @@ class TestTraceFilter:
                         "Expected task containing 'atrace_test', "
                         "got task={!r}".format(task))
 
-                # Phase 2 assertions: no events from nonexistent process
+                # Step 2 assertions: no events from nonexistent process
                 assert len(unmatched_events) == 0, (
                     "Expected 0 events with PROC=nonexistent, "
                     "got {}".format(len(unmatched_events)))
@@ -1749,7 +1749,7 @@ class TestTraceFilter:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceFilterComment -- Phase 7b: filter comment emission tests
+# TestTraceFilterComment -- filter comment emission tests
 # ---------------------------------------------------------------------------
 
 def _collect_results_raw(session, timeout=5.0, max_results=200):
@@ -1796,7 +1796,7 @@ def _collect_results_raw(session, timeout=5.0, max_results=200):
 
 
 class TestTraceFilterComment:
-    """Tests for filter comment emission after FILTER command (Phase 7b)."""
+    """Tests for filter comment emission after FILTER command."""
 
     def test_filter_emits_comment(self, amiga_host, amiga_port):
         """FILTER LIB=dos emits a '# filter: LIB=dos' comment."""
@@ -1894,11 +1894,11 @@ class TestTraceFilterComment:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceRawAPI -- Phase 7: raw (non-blocking) trace API tests
+# TestTraceRawAPI -- raw (non-blocking) trace API tests
 # ---------------------------------------------------------------------------
 
 class TestTraceRawAPI:
-    """Tests for the non-blocking raw trace APIs (Phase 7).
+    """Tests for the non-blocking raw trace APIs.
 
     These test trace_start_raw(), trace_run_raw(), send_filter(), and
     TraceStreamReader -- the select()-based alternatives to the
@@ -2258,7 +2258,7 @@ class TestEventFormatting:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceHeader -- Phase 5b: trace log header tests
+# TestTraceHeader -- trace log header tests
 # ---------------------------------------------------------------------------
 
 def _collect_all_chunks_raw(sock, timeout=10, max_chunks=50):
@@ -2292,7 +2292,7 @@ def _collect_all_chunks_raw(sock, timeout=10, max_chunks=50):
 
 
 class TestTraceHeader:
-    """Tests for Phase 5b trace log header emission.
+    """Tests for trace log header emission.
 
     Verifies that TRACE START and TRACE RUN emit #-prefixed header
     comments containing version, filter, and deviation information
@@ -2500,11 +2500,11 @@ class TestTraceHeader:
 
 
 # ---------------------------------------------------------------------------
-# TestStringResolution -- Phase 5b: long path string resolution tests
+# TestStringResolution -- long path string resolution tests
 # ---------------------------------------------------------------------------
 
 class TestStringResolution:
-    """Tests for Phase 5b expanded string capture.
+    """Tests for expanded string capture.
 
     Verifies that paths longer than 23 characters (but within the
     59-char expanded string_data capacity) appear fully without
@@ -2564,18 +2564,18 @@ class TestStringResolution:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase6EClock -- Phase 6: EClock timestamps and metadata
+# TestEClockTimestamps -- EClock timestamps and metadata
 # ---------------------------------------------------------------------------
 
-class TestPhase6EClock:
-    """Tests for Phase 6 EClock timestamp features.
+class TestEClockTimestamps:
+    """Tests for EClock timestamp features.
 
     Validates microsecond timestamps, monotonicity, per-event resolution,
     embedded task names, EClock frequency in STATUS, and anchor version.
     """
 
     def test_status_anchor_version(self, conn):
-        """TRACE STATUS reports anchor_version >= 3 (Phase 6)."""
+        """TRACE STATUS reports anchor_version >= 3."""
         status = conn.trace_status()
         assert "anchor_version" in status, (
             "anchor_version not in TRACE STATUS response")
@@ -2746,7 +2746,7 @@ class TestPhase6EClock:
 
 
 # ---------------------------------------------------------------------------
-# TestBsdSocketFilter -- Phase 9: bsdsocket/graphics library filters
+# TestBsdSocketFilter -- bsdsocket/graphics library filters
 # ---------------------------------------------------------------------------
 
 class TestBsdSocketFilter:
@@ -2769,11 +2769,11 @@ class TestBsdSocketFilter:
 
 
 # ---------------------------------------------------------------------------
-# TestPatchCount -- Phase 9: verify patch count
+# TestPatchCount -- verify patch count
 # ---------------------------------------------------------------------------
 
 class TestPatchCount:
-    """Verify patch count reflects Phase 10 additions."""
+    """Verify patch count reflects all additions."""
 
     def test_99_patches(self, conn):
         """TRACE STATUS shows 99 patches (or 84 if no bsdsocket)."""
@@ -2794,11 +2794,11 @@ class TestPatchCount:
 
 
 # ---------------------------------------------------------------------------
-# TestTierFiltering -- Phase 9c: tier-based enable/disable
+# TestTierFiltering -- tier-based enable/disable
 # ---------------------------------------------------------------------------
 
 class TestTierFiltering:
-    """Tests for Phase 9c tier system integration.
+    """Tests for tier system integration.
 
     Verifies that the daemon's default enable/disable state matches
     the tier definitions, and that tier switching via TRACE ENABLE/
@@ -3089,19 +3089,19 @@ class TestTierFiltering:
     def test_closelibrary_detail_tier(self):
         """CloseLibrary should be in Detail tier, not Basic.
 
-        Phase 9d WS7 demotes CloseLibrary from Basic to Detail.
+        CloseLibrary was demoted from Basic to Detail.
         The tier definitions should reflect this assignment.
         """
         from amigactl.trace_tiers import TIER_BASIC, TIER_DETAIL
         assert "CloseLibrary" not in TIER_BASIC, (
-            "CloseLibrary should not be in TIER_BASIC (demoted by Phase 9d)")
+            "CloseLibrary should not be in TIER_BASIC (demoted to Detail tier)")
         assert "CloseLibrary" in TIER_DETAIL, (
             "CloseLibrary should be in TIER_DETAIL")
 
     def test_v0_openlibrary_suppressed_basic(self, amiga_host, amiga_port):
         """v0 OpenLibrary successes should be suppressed at Basic tier.
 
-        Phase 9d WS6: The daemon suppresses successful OpenLibrary
+        The daemon suppresses successful OpenLibrary
         events with version==0 when the current tier is Basic (1).
         atrace_test Block 69 opens utility.library v0; it should NOT
         appear in Basic tier output.

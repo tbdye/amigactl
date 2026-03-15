@@ -7,10 +7,10 @@ levels. Tier membership is the authoritative source of truth for:
 - CLI tier flags (--basic/--detail/--verbose)
 - Toggle grid tier awareness (trace_grid.py)
 
-Tier assignments are finalized after Phase 9b empirical testing.
-Phase 9d audit moved idle-firing functions to Manual tier.
-Phase 10 added 19 functions from icon, workbench, dos, intuition,
-exec, and graphics libraries.
+Tier assignments are based on empirical testing of event frequency
+and diagnostic value. Idle-firing functions are in the Manual tier.
+Covers 99 functions across exec, dos, intuition, bsdsocket, icon,
+workbench, and graphics libraries.
 """
 
 # --- Tier level constants ---
@@ -21,7 +21,7 @@ TIER_VERBOSE_LEVEL = 3
 
 # --- Tier 1: Basic ---
 # Functions where a single event provides immediate diagnostic value.
-# SnoopDOS-equivalent + atrace extensions. DEFAULT on trace start.
+# Core diagnostic functions. DEFAULT on trace start.
 TIER_BASIC = frozenset({
     # dos.library (19)
     "Open", "Close", "Lock", "DeleteFile", "Execute",

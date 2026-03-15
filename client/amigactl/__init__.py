@@ -1287,8 +1287,8 @@ class AmigaConnection:
         noise_disabled is the count of noise functions currently
         disabled.  Only present when atrace is loaded.
 
-        anchor_version is the atrace kernel module version (e.g. 3
-        for Phase 6+).  Only present when atrace is loaded.
+        anchor_version is the atrace kernel module version (currently 4).
+        Only present when atrace is loaded.
 
         eclock_freq is the EClock frequency in Hz (e.g. 709379 for
         PAL).  Only present when anchor_version >= 3.
@@ -1363,7 +1363,7 @@ class AmigaConnection:
             callback: Function called with each event dict.
             lib: Optional library filter (e.g. "dos").
             func: Optional function filter (e.g. "Open").
-            proc: Optional process filter (e.g. "bbs").
+            proc: Optional process filter (e.g. "myapp").
             errors_only: If True, only show error returns.
             preset: Optional filter preset name from FILTER_PRESETS.
         """
@@ -1925,7 +1925,7 @@ class AmigaConnection:
         Args:
             lib: Library name filter (e.g. "dos").
             func: Function name filter (e.g. "Open").
-            proc: Process name filter (e.g. "bbs").
+            proc: Process name filter (e.g. "myapp").
             raw: Raw filter string (e.g. "LIB=dos,exec -FUNC=AllocMem").
                  When provided, lib/func/proc are ignored.
         """

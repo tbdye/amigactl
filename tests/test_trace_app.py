@@ -13,7 +13,7 @@ configurations:
     TIER_BASIC functions enabled).  Captures the 49 Basic-tier
     functions.  Used by TestExecFunctions, TestDosFunctions,
     TestIntuitionFunctions, TestFieldInvariants, and
-    TestPhase4bFeatures.
+    TestReadabilityFeatures.
 
   detail_tier_events: Module-scoped.  Enables TIER_DETAIL and
     TIER_VERBOSE functions in addition to the default TIER_BASIC.
@@ -864,7 +864,7 @@ def noise_group12_events(request, require_atrace_for_app):
     """Run atrace_test with only Group 12 noise functions enabled.
 
     Group 12: AddPort -- exec.library port management function,
-    added in Phase 10. Manual tier due to high background event rate.
+    Manual tier due to high background event rate.
     """
     host = request.config.getoption("--host")
     port = request.config.getoption("--port")
@@ -1043,9 +1043,9 @@ class TestExecNoiseGroup1:
     def test_findtask_null_filter(self, noise_group1_events):
         """FindTask(NULL) is filtered -- no event should appear.
 
-        Phase 9b adds a NULL-argument prefix filter that suppresses
-        FindTask(NULL) events at the stub level.  FindTask with a
-        named argument still produces events normally.
+        The NULL-argument prefix filter suppresses FindTask(NULL)
+        events at the stub level.  FindTask with a named argument
+        still produces events normally.
         """
         matches = _find_events(noise_group1_events, "FindTask")
         null_matches = [ev for ev in matches
@@ -1067,7 +1067,7 @@ class TestExecNoiseGroup2:
     def test_getmsg_empty(self, noise_group2_events):
         """GetMsg on empty named port -- retval (empty), status -.
 
-        Phase 9b resolves port->ln_Name.  Block 8 creates a port
+        The stub resolves port->ln_Name.  Block 8 creates a port
         named "atrace_test_port" and calls GetMsg with no messages
         queued, so the args should show the resolved port name.
         """
@@ -1089,20 +1089,20 @@ class TestExecNoiseGroup2:
         """GetMsg resolves port name via pointer resolution.
 
         Block 8 creates a port named "atrace_test_port" and calls
-        GetMsg.  Phase 9b resolves port->ln_Name into string_data,
+        GetMsg.  The stub resolves port->ln_Name into string_data,
         so the args should contain the port name.
         """
         matches = _find_events(
             noise_group2_events, "GetMsg", "atrace_test_port")
         assert len(matches) >= 1, (
             "No GetMsg with 'atrace_test_port' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group2_events)))
 
     def test_putmsg_getmsg_pair(self, noise_group2_events):
         """PutMsg then GetMsg -- correct retval/status and sequence.
 
-        Phase 9b resolves port->ln_Name.  Block 9 creates a port
+        The stub resolves port->ln_Name.  Block 9 creates a port
         named "atrace_test_recv" and sends a message to it, so
         PutMsg args should show the resolved port name.
         """
@@ -1122,7 +1122,7 @@ class TestExecNoiseGroup2:
             .format(len(getmsg_events)))
 
         # Check PutMsg has void return.
-        # With Phase 9b pointer resolution, PutMsg from our test should
+        # With pointer resolution, PutMsg from our test should
         # show the port name "atrace_test_recv" instead of port=0x...
         # Accept either format for robustness.
         test_putmsgs = [ev for ev in putmsg_events
@@ -1141,14 +1141,14 @@ class TestExecNoiseGroup2:
         """PutMsg resolves port name via pointer resolution.
 
         Block 9 creates a port named "atrace_test_recv" and sends
-        a message to it.  Phase 9b resolves port->ln_Name into
+        a message to it.  The stub resolves port->ln_Name into
         string_data, so the args should contain the port name.
         """
         matches = _find_events(
             noise_group2_events, "PutMsg", "atrace_test_recv")
         assert len(matches) >= 1, (
             "No PutMsg with 'atrace_test_recv' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group2_events)))
 
 
@@ -1162,7 +1162,7 @@ class TestExecNoiseGroup3:
     def test_obtain_release_semaphore(self, noise_group3_events):
         """ObtainSemaphore + ReleaseSemaphore -- void, paired, ordered.
 
-        Phase 9b resolves sem->ln_Name.  Block 10 uses the
+        The stub resolves sem->ln_Name.  Block 10 uses the
         "atrace_patches" semaphore, so the args should contain the
         resolved semaphore name.
         """
@@ -1192,11 +1192,11 @@ class TestExecNoiseGroup3:
                     ev["status"]))
 
         # Find a matched pair sharing the same semaphore name or address.
-        # With Phase 9b, named semaphores show the name string;
+        # With pointer resolution, named semaphores show the name string;
         # unnamed ones fall back to sem=0x... hex.
         for obt in obtain_events:
             obt_args = obt.get("args", "")
-            # Try name-based matching first (Phase 9b resolution)
+            # Try name-based matching first (pointer resolution)
             sem_name_match = re.search(r'"([^"]+)"', obt_args)
             if sem_name_match:
                 sem_name = sem_name_match.group(1)
@@ -1205,7 +1205,7 @@ class TestExecNoiseGroup3:
                           and ev["seq"] > obt["seq"]]
                 if paired:
                     return
-            # Fall back to address-based matching (pre-9b or unnamed)
+            # Fall back to address-based matching (unnamed semaphore)
             sem_addr_match = re.search(
                 r"sem=(0x[0-9a-f]+)", obt_args)
             if sem_addr_match:
@@ -1226,26 +1226,26 @@ class TestExecNoiseGroup3:
         """ObtainSemaphore resolves semaphore name via pointer resolution.
 
         Block 10 uses the "atrace_patches" system semaphore.
-        Phase 9b resolves sem->ln_Name into string_data.
+        The stub resolves sem->ln_Name into string_data.
         """
         matches = _find_events(
             noise_group3_events, "ObtainSemaphore", "atrace_patches")
         assert len(matches) >= 1, (
             "No ObtainSemaphore with 'atrace_patches' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group3_events)))
 
     def test_releasesemaphore_name(self, noise_group3_events):
         """ReleaseSemaphore resolves semaphore name via pointer resolution.
 
         Block 10 uses the "atrace_patches" system semaphore.
-        Phase 9b resolves sem->ln_Name into string_data.
+        The stub resolves sem->ln_Name into string_data.
         """
         matches = _find_events(
             noise_group3_events, "ReleaseSemaphore", "atrace_patches")
         assert len(matches) >= 1, (
             "No ReleaseSemaphore with 'atrace_patches' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group3_events)))
 
     def test_allocmem(self, noise_group3_events):
@@ -1290,11 +1290,11 @@ class TestExecNoiseGroup4:
 
 
 # ---------------------------------------------------------------------------
-# TestDosFunctions (Phase A: 8 core tests)
+# TestDosFunctions -- dos.library core tests
 # ---------------------------------------------------------------------------
 
 class TestDosFunctions:
-    """Tests for dos.library traced functions (Phase A subset)."""
+    """Tests for dos.library traced functions."""
 
     def test_open_read_success(self, trace_events):
         """Open("RAM:atrace_test_read", Read) -- file exists, status O."""
@@ -1388,7 +1388,7 @@ class TestDosFunctions:
             hr.track(ev)
 
         # Find the Close that matches the Open's return handle.
-        # With fh_cache (Phase 9d), Close may show the path directly
+        # With fh_cache, Close may show the path directly
         # instead of fh=0x...; match either format.
         close_events = _find_events(trace_events, "Close")
         norm_retval = HandleResolver._normalize_hex(open_retval)
@@ -1898,16 +1898,15 @@ class TestFieldInvariants:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase4bFeatures -- Phase 4b specific feature validation
+# TestReadabilityFeatures -- readability feature validation
 # ---------------------------------------------------------------------------
 
-class TestPhase4bFeatures:
-    """Tests for Phase 4b features: CLI numbers, truncation indicator,
+class TestReadabilityFeatures:
+    """Tests for readability features: CLI numbers, truncation indicator,
     lock cache for CurrentDir, and stale string_data exclusion.
 
-    These validate daemon-side formatting enhancements introduced in
-    Phase 4b using the same trace_events fixture (single TRACE RUN of
-    C:atrace_test).
+    These validate daemon-side formatting enhancements using the same
+    trace_events fixture (single TRACE RUN of C:atrace_test).
     """
 
     def test_cli_number_in_task_names(self, trace_events):
@@ -1930,7 +1929,7 @@ class TestPhase4bFeatures:
 
         The C test app calls Rename("RAM:atrace_test_ren_old", ...)
         where the old name is 23 characters.  With 59-char string_data
-        capacity (Phase 5b event expansion to 128 bytes), this fits
+        capacity (event expansion to 128 bytes), this fits
         easily and no truncation occurs.
         """
         matches = _find_events(trace_events, "Rename", "RAM:atrace_test_ren")
@@ -1968,7 +1967,7 @@ class TestPhase4bFeatures:
     def test_close_shows_fh_cache_path(self, trace_events):
         """Close events show file path from fh_cache.
 
-        Phase 9d Wave 5 added fh_cache which maps file handles to
+        The fh_cache maps file handles to
         their opened paths.  Close events should display the resolved
         file path in quotes (e.g., "RAM:atrace_test_read") rather than
         a bare hex handle.  At least one Close event from the test app
@@ -2053,7 +2052,7 @@ class TestPhase4bFeatures:
 
 
 # ---------------------------------------------------------------------------
-# TestExecDeviceIO -- Phase 5: device I/O functions
+# TestExecDeviceIO -- device I/O functions
 # ---------------------------------------------------------------------------
 
 class TestExecDeviceIO:
@@ -2062,14 +2061,14 @@ class TestExecDeviceIO:
     def test_doio(self, noise_group7_events):
         """DoIO on timer.device -- status O (success, retval=OK).
 
-        Phase 9b resolves io_Device->ln_Name and io_Command.
+        The stub resolves io_Device->ln_Name and io_Command.
         Block 32 does DoIO with TR_ADDREQUEST (CMD 9) on timer.device.
         """
         matches = _find_events(noise_group7_events, "DoIO")
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "exec"
-        # Phase 9b: expect device name and CMD instead of raw io=0x
+        # Expect device name and CMD instead of raw io=0x
         assert ("timer.device" in ev["args"]
                 or "io=0x" in ev["args"]), (
             "DoIO args should contain 'timer.device' or 'io=0x', "
@@ -2081,13 +2080,13 @@ class TestExecDeviceIO:
         """DoIO resolves device name via pointer resolution.
 
         Block 32 opens timer.device and does DoIO with
-        TR_ADDREQUEST (CMD 9).  Phase 9b resolves the device name.
+        TR_ADDREQUEST (CMD 9).  The stub resolves the device name.
         """
         matches = _find_events(
             noise_group7_events, "DoIO", "timer.device")
         assert len(matches) >= 1, (
             "No DoIO with 'timer.device' in args found in {} events. "
-            "Phase 9b pointer resolution may not be active."
+            "Pointer resolution may not be active."
             .format(len(noise_group7_events)))
         # Also verify CMD appears
         ev = matches[0]
@@ -2097,7 +2096,7 @@ class TestExecDeviceIO:
     def test_sendio(self, noise_group7_events):
         """SendIO -- void function, status '-'.
 
-        Phase 9b resolves io_Device->ln_Name and io_Command.
+        The stub resolves io_Device->ln_Name and io_Command.
         """
         matches = _find_events(noise_group7_events, "SendIO")
         assert len(matches) >= 1
@@ -2114,19 +2113,19 @@ class TestExecDeviceIO:
         """SendIO resolves device name via pointer resolution.
 
         Block 33 does SendIO on timer.device with TR_ADDREQUEST.
-        Phase 9b resolves the device name.
+        The stub resolves the device name.
         """
         matches = _find_events(
             noise_group7_events, "SendIO", "timer.device")
         assert len(matches) >= 1, (
             "No SendIO with 'timer.device' in args found in {} events. "
-            "Phase 9b pointer resolution may not be active."
+            "Pointer resolution may not be active."
             .format(len(noise_group7_events)))
 
     def test_waitio(self, noise_group7_events):
         """WaitIO -- status O (success after SendIO completes).
 
-        Phase 9b resolves io_Device->ln_Name and io_Command.
+        The stub resolves io_Device->ln_Name and io_Command.
         """
         matches = _find_events(noise_group7_events, "WaitIO")
         assert len(matches) >= 1
@@ -2143,19 +2142,19 @@ class TestExecDeviceIO:
         """WaitIO resolves device name via pointer resolution.
 
         Block 33 does WaitIO after SendIO on timer.device.
-        Phase 9b resolves the device name.
+        The stub resolves the device name.
         """
         matches = _find_events(
             noise_group7_events, "WaitIO", "timer.device")
         assert len(matches) >= 1, (
             "No WaitIO with 'timer.device' in args found in {} events. "
-            "Phase 9b pointer resolution may not be active."
+            "Pointer resolution may not be active."
             .format(len(noise_group7_events)))
 
     def test_abortio(self, noise_group7_events):
         """AbortIO -- abort a pending timer request.
 
-        Phase 9b resolves io_Device->ln_Name and io_Command.
+        The stub resolves io_Device->ln_Name and io_Command.
         """
         matches = _find_events(noise_group7_events, "AbortIO")
         assert len(matches) >= 1
@@ -2172,19 +2171,19 @@ class TestExecDeviceIO:
         """AbortIO resolves device name via pointer resolution.
 
         Block 34 does AbortIO on a pending timer.device request.
-        Phase 9b resolves the device name.
+        The stub resolves the device name.
         """
         matches = _find_events(
             noise_group7_events, "AbortIO", "timer.device")
         assert len(matches) >= 1, (
             "No AbortIO with 'timer.device' in args found in {} events. "
-            "Phase 9b pointer resolution may not be active."
+            "Pointer resolution may not be active."
             .format(len(noise_group7_events)))
 
     def test_checkio(self, noise_group7_events):
         """CheckIO -- check pending request status.
 
-        Phase 9b resolves io_Device->ln_Name and io_Command.
+        The stub resolves io_Device->ln_Name and io_Command.
         """
         matches = _find_events(noise_group7_events, "CheckIO")
         assert len(matches) >= 1
@@ -2200,13 +2199,13 @@ class TestExecDeviceIO:
         """CheckIO resolves device name via pointer resolution.
 
         Block 34 does CheckIO on a pending timer.device request.
-        Phase 9b resolves the device name.
+        The stub resolves the device name.
         """
         matches = _find_events(
             noise_group7_events, "CheckIO", "timer.device")
         assert len(matches) >= 1, (
             "No CheckIO with 'timer.device' in args found in {} events. "
-            "Phase 9b pointer resolution may not be active."
+            "Pointer resolution may not be active."
             .format(len(noise_group7_events)))
 
 
@@ -2251,7 +2250,7 @@ class TestExecNoiseGroup5:
 
 
 # ---------------------------------------------------------------------------
-# TestIntuitionFunctions -- Phase 5: intuition.library
+# TestIntuitionFunctions -- intuition.library
 # ---------------------------------------------------------------------------
 
 class TestIntuitionFunctions:
@@ -2437,12 +2436,12 @@ class TestDosNoiseGroup6:
 
 
 # ---------------------------------------------------------------------------
-# TestPatchCount -- verify patch count matches Phase 9 expectations
+# TestPatchCount -- verify patch count
 # ---------------------------------------------------------------------------
 
 @pytest.mark.usefixtures("require_atrace_for_app")
 class TestPatchCount:
-    """Verify patch count matches Phase 10 expectations (99 with bsdsocket, 84 without)."""
+    """Verify total patch count (99 with bsdsocket, 84 without)."""
 
     def test_status_patch_count(self, request):
         """TRACE STATUS reports 99 or 84 patches."""
@@ -2458,7 +2457,7 @@ class TestPatchCount:
             conn.close()
 
     def test_status_intuition_patches(self, request):
-        """TRACE STATUS lists intuition.library patches (14 after Phase 10)."""
+        """TRACE STATUS lists intuition.library patches (14 total)."""
         host = request.config.getoption("--host")
         port = request.config.getoption("--port")
         conn = AmigaConnection(host, port)
@@ -2477,11 +2476,11 @@ class TestPatchCount:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase6Timestamps -- Phase 6: EClock timestamps in atrace_test events
+# TestEClockTimestamps -- EClock timestamps in atrace_test events
 # ---------------------------------------------------------------------------
 
-class TestPhase6Timestamps:
-    """Tests for Phase 6 EClock timestamp features using atrace_test events.
+class TestEClockTimestamps:
+    """Tests for EClock timestamp features using atrace_test events.
 
     Uses the module-scoped trace_events fixture to validate that events
     from atrace_test carry microsecond-precision timestamps.
@@ -2555,11 +2554,11 @@ class TestPhase6Timestamps:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase8IoErr -- IoErr capture for dos.library failures
+# TestIoErrCapture -- IoErr capture for dos.library failures
 # ---------------------------------------------------------------------------
 
-class TestPhase8IoErr:
-    """Phase 8: IoErr capture for dos.library failures."""
+class TestIoErrCapture:
+    """IoErr capture for dos.library failures."""
 
     def test_open_failure_has_ioerr(self, trace_events):
         """Open non-existent file should show IoErr 205."""
@@ -2577,7 +2576,7 @@ class TestPhase8IoErr:
     def test_delete_nonexistent_has_ioerr(self, trace_events):
         """DeleteFile of non-existent file should show IoErr 205."""
         matches = _find_events(trace_events, "DeleteFile",
-                               "atrace_test_phase8_nofile")
+                               "atrace_test_ioerr_nofile")
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["status"] == "E"
@@ -2637,11 +2636,11 @@ class TestPhase8IoErr:
 
 
 # ---------------------------------------------------------------------------
-# TestExtendedExecFunctions -- Phase 9: extended exec.library functions
+# TestExtendedExecFunctions -- extended exec.library functions
 # ---------------------------------------------------------------------------
 
 class TestExtendedExecFunctions:
-    """Tests for Phase 9 extended exec.library functions (non-noise)."""
+    """Tests for extended exec.library functions (non-noise)."""
 
     def test_alloc_signal_event(self, detail_tier_events):
         """AllocSignal produces event with signal number."""
@@ -2668,7 +2667,7 @@ class TestExtendedExecFunctions:
     def test_delete_msgport_event(self, detail_tier_events):
         """DeleteMsgPort produces event with port name or pointer arg.
 
-        Phase 9b resolves port->ln_Name.  Block 9 deletes ports
+        The stub resolves port->ln_Name.  Block 9 deletes ports
         named "atrace_test_recv" and "atrace_test_reply", so at
         least some DeleteMsgPort events should show resolved names.
         Unnamed ports fall back to port=0x... hex.
@@ -2687,7 +2686,7 @@ class TestExtendedExecFunctions:
         """DeleteMsgPort resolves port name via pointer resolution.
 
         Block 9 deletes named ports "atrace_test_recv" and
-        "atrace_test_reply".  Phase 9b resolves port->ln_Name.
+        "atrace_test_reply".  The stub resolves port->ln_Name.
         """
         evts = [e for e in detail_tier_events
                 if e.get("func") == "DeleteMsgPort"]
@@ -2696,7 +2695,7 @@ class TestExtendedExecFunctions:
                           or "atrace_test_reply" in e.get("args", ""))]
         assert len(named_evts) >= 1, (
             "No DeleteMsgPort with resolved port name found in "
-            "{} events. Phase 9b pointer resolution may not be active. "
+            "{} events. Pointer resolution may not be active. "
             "All DeleteMsgPort args: {}".format(
                 len(evts),
                 [e.get("args", "") for e in evts]))
@@ -2704,7 +2703,7 @@ class TestExtendedExecFunctions:
     def test_close_device_event(self, trace_events):
         """CloseDevice produces event with device name or ioRequest pointer.
 
-        Phase 9b resolves io_Device->ln_Name.  Block 51 closes
+        The stub resolves io_Device->ln_Name.  Block 51 closes
         timer.device, so the args should show the resolved name.
         """
         evts = [e for e in trace_events
@@ -2720,14 +2719,14 @@ class TestExtendedExecFunctions:
     def test_close_device_name(self, trace_events):
         """CloseDevice resolves device name via pointer resolution.
 
-        Block 51 opens then closes timer.device.  Phase 9b resolves
+        Block 51 opens then closes timer.device.  The stub resolves
         io_Device->ln_Name into string_data.
         """
         matches = _find_events(
             trace_events, "CloseDevice", "timer.device")
         assert len(matches) >= 1, (
             "No CloseDevice with 'timer.device' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(trace_events)))
 
 
@@ -2752,7 +2751,7 @@ class TestExecNoiseGroup10:
     def test_signal_event(self, noise_group10_events):
         """Signal produces event with task name or pointer and signalSet.
 
-        Phase 9b resolves the task pointer via the daemon's task cache,
+        The task pointer is resolved via the daemon's task cache,
         showing a quoted task name instead of task=0x... hex.
         """
         evts = [e for e in noise_group10_events
@@ -2768,7 +2767,7 @@ class TestExecNoiseGroup10:
     def test_close_library_event(self, noise_group10_events):
         """CloseLibrary produces event with library name or pointer.
 
-        Phase 9b resolves lib->ln_Name.  Block 50 closes dos.library,
+        The stub resolves lib->ln_Name.  Block 50 closes dos.library,
         so at least some CloseLibrary events should show resolved names.
         """
         evts = [e for e in noise_group10_events
@@ -2784,23 +2783,23 @@ class TestExecNoiseGroup10:
     def test_close_library_name(self, noise_group10_events):
         """CloseLibrary resolves library name via pointer resolution.
 
-        Block 50 opens dos.library then closes it.  Phase 9b
+        Block 50 opens dos.library then closes it.  The stub
         resolves lib->ln_Name into string_data.
         """
         matches = _find_events(
             noise_group10_events, "CloseLibrary", "dos.library")
         assert len(matches) >= 1, (
             "No CloseLibrary with 'dos.library' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group10_events)))
 
 
 # ---------------------------------------------------------------------------
-# TestDosAdditions -- Phase 9: dos.library additions
+# TestDosAdditions -- dos.library additions
 # ---------------------------------------------------------------------------
 
 class TestDosAdditions:
-    """Tests for Phase 9 dos.library additions."""
+    """Tests for dos.library additions."""
 
     def test_examine_event(self, detail_tier_events):
         """Examine produces event with lock and fib args."""
@@ -2873,13 +2872,13 @@ class TestDosAdditions:
 
 
 # ---------------------------------------------------------------------------
-# TestLockPubScreen -- Phase 9: intuition.library LockPubScreen
+# TestLockPubScreen -- intuition.library LockPubScreen
 # ---------------------------------------------------------------------------
 
 class TestLockPubScreen:
-    """Tests for Phase 9 intuition.library LockPubScreen.
+    """Tests for intuition.library LockPubScreen.
 
-    Phase 9b adds a NULL-argument prefix filter that suppresses
+    The NULL-argument prefix filter suppresses
     LockPubScreen(NULL) events at the stub level.  Only
     LockPubScreen("Workbench") produces events.
     """
@@ -2906,7 +2905,7 @@ class TestLockPubScreen:
     def test_lockpubscreen_null_filter(self, trace_events):
         """LockPubScreen(NULL) is filtered -- no event should appear.
 
-        Phase 9b adds a NULL-argument prefix filter that suppresses
+        The NULL-argument prefix filter suppresses
         LockPubScreen(NULL) events at the stub level.
         """
         evts = [e for e in trace_events
@@ -2928,16 +2927,16 @@ class TestLockPubScreen:
 
 
 # ---------------------------------------------------------------------------
-# TestOpenFont -- Phase 9: graphics.library OpenFont (noise group 11)
+# TestOpenFont -- graphics.library OpenFont
 # ---------------------------------------------------------------------------
 
 class TestOpenFont:
-    """Tests for Phase 9 graphics.library OpenFont (noise group 11)."""
+    """Tests for graphics.library OpenFont (noise group 11)."""
 
     def test_openfont_event(self, noise_group11_events):
         """OpenFont produces event with font name or TextAttr pointer.
 
-        Phase 9b resolves TextAttr->ta_Name and ta_YSize.
+        The stub resolves TextAttr->ta_Name and ta_YSize.
         Block 57 opens topaz.font at size 8.
         """
         evts = [e for e in noise_group11_events
@@ -2953,14 +2952,14 @@ class TestOpenFont:
     def test_openfont_name(self, noise_group11_events):
         """OpenFont resolves font name via pointer resolution.
 
-        Block 57 opens topaz.font at size 8.  Phase 9b resolves
+        Block 57 opens topaz.font at size 8.  The stub resolves
         TextAttr->ta_Name into string_data and includes ta_YSize.
         """
         matches = _find_events(
             noise_group11_events, "OpenFont", "topaz.font")
         assert len(matches) >= 1, (
             "No OpenFont with 'topaz.font' in args found in "
-            "{} events. Phase 9b pointer resolution may not be active."
+            "{} events. Pointer resolution may not be active."
             .format(len(noise_group11_events)))
         # Verify the size (8) is also present
         ev = matches[0]
@@ -2977,11 +2976,11 @@ class TestOpenFont:
 
 
 # ---------------------------------------------------------------------------
-# TestBsdSocket -- Phase 9: bsdsocket.library functions
+# TestBsdSocket -- bsdsocket.library functions
 # ---------------------------------------------------------------------------
 
 class TestBsdSocket:
-    """Tests for Phase 9 bsdsocket.library functions.
+    """Tests for bsdsocket.library functions.
 
     These tests require a TCP/IP stack on the Amiga. If bsdsocket.library
     is not available, atrace_test skips the bsdsocket blocks and these
@@ -3127,7 +3126,7 @@ class TestBsdSocket:
 
 
 # ---------------------------------------------------------------------------
-# TestBsdSocketNoise -- Phase 9: bsdsocket noise functions
+# TestBsdSocketNoise -- bsdsocket noise functions
 # ---------------------------------------------------------------------------
 
 class TestBsdSocketNoise:
@@ -3165,7 +3164,7 @@ class TestBsdSocketNoise:
 
 
 # ---------------------------------------------------------------------------
-# TestReplyMsg -- Phase 9: ReplyMsg (noise function)
+# TestReplyMsg -- ReplyMsg (noise function)
 # ---------------------------------------------------------------------------
 
 class TestReplyMsg:
@@ -3180,11 +3179,11 @@ class TestReplyMsg:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase9bSignalResolution -- Phase 9b: Signal daemon-side resolution
+# TestSignalResolution -- Signal daemon-side resolution
 # ---------------------------------------------------------------------------
 
-class TestPhase9bSignalResolution:
-    """Phase 9b: Signal daemon-side task pointer resolution.
+class TestSignalResolution:
+    """Signal daemon-side task pointer resolution.
 
     Signal's task pointer is resolved by the daemon via its task cache.
     Block 47 signals its own task (FindTask(NULL) -> Signal), so the
@@ -3211,17 +3210,17 @@ class TestPhase9bSignalResolution:
                          if '"' in e.get("args", "")]
         assert len(resolved_evts) >= 1, (
             "No Signal events with resolved task name found. "
-            "Phase 9b daemon-side resolution may not be active. "
+            "Daemon-side resolution may not be active. "
             "All Signal args: {}".format(
                 [e.get("args", "") for e in evts[:5]]))
 
 
 # ---------------------------------------------------------------------------
-# TestPhase9bPointerResolutionFallback -- Phase 9b: hex fallback
+# TestPointerResolutionFallback -- hex fallback for unnamed structs
 # ---------------------------------------------------------------------------
 
-class TestPhase9bPointerResolutionFallback:
-    """Phase 9b: Pointer resolution falls back to hex for unnamed structs.
+class TestPointerResolutionFallback:
+    """Pointer resolution falls back to hex for unnamed structs.
 
     CreateMsgPort creates unnamed ports (ln_Name is NULL).  The
     formatter should show port=0x... hex rather than a quoted name.
@@ -3249,11 +3248,11 @@ class TestPhase9bPointerResolutionFallback:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase9dFeatures -- Phase 9d: signal-to-noise + name resolution
+# TestSignalToNoiseFeatures -- signal-to-noise + name resolution
 # ---------------------------------------------------------------------------
 
-class TestPhase9dFeatures:
-    """Phase 9d: Signal-to-noise ratio and name resolution improvements.
+class TestSignalToNoiseFeatures:
+    """Signal-to-noise ratio and name resolution improvements.
 
     Tests validate dual-string capture (Rename, MakeLink), volume name
     resolution (CurrentDir), file handle path resolution (Close via
@@ -3264,7 +3263,7 @@ class TestPhase9dFeatures:
         """Rename events capture both old and new names in dual-string format.
 
         Block 28 renames RAM:atrace_test_ren_old to RAM:atrace_test_ren_new.
-        Phase 9d WS2 captures both names: '"old" -> "new"' format.
+        Both names are captured in '"old" -> "new"' format.
         """
         matches = _find_events(
             trace_events, "Rename", "atrace_test_ren")
@@ -3288,8 +3287,8 @@ class TestPhase9dFeatures:
     def test_makelink_dual_string(self, trace_events):
         """MakeLink events capture both name and destination in dual-string format.
 
-        Block 27 creates a soft link. Phase 9d WS2 captures both
-        the link name and destination: '"name" -> "dest" soft' format.
+        Block 27 creates a soft link. Both the link name and
+        destination are captured: '"name" -> "dest" soft' format.
         """
         matches = _find_events(
             trace_events, "MakeLink", "atrace_test_link")
@@ -3307,7 +3306,7 @@ class TestPhase9dFeatures:
     def test_currentdir_volume(self, trace_events):
         """CurrentDir events show volume name via DEREF_LOCK_VOLUME.
 
-        Block 70 does Lock("RAM:") then CurrentDir(lock). Phase 9d WS4
+        Block 70 does Lock("RAM:") then CurrentDir(lock). DEREF_LOCK_VOLUME
         resolves the lock to a volume name, so CurrentDir args should
         show "RAM:" or similar volume path rather than a hex pointer.
         """
@@ -3341,7 +3340,7 @@ class TestPhase9dFeatures:
         """Close events show the file path from fh_cache.
 
         Block 71 opens RAM:atrace_test_close_path then closes it.
-        Phase 9d WS5 daemon fh_cache maps the file handle to its
+        The daemon fh_cache maps the file handle to its
         path, so Close should show the path instead of raw hex.
         """
         # Find the Open for the distinctive close_path test file
@@ -3372,7 +3371,7 @@ class TestPhase9dFeatures:
     def test_openlib_v0_suppression(self, trace_events):
         """v0 OpenLibrary successes are suppressed at Basic tier.
 
-        Block 69 opens utility.library with version 0. Phase 9d WS6
+        Block 69 opens utility.library with version 0. The daemon
         suppresses successful OpenLibrary v0 events at Basic tier.
         Block 6 opens dos.library with v36 which should still appear.
 
@@ -3403,11 +3402,11 @@ class TestPhase9dFeatures:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase10BasicFunctions -- Phase 10: Basic-tier new functions
+# TestBasicTierFunctions -- Basic-tier new functions
 # ---------------------------------------------------------------------------
 
-class TestPhase10BasicFunctions:
-    """Test Phase 10 Basic-tier functions in trace_events output.
+class TestBasicTierFunctions:
+    """Test Basic-tier functions in trace_events output.
 
     These functions are enabled by default (Basic tier) and should
     appear in the trace_events fixture without any additional setup.
@@ -3496,11 +3495,11 @@ class TestPhase10BasicFunctions:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase10DetailFunctions -- Phase 10: Detail-tier new functions
+# TestDetailTierFunctions -- Detail-tier new functions
 # ---------------------------------------------------------------------------
 
-class TestPhase10DetailFunctions:
-    """Test Phase 10 Detail-tier functions in detail_tier_events output.
+class TestDetailTierFunctions:
+    """Test Detail-tier functions in detail_tier_events output.
 
     These functions require TIER_DETAIL to be enabled.
     """
@@ -3539,11 +3538,11 @@ class TestPhase10DetailFunctions:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase10VerboseFunctions -- Phase 10: Verbose-tier new functions
+# TestVerboseTierFunctions -- Verbose-tier new functions
 # ---------------------------------------------------------------------------
 
-class TestPhase10VerboseFunctions:
-    """Test Phase 10 Verbose-tier functions in detail_tier_events output.
+class TestVerboseTierFunctions:
+    """Test Verbose-tier functions in detail_tier_events output.
 
     The detail_tier_events fixture enables both TIER_DETAIL and
     TIER_VERBOSE, so CloseFont should appear.
@@ -3567,11 +3566,11 @@ class TestPhase10VerboseFunctions:
 
 
 # ---------------------------------------------------------------------------
-# TestExecPorts -- Phase 10: Manual-tier AddPort
+# TestExecPorts -- Manual-tier AddPort
 # ---------------------------------------------------------------------------
 
 class TestExecPorts:
-    """Test Phase 10 Manual-tier AddPort function.
+    """Test Manual-tier AddPort function.
 
     AddPort is in TIER_MANUAL and needs a dedicated noise group
     fixture to capture events without being overwhelmed by OS noise.

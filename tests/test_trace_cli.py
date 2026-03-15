@@ -262,13 +262,13 @@ class TestTraceStartCLI:
         assert call_kwargs.get("func") == "Open"
 
     def test_start_passes_proc_filter(self, capsys):
-        """trace start --proc=bbs passes proc filter."""
+        """trace start --proc=myapp passes proc filter."""
         conn = _make_mock_conn()
         conn.trace_start.side_effect = KeyboardInterrupt
-        args = _make_args(trace_cmd="start", proc="bbs")
+        args = _make_args(trace_cmd="start", proc="myapp")
         _run_cmd_trace(conn, args)
         call_kwargs = conn.trace_start.call_args[1]
-        assert call_kwargs.get("proc") == "bbs"
+        assert call_kwargs.get("proc") == "myapp"
 
     def test_start_passes_errors_flag(self, capsys):
         """trace start --errors passes errors_only=True."""

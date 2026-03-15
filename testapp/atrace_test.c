@@ -147,7 +147,7 @@ int main(int argc, char **argv)
     /* Block 6: OpenLibrary
      * Open dos.library version 36 (AmigaOS 2.0+), then close it.
      * Using v36 instead of v0 so the event passes the daemon's v0
-     * suppression filter at Basic tier (Phase 9d WS6). */
+     * suppression filter at Basic tier. */
     {
         struct Library *lib;
         lib = OpenLibrary((STRPTR)"dos.library", 36);
@@ -481,7 +481,7 @@ int main(int argc, char **argv)
     }
 
     /* ================================================================
-     * Phase 5: Device I/O tests (blocks 32-34)
+     * Device I/O tests (blocks 32-34)
      * ================================================================ */
 
     /* Block 32: DoIO
@@ -571,7 +571,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 5: Memory tests (blocks 35-36)
+     * Memory tests (blocks 35-36)
      * ================================================================ */
 
     /* Block 35: FreeMem
@@ -598,7 +598,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 5: Intuition tests (blocks 37-40)
+     * Intuition tests (blocks 37-40)
      * Open IntuitionBase once, exercise OpenWindow/CloseWindow,
      * OpenScreen/CloseScreen, ActivateWindow/WindowToFront/WindowToBack,
      * and ModifyIDCMP, then close IntuitionBase.
@@ -721,7 +721,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 5b: String resolution test (block 42)
+     * String resolution test (block 42)
      * ================================================================ */
 
     /* Block 42: Long path string capture
@@ -742,7 +742,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 5: File I/O tests (block 41)
+     * File I/O tests (block 41)
      * ================================================================ */
 
     /* Block 41: Read + Write (dos.library)
@@ -776,13 +776,13 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 8: IoErr capture tests (blocks 43-46)
+     * IoErr capture tests (blocks 43-46)
      * ================================================================ */
 
     /* Block 43: DeleteFile of non-existent file
      * Triggers IoErr 205 (object not found) via DeleteFile. */
     {
-        DeleteFile((STRPTR)"RAM:atrace_test_phase8_nofile");
+        DeleteFile((STRPTR)"RAM:atrace_test_ioerr_nofile");
     }
 
     Delay(1);
@@ -820,7 +820,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: Extended exec tests (blocks 47-52)
+     * Extended exec tests (blocks 47-52)
      * ================================================================ */
 
     /* Block 47: Wait + Signal
@@ -924,7 +924,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: dos.library tests (blocks 53-55)
+     * dos.library tests (blocks 53-55)
      * ================================================================ */
 
     /* Block 53: UnLock
@@ -989,7 +989,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: intuition.library test (block 56)
+     * intuition.library test (block 56)
      * ================================================================ */
 
     /* Block 56: LockPubScreen
@@ -997,11 +997,11 @@ int main(int argc, char **argv)
      * filter (no event produced).  LockPubScreen("Workbench") verifies
      * that named lookups still produce events with the screen name.
      *
-     * Note: The Phase 5 intuition test blocks (37-40) open
+     * Note: The earlier intuition test blocks (37-40) open
      * IntuitionBase once per section and share it across blocks.
-     * This block is in a separate Phase 9 section, so it follows
-     * the same pattern of opening IntuitionBase for its section.
-     * The Phase 5 section already closed its IntuitionBase, so a
+     * This block is in a separate section, so it follows the same
+     * pattern of opening IntuitionBase for its section.  The earlier
+     * intuition section already closed its IntuitionBase, so a
      * fresh open is required here. */
     {
         struct Library *IntuitionBase;
@@ -1028,7 +1028,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: graphics.library test (block 57)
+     * graphics.library test (block 57)
      * ================================================================ */
 
     /* Block 57: OpenFont
@@ -1055,7 +1055,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: bsdsocket.library tests (blocks 58-66)
+     * bsdsocket.library tests (blocks 58-66)
      * ================================================================ */
 
     /* bsdsocket tests: all wrapped in a single library open.
@@ -1289,7 +1289,7 @@ int main(int argc, char **argv)
     }
 
     /* ================================================================
-     * Phase 9: dos.library test (block 67)
+     * dos.library test (block 67)
      * ================================================================ */
 
     /* Block 67: AddDosEntry
@@ -1313,7 +1313,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9: intuition.library tests (block 68)
+     * intuition.library tests (block 68)
      * ================================================================ */
 
     /* Block 68: CloseWorkBench + OpenWorkBench
@@ -1335,13 +1335,13 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 9d tests (blocks 69-71)
+     * Signal-to-noise tests (blocks 69-71)
      * ================================================================ */
 
     /* Block 69: OpenLibrary v0 suppression test
      * Open utility.library with version 0. This event should be
      * suppressed at Basic tier (daemon-side v0 success filter) and
-     * visible at Detail tier. See Phase 9d WS6. */
+     * visible at Detail tier. */
     {
         struct Library *lib;
         lib = OpenLibrary((STRPTR)"utility.library", 0);
@@ -1380,7 +1380,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 10: dos.library tests (blocks 72-73)
+     * dos.library tests (blocks 72-73)
      * ================================================================ */
 
     /* Block 72: SetProtection
@@ -1412,7 +1412,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 10: exec.library tests (block 74)
+     * exec.library tests (block 74)
      * ================================================================ */
 
     /* Block 74: AddPort
@@ -1434,7 +1434,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 10: intuition.library tests (blocks 75-76)
+     * intuition.library tests (blocks 75-76)
      * ================================================================ */
 
     /* Block 75: OpenWindowTagList
@@ -1485,7 +1485,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 10: graphics.library test (block 77)
+     * graphics.library test (block 77)
      * ================================================================ */
 
     /* Block 77: CloseFont
@@ -1514,7 +1514,7 @@ int main(int argc, char **argv)
     Delay(1);
 
     /* ================================================================
-     * Phase 10: icon.library tests (block 78)
+     * icon.library tests (block 78)
      * ================================================================ */
 
     /* Block 78: GetDiskObject + FindToolType + FreeDiskObject

@@ -1,7 +1,7 @@
 /*
  * atrace -- function table
  *
- * Phase 10: 99 functions (31 exec.library + 26 dos.library +
+ * 99 functions (31 exec.library + 26 dos.library +
  *   14 intuition.library + 15 bsdsocket.library + 2 graphics.library +
  *   5 icon.library + 6 workbench.library).
  */

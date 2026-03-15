@@ -30,7 +30,7 @@ def _make_grid(libs=None, funcs=None, procs=None, initial_lib=None,
     if funcs is None:
         funcs = {"Open": 12, "Lock": 8, "Close": 6}
     if procs is None:
-        procs = {"bbs": 89, "Shell Process": 43, "ramlib": 10}
+        procs = {"myapp": 89, "Shell Process": 43, "ramlib": 10}
     return ToggleGrid(libs, funcs, procs, initial_lib=initial_lib,
                       daemon_disabled_funcs=daemon_disabled_funcs,
                       tier_level=tier_level)
@@ -195,7 +195,7 @@ class TestToggleGrid:
     def test_build_filter_func_blacklist(self):
         """Function blacklist when fewer disabled than enabled.
 
-        Uses lib.func dotted format (Phase 7b, 8b.1).
+        Uses lib.func dotted format.
         """
         grid = _make_grid(
             funcs={"Open": 12, "Lock": 8, "Close": 6,
@@ -212,7 +212,7 @@ class TestToggleGrid:
     def test_build_filter_combined(self):
         """Combined LIB and FUNC filters in one command.
 
-        FUNC= entries use lib.func dotted format (Phase 7b, 8b.1).
+        FUNC= entries use lib.func dotted format.
         """
         grid = _make_grid(
             libs={"exec": 200, "dos": 100, "icon": 50},
@@ -239,12 +239,12 @@ class TestToggleGrid:
         # Disable a process
         grid.active_category = 2  # PROCESSES
         grid.cursor_pos[2] = 0
-        grid.toggle_at_cursor()  # bbs (highest count)
+        grid.toggle_at_cursor()  # myapp (highest count)
 
         cmd = grid.build_filter_command()
         # PROC should not appear in the filter command
         assert "PROC" not in cmd
-        assert "bbs" not in cmd
+        assert "myapp" not in cmd
 
     def test_update_func_items(self):
         """Switching library updates function items and reapplies defaults."""
@@ -452,7 +452,7 @@ class TestToggleGrid:
         """Daemon-disabled items show [D] marker."""
         grid = ToggleGrid(
             {"exec": 100}, {"FindPort": 0, "Open": 50},
-            {"bbs": 10}, initial_lib="exec",
+            {"myapp": 10}, initial_lib="exec",
             daemon_disabled_funcs={"exec.FindPort"})
         grid._mark_daemon_disabled()
         item = next(i for i in grid.func_items if i["name"] == "FindPort")
@@ -469,7 +469,7 @@ class TestToggleGrid:
         assert "FindPort" in names
         assert "FindTask" in names
 
-    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= filtering ---
+    # --- Library-scoped FUNC= filtering ---
 
     def test_build_filter_func_blacklist_dotted(self):
         """Function blacklist uses lib.func dotted format (8b.1)."""
@@ -725,7 +725,7 @@ class TestToggleGridRendering:
         assert "\033[7m" in header
 
     def test_non_basic_func_dim(self):
-        """Non-basic functions are rendered dim (Phase 9c)."""
+        """Non-basic functions are rendered dim."""
         funcs = {"AllocMem": 128, "Open": 12}
         grid = _make_grid(funcs=funcs, initial_lib="exec")
         cw = ColorWriter(force_color=True)
@@ -826,7 +826,7 @@ class TestToggleGridIntegration:
             "dos": {"Open": 12, "Lock": 8},
             "exec": {"AllocMem": 128, "FindPort": 47},
         }
-        viewer.discovered_procs = {"bbs": 89, "Shell": 43}
+        viewer.discovered_procs = {"myapp": 89, "Shell": 43}
 
         # Attach a mock terminal
         term, output = _make_terminal_state(rows=24, cols=120)
@@ -851,7 +851,7 @@ class TestToggleGridIntegration:
 
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -884,7 +884,7 @@ class TestToggleGridIntegration:
         # Use non-noise functions so all start enabled
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -907,7 +907,7 @@ class TestToggleGridIntegration:
 
         viewer.discovered_libs = {"dos": 100, "exec": 200}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89, "Shell": 43}
+        viewer.discovered_procs = {"myapp": 89, "Shell": 43}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -936,7 +936,7 @@ class TestToggleGridIntegration:
 
         viewer.discovered_libs = {"dos": 100}
         viewer.discovered_funcs = {"dos": {"Open": 12}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -999,7 +999,7 @@ class TestToggleGridIntegration:
         viewer.discovered_funcs = {
             "exec": {"AllocMem": 128, "GetMsg": 47, "OpenLibrary": 5}
         }
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -1038,7 +1038,7 @@ class TestToggleGridIntegration:
 
         viewer.discovered_libs = {"exec": 200, "dos": 100}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -1070,7 +1070,7 @@ class TestToggleGridIntegration:
 
         viewer.discovered_libs = {"exec": 200, "dos": 100}
         viewer.discovered_funcs = {"exec": {"OpenLibrary": 5}}
-        viewer.discovered_procs = {"bbs": 89}
+        viewer.discovered_procs = {"myapp": 89}
 
         term, output = _make_terminal_state(rows=24, cols=120)
         viewer.term = term
@@ -1111,7 +1111,7 @@ class TestToggleGridIntegration:
 
         assert viewer.grid.focused_lib_index == 1
 
-    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= in _apply_grid_filters ---
+    # --- Library-scoped FUNC= in _apply_grid_filters ---
 
     def test_apply_grid_filters_dotted_func_names(self):
         """_apply_grid_filters() sends dotted lib.func in -FUNC= (8b.1)."""
@@ -1235,7 +1235,7 @@ class TestActiveColumnReverse:
 
 
 # ---------------------------------------------------------------------------
-# NOISE category tests (Phase 7b, Feature 8b.3)
+# NOISE category tests
 # ---------------------------------------------------------------------------
 
 
@@ -1954,7 +1954,7 @@ class TestViewportScrolling:
 # ---------------------------------------------------------------------------
 
 class TestGridTierIntegration:
-    """Tests for toggle grid tier awareness (Phase 9c)."""
+    """Tests for toggle grid tier awareness."""
 
     def test_grid_daemon_disabled_determines_defaults(self):
         """Grid uses daemon_disabled_funcs for initial state."""

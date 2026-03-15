@@ -12,7 +12,7 @@
 #include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.7.0"
+#define AMIGACTLD_VERSION "0.8.0"
 
 /* Limits */
 #define MAX_CLIENTS      8
@@ -61,7 +61,7 @@ struct tail_state {
 #define TRACE_MODE_START  0  /* normal TRACE START */
 #define TRACE_MODE_RUN    1  /* TRACE RUN (auto-terminate on process exit) */
 
-/* Extended filter support for FILTER command (Wave 5 parsing/matching) */
+/* Extended filter support for FILTER command */
 #define MAX_FILTER_NAMES 32
 
 /* TRACE streaming state (per-client) */
@@ -74,8 +74,7 @@ struct trace_state {
     int filter_errors_only;  /* 1 = only events where retval indicates error */
     char filter_procname[64]; /* "" = all, or substring match on task name */
 
-    /* Extended filters (set by FILTER command during stream).
-     * Defined in Wave 1 (struct), populated in Wave 5 (parsing). */
+    /* Extended filters (set by FILTER command during stream). */
     int use_extended_filter;     /* 1 = use lists below instead */
 
     /* Library whitelist/blacklist */

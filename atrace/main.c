@@ -77,7 +77,7 @@ static const char *tier_detail_funcs[] = {
     "ModifyIDCMP",
     /* bsdsocket.library */
     "sendto", "recvfrom",
-    /* Phase 10 additions (2) */
+    /* Additional library entries (2) */
     "UnLoadSeg", "UnlockPubScreen",
     NULL  /* sentinel */
 };
@@ -88,7 +88,7 @@ static const char *tier_verbose_funcs[] = {
     "ExNext",
     /* graphics.library */
     "OpenFont",
-    /* Phase 10 addition (1) */
+    /* Additional library entry (1) */
     "CloseFont",
     NULL  /* sentinel */
 };
@@ -106,7 +106,7 @@ static const char *tier_manual_funcs[] = {
     "Read", "Write",
     /* bsdsocket.library */
     "send", "recv", "WaitSelect",
-    /* Phase 10 additions */
+    /* Additional library entries */
     "AddPort", "WaitPort",
     NULL  /* sentinel */
 };
@@ -408,7 +408,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
         /* Do NOT close the library -- keep it in memory
          * because patches point into it. */
 
-        /* Save dos.library base for IoErr capture (Phase 8) */
+        /* Save dos.library base for IoErr capture */
         if (lib->lib_id == LIB_DOS)
             saved_dos_base = (ULONG)libbase;
 

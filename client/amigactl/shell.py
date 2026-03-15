@@ -2428,7 +2428,7 @@ class AmigaShell(cmd.Cmd):
     Examples:
         arexx REXX return 1+2
         arexx REXX "say 'hello'"
-        arexx CNet_AREXX WHO"""
+        arexx MYPORT STATUS"""
         if not self._check_connected():
             return
         arg = arg.strip()
@@ -3022,7 +3022,7 @@ class AmigaShell(cmd.Cmd):
     Run launches a command and traces it until it exits.
 
     Output tiers:
-        --basic         Level 1: SnoopDOS-equivalent (default)
+        --basic         Level 1: core diagnostics (default)
         --detail        Level 2: Basic + resource lifecycle
         --verbose       Level 3: Detail + high-volume I/O
         Use 1/2/3 keys to switch tiers during viewing.
@@ -3035,9 +3035,9 @@ class AmigaShell(cmd.Cmd):
 
     Examples:
         trace start
-        trace start --detail LIB=dos.library PROC=bbs
+        trace start --detail LIB=dos.library PROC=myapp
         trace run --verbose -- List SYS:
-        trace run LIB=dos.library -- CNet:bbs
+        trace run LIB=dos.library -- Work:myapp
         trace status
         trace enable
         trace disable"""

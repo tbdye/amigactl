@@ -34,7 +34,7 @@ def _make_mock_conn():
     """
     conn = AmigaConnection.__new__(AmigaConnection)
     conn._sock = mock.MagicMock()
-    conn._banner = "AMIGACTL 0.7.0"
+    conn._banner = "AMIGACTL 0.8.0"
     conn._send_command = mock.MagicMock(return_value=("", []))
     return conn
 
@@ -565,7 +565,7 @@ class TestProcessNameExtraction:
     """
 
     def test_basename_volume_path(self):
-        """CNet:control -> control"""
+        """Work:control -> control"""
         # Tested via integration test (test_trace_run_process_name)
 
     def test_basename_dir_path(self):
@@ -800,12 +800,12 @@ class TestTraceRunCommandBuilding:
         mock_readline.side_effect = ["OK 6", "END", "."]
         callback = mock.MagicMock()
 
-        conn.trace_run("CNet:bbs", callback,
+        conn.trace_run("Work:myapp", callback,
                         lib="dos", func="Open", errors_only=True)
 
         mock_send.assert_called_once_with(
             conn._sock,
-            "TRACE RUN LIB=dos FUNC=Open ERRORS -- CNet:bbs")
+            "TRACE RUN LIB=dos FUNC=Open ERRORS -- Work:myapp")
 
     @mock.patch("amigactl.read_line")
     @mock.patch("amigactl.send_command")
@@ -1178,12 +1178,12 @@ class TestTraceStartRaw:
         conn._sock.gettimeout.return_value = 10
         mock_readline.return_value = "OK"
 
-        conn.trace_start_raw(lib="dos", func="Open", proc="bbs",
+        conn.trace_start_raw(lib="dos", func="Open", proc="myapp",
                              errors_only=True)
 
         mock_send.assert_called_once_with(
             conn._sock,
-            "TRACE START LIB=dos FUNC=Open PROC=bbs ERRORS")
+            "TRACE START LIB=dos FUNC=Open PROC=myapp ERRORS")
 
     @mock.patch("amigactl.read_line")
     @mock.patch("amigactl.send_command")
@@ -1301,10 +1301,10 @@ class TestSendFilter:
         conn = _make_mock_conn()
         conn._sock.getblocking.return_value = True
 
-        conn.send_filter(proc="bbs")
+        conn.send_filter(proc="myapp")
 
         mock_send.assert_called_once_with(
-            conn._sock, "FILTER PROC=bbs")
+            conn._sock, "FILTER PROC=myapp")
 
     @mock.patch("amigactl.send_command")
     def test_send_filter_nonblocking_socket(self, mock_send):
@@ -1347,7 +1347,7 @@ class TestSendFilter:
         # Should not raise
         conn.send_filter(lib="dos")
 
-    # --- Phase 7b Feature 8b.1: Library-scoped FUNC= filtering ---
+    # --- Library-scoped FUNC= filtering ---
 
     @mock.patch("amigactl.send_command")
     def test_send_filter_dotted_func(self, mock_send):
@@ -1456,14 +1456,14 @@ class TestReadOneTraceEvent:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase5EventFormats -- Phase 5: new event format parsing
+# TestExtendedEventFormats -- extended event format parsing
 # ---------------------------------------------------------------------------
 
-class TestPhase5EventFormats:
-    """Tests for parsing Phase 5 event formats.
+class TestExtendedEventFormats:
+    """Tests for parsing extended event formats.
 
     These verify that the Python client correctly parses events produced
-    by the daemon for Phase 5 functions: device I/O, memory, intuition,
+    by the daemon for extended functions: device I/O, memory, intuition,
     and dos Read/Write.  The daemon does all formatting; the client just
     parses tab-delimited fields.
     """
@@ -1580,8 +1580,8 @@ class TestPhase5EventFormats:
         assert event["status"] == "O"
 
 
-class TestPhase5FormatTraceEvent:
-    """Tests for format_trace_event() with Phase 5 event types."""
+class TestExtendedFormatTraceEvent:
+    """Tests for format_trace_event() with extended event types."""
 
     def _event(self, **overrides):
         """Build a default event dict with optional overrides."""
@@ -1663,11 +1663,11 @@ class TestPhase5FormatTraceEvent:
 
 
 # ---------------------------------------------------------------------------
-# TestPhase5bHeaderComments -- Phase 5b: header comment parsing
+# TestHeaderComments -- header comment parsing
 # ---------------------------------------------------------------------------
 
-class TestPhase5bHeaderComments:
-    """Unit tests for Phase 5b header comment parsing.
+class TestHeaderComments:
+    """Unit tests for header comment parsing.
 
     Verifies that TraceStreamReader correctly parses #-prefixed DATA
     chunks as type="comment" events with the expected text content.
@@ -1747,7 +1747,7 @@ class TestPhase5bHeaderComments:
 
 
 # ---------------------------------------------------------------------------
-# TestTraceRunStats -- Phase 10h: stats accumulation and preset tests
+# TestTraceRunStats -- stats accumulation and preset tests
 # ---------------------------------------------------------------------------
 
 class TestTraceRunStats:

@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.7.0
+**Version**: 0.8.0
 
 **Conventions used in this document:**
 
@@ -90,7 +90,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.7.0`).
+The version string matches the daemon version (currently `0.8.0`).
 
 ### Behavior
 
@@ -105,7 +105,7 @@ The version string matches the daemon version (currently `0.7.0`).
 ### Example
 
 ```
-S> AMIGACTL 0.7.0
+S> AMIGACTL 0.8.0
 ```
 
 ---
@@ -142,7 +142,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.7.0
+S> amigactld 0.8.0
 S> .
 ```
 
@@ -2558,7 +2558,7 @@ commands=<comma_separated_list>
 
 | Field | Description |
 |-------|-------------|
-| `version` | Daemon version (e.g. `0.7.0`) |
+| `version` | Daemon version (e.g. `0.8.0`) |
 | `protocol` | Protocol version (currently `1.0`) |
 | `max_clients` | Maximum simultaneous client connections |
 | `max_cmd_len` | Maximum command line length in bytes |
@@ -2573,7 +2573,7 @@ None. This command always succeeds.
 ```
 C> CAPABILITIES
 S> OK
-S> version=0.7.0
+S> version=0.8.0
 S> protocol=1.0
 S> max_clients=8
 S> max_cmd_len=4096
@@ -2809,7 +2809,7 @@ daemon's event loop.
 AREXX <port> <command>
 ```
 
-`<port>` is the target ARexx port name (e.g., `REXX`, `CNET`).
+`<port>` is the target ARexx port name (e.g., `REXX`, `MYAPP`).
 Case-sensitive (AmigaOS port names are case-sensitive). `<command>` is
 the ARexx command string. Everything after the first whitespace-
 delimited port name is the command, including any internal whitespace.
@@ -3508,10 +3508,10 @@ S> .
 **Trace with library filter:**
 
 ```
-C> TRACE RUN LIB=exec -- CNet:bbs
+C> TRACE RUN LIB=exec -- Work:myapp
 S> OK 6
 S> DATA 80
-S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",v0	0x0e2a1000	O
+S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"app.library",v0	0x0e2a1000	O
 S> ...
 S> DATA 25
 S> # PROCESS EXITED rc=0
@@ -3536,10 +3536,10 @@ S> .
 **Stop tracing early (process continues):**
 
 ```
-C> TRACE RUN -- CNet:bbs
+C> TRACE RUN -- Work:myapp
 S> OK 8
 S> DATA 80
-S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"cnet.library",v0	0x0e2a1000	O
+S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"app.library",v0	0x0e2a1000	O
 C> STOP
 S> END
 S> .

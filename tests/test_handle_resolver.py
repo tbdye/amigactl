@@ -161,19 +161,19 @@ class TestHandleResolver:
         # Open file A at handle 0x1c16e23
         open_a = {
             "func": "Open", "retval": "0x01c16e23",
-            "args": '"cnet:big_numbers",Read', "status": "O",
+            "args": '"Work:data/numbers",Read', "status": "O",
         }
         hr.track(open_a)
 
         # Close file A -- annotate eagerly with consume
         close_a = {"func": "Close", "args": "fh=0x1c16e23"}
         annotation_a = hr.annotate(close_a, consume=True)
-        assert annotation_a == "cnet:big_numbers"
+        assert annotation_a == "Work:data/numbers"
 
         # Open file B at the SAME handle address
         open_b = {
             "func": "Open", "retval": "0x01c16e23",
-            "args": '"cnet:bbsconfig3",Read', "status": "O",
+            "args": '"Work:data/config",Read', "status": "O",
         }
         hr.track(open_b)
 
@@ -182,7 +182,7 @@ class TestHandleResolver:
         close_a["_handle_annotation"] = annotation_a
         # Simulates what _annotated_event does:
         stored = close_a.get("_handle_annotation")
-        assert stored == "cnet:big_numbers"
+        assert stored == "Work:data/numbers"
 
     def test_consume_removes_cache_entry(self):
         """annotate(consume=True) removes the entry from the cache."""
@@ -345,11 +345,11 @@ class TestSegmentResolver:
         """LoadSeg return value is resolved in RunCommand annotation."""
         sr = SegmentResolver()
         load_ev = {"func": "LoadSeg", "retval": "0x01d0dfb5",
-                   "args": '"cnet:control"', "status": "O"}
+                   "args": '"Work:control"', "status": "O"}
         sr.track(load_ev)
         run_ev = {"func": "RunCommand",
                   "args": "seg=0x1d0dfb5,stack=4096,1"}
-        assert sr.annotate(run_ev) == "cnet:control"
+        assert sr.annotate(run_ev) == "Work:control"
 
     def test_no_annotation_for_unknown_segment(self):
         """RunCommand with uncached segment returns None."""
@@ -429,11 +429,11 @@ class TestSegmentResolver:
         """Segments are not consumed -- same segment can be annotated twice."""
         sr = SegmentResolver()
         sr.track({"func": "LoadSeg", "retval": "0x01d0dfb5",
-                  "args": '"cnet:bbs"', "status": "O"})
+                  "args": '"Work:myapp"', "status": "O"})
         run1 = {"func": "RunCommand", "args": "seg=0x1d0dfb5,stack=4096,1"}
         run2 = {"func": "RunCommand", "args": "seg=0x1d0dfb5,stack=4096,1"}
-        assert sr.annotate(run1) == "cnet:bbs"
-        assert sr.annotate(run2) == "cnet:bbs"
+        assert sr.annotate(run1) == "Work:myapp"
+        assert sr.annotate(run2) == "Work:myapp"
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +463,7 @@ class TestStripAnsi:
         assert strip_ansi("") == ""
 
     def test_plain_text_passthrough(self):
-        text = 'O FindPort  [5] bbs  "REXX"  OK'
+        text = 'O FindPort  [5] myapp  "REXX"  OK'
         assert strip_ansi(text) == text
 
     def test_mixed_ansi_and_text(self):
@@ -503,7 +503,7 @@ class TestSavePipeline:
             "time": "12:00:00.123",
             "lib": "dos",
             "func": "Open",
-            "task": "[5] bbs",
+            "task": "[5] myapp",
             "args": '"RAM:test",Read',
             "retval": "0x01234abc",
             "status": "O",
@@ -527,7 +527,7 @@ class TestSavePipeline:
             "time": "12:00:01.456",
             "lib": "dos",
             "func": "Open",
-            "task": "[5] bbs",
+            "task": "[5] myapp",
             "args": '"RAM:missing",Read',
             "retval": "NULL",
             "status": "E",
@@ -615,13 +615,13 @@ def _make_viewer_stub(scrollback=None, timestamp_mode="absolute",
 _SAMPLE_EVENTS = [
     {
         "seq": "1", "time": "12:00:00.001", "lib": "dos",
-        "func": "Open", "task": "[5] bbs",
+        "func": "Open", "task": "[5] myapp",
         "args": '"RAM:test",Read', "retval": "0x01234abc",
         "status": "O",
     },
     {
         "seq": "2", "time": "12:00:00.005", "lib": "dos",
-        "func": "Close", "task": "[5] bbs",
+        "func": "Close", "task": "[5] myapp",
         "args": "fh=0x1234abc", "retval": "OK",
         "status": "O",
     },
@@ -694,15 +694,15 @@ class TestSaveScrollback:
         monkeypatch.chdir(tmp_path)
         events = [
             {"seq": "1", "time": "12:00:00.001", "lib": "dos",
-             "func": "Open", "task": "[5] bbs",
+             "func": "Open", "task": "[5] myapp",
              "args": '"RAM:test",Read', "retval": "0x01234abc",
              "status": "O"},
             {"seq": "2", "time": "12:00:00.002", "lib": "dos",
-             "func": "Close", "task": "[5] bbs",
+             "func": "Close", "task": "[5] myapp",
              "args": "fh=0x1234abc", "retval": "OK",
              "status": "O"},
             {"seq": "3", "time": "12:00:00.003", "lib": "exec",
-             "func": "OpenLibrary", "task": "[5] bbs",
+             "func": "OpenLibrary", "task": "[5] myapp",
              "args": '"dos.library",0', "retval": "0xabc",
              "status": "O"},
         ]
@@ -724,11 +724,11 @@ class TestSaveScrollback:
         monkeypatch.chdir(tmp_path)
         events = [
             {"seq": "1", "time": "12:00:00.001", "lib": "dos",
-             "func": "Open", "task": "[5] bbs",
+             "func": "Open", "task": "[5] myapp",
              "args": '"RAM:test",Read', "retval": "0x01234abc",
              "status": "O"},
             {"seq": "2", "time": "12:00:00.002", "lib": "dos",
-             "func": "SetVar", "task": "[5] bbs",
+             "func": "SetVar", "task": "[5] myapp",
              "args": '"process",LOCAL',
              "retval": "OK", "status": "O"},
         ]
@@ -750,15 +750,15 @@ class TestSaveScrollback:
         monkeypatch.chdir(tmp_path)
         events = [
             {"seq": "1", "time": "12:00:00.001", "lib": "dos",
-             "func": "Open", "task": "[5] bbs",
+             "func": "Open", "task": "[5] myapp",
              "args": '"RAM:test",Read', "retval": "0x01234abc",
              "status": "O"},
             {"seq": "2", "time": "12:00:00.002", "lib": "dos",
-             "func": "Close", "task": "[5] bbs",
+             "func": "Close", "task": "[5] myapp",
              "args": "fh=0x1234abc", "retval": "OK",
              "status": "O"},
             {"seq": "3", "time": "12:00:00.003", "lib": "exec",
-             "func": "OpenLibrary", "task": "[5] bbs",
+             "func": "OpenLibrary", "task": "[5] myapp",
              "args": '"dos.library",0', "retval": "0xabc",
              "status": "O"},
         ]
@@ -771,7 +771,7 @@ class TestSaveScrollback:
 
 
 # ---------------------------------------------------------------------------
-# HandleResolver in format_trace_event (Phase 10h)
+# HandleResolver in format_trace_event
 # ---------------------------------------------------------------------------
 
 class TestHandleResolverInFormatEvent:
@@ -788,7 +788,7 @@ class TestHandleResolverInFormatEvent:
         # Track Open
         open_ev = {
             "seq": "1", "time": "12:00:00.001", "lib": "dos",
-            "func": "Open", "task": "[5] bbs",
+            "func": "Open", "task": "[5] myapp",
             "args": '"RAM:test",Read', "retval": "0x01234abc",
             "status": "O",
         }
@@ -798,7 +798,7 @@ class TestHandleResolverInFormatEvent:
         # Format Close -- should include annotation
         close_ev = {
             "seq": "2", "time": "12:00:00.005", "lib": "dos",
-            "func": "Close", "task": "[5] bbs",
+            "func": "Close", "task": "[5] myapp",
             "args": "fh=0x1234abc", "retval": "OK",
             "status": "O",
         }
@@ -812,7 +812,7 @@ class TestHandleResolverInFormatEvent:
         cw = ColorWriter(force_color=False)
         close_ev = {
             "seq": "2", "time": "12:00:00.005", "lib": "dos",
-            "func": "Close", "task": "[5] bbs",
+            "func": "Close", "task": "[5] myapp",
             "args": "fh=0x1234abc", "retval": "OK",
             "status": "O",
         }
