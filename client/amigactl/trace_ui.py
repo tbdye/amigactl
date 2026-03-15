@@ -2549,10 +2549,10 @@ class TraceViewer:
             "  Process filtering is client-side only.",
             "",
             "  Output tiers:",
-            "    1 = Basic:   Core diagnostics (49 functions)",
-            "    2 = Detail:  Basic + resource lifecycle (63 functions)",
-            "    3 = Verbose: Detail + high-volume I/O (67 functions)",
-            "    Manual-tier functions (13) are never auto-enabled.",
+            "    1 = Basic:   Core diagnostics (57 functions)",
+            "    2 = Detail:  Basic + resource lifecycle (70 functions)",
+            "    3 = Verbose: Detail + high-volume I/O (73 functions)",
+            "    Manual-tier functions (26) are never auto-enabled.",
             "    Use the toggle grid to enable them individually.",
         ]
         self._help_scroll_pos = 0
