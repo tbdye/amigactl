@@ -5,7 +5,7 @@ to system library functions, records them into a shared ring buffer, and
 streams them over TCP to a remote client for display and analysis. The
 system comprises three cooperating components: an installer program on
 the Amiga, the amigactld daemon on the Amiga, and a Python client on the
-host machine.
+client machine.
 
 This document describes how these components fit together, the shared
 data structures that connect them, and the complete lifecycle of a trace
@@ -14,29 +14,29 @@ event from function call interception to client display.
 ## Component Overview
 
 ```
- Amiga (68k)                                Host (Python)
-+----------------------------------------------+    +-------------------------+
-|                                              |    |                         |
-|  atrace_loader          amigactld            |    |   amigactl CLI /        |
-|  (installer program)    (daemon)             |    |   Python library        |
-|       |                    |                 |    |        |                |
-|       v                    v                 |    |        |                |
-|  +---------+    +------------------+         |    |  +----------+           |
-|  | Patches |    | trace.c module   |         |    |  | trace_   |           |
-|  | (stubs) |    | - discovery      |         |    |  | start()  |           |
-|  |         |    | - polling        |         |    |  | trace_   |           |
-|  +---------+    | - formatting     |         |    |  | run()    |           |
-|       |         | - filtering      |         |    |  | trace_   |           |
-|       v         +--------+---------+         |    |  | ui.py    |           |
-|  +----+--+               |                  |    |  +----+-----+           |
-|  | Ring  |<--- reads ----|                  |    |       |                 |
-|  | Buffer|               |                  |    |       |                 |
-|  +-------+          TCP/6800 ------+--------+    +-------+---------+       |
-|                                    |         |           |                 |
-|  Named Semaphore                   +---------+-----------+                 |
-|  "atrace_patches"                            |                             |
-|  (IPC discovery)                             |                             |
-+----------------------------------------------+    +-------------------------+
+ Amiga (68k)                              Client (Python)
++------------------------------------------+  +------------------------+
+|                                          |  |                        |
+|  atrace_loader        amigactld          |  |  amigactl CLI /        |
+|  (installer)          (daemon)           |  |  Python library        |
+|       |                  |               |  |       |                |
+|       v                  v               |  |       v                |
+|  +---------+  +------------------+       |  |  +----------+          |
+|  | Patches |  | trace.c module   |       |  |  | trace_   |          |
+|  | (stubs) |  | - discovery      |       |  |  | start()  |          |
+|  |         |  | - polling        |       |  |  | trace_   |          |
+|  +---------+  | - formatting     |       |  |  | run()    |          |
+|       |       | - filtering      |       |  |  | trace_   |          |
+|       v       +--------+---------+       |  |  | ui.py    |          |
+|  +---------+           |                 |  |  +-----+----+          |
+|  |  Ring   |<- reads --|                 |  |        |               |
+|  | Buffer  |           |                 |  |        |               |
+|  +---------+      TCP/6800 --------------|--+--------+               |
+|                                          |  |                        |
+|  Named Semaphore                         |  |                        |
+|  "atrace_patches"                        |  |                        |
+|  (IPC discovery)                         |  |                        |
++------------------------------------------+  +------------------------+
 ```
 
 ### atrace_loader (Installer Program)
@@ -123,7 +123,7 @@ first member, so it can be cast directly from the semaphore pointer.
 | `sem` | 0 | 46 | `SignalSemaphore` (system list node) |
 | `sem_padding` | 46 | 2 | Alignment to 4-byte boundary |
 | `magic` | 48 | 4 | `0x41545243` (`'ATRC'`) -- validation tag |
-| `version` | 52 | 2 | Protocol version (currently 4) |
+| `version` | 52 | 2 | Protocol version |
 | `flags` | 54 | 2 | Reserved |
 | `global_enable` | 56 | 4 | `0` = tracing disabled, `1` = active |
 | `ring` | 60 | 4 | Pointer to ring buffer |

@@ -53,7 +53,7 @@ atrace comprises three cooperating components:
    per-client filters, and streams results over TCP port 6800.
 
 3. **Python client** -- The `amigactl` CLI and library running on the
-   host machine. It provides the `trace start`, `trace run`, and
+   client machine. It provides the `trace start`, `trace run`, and
    `trace status` commands, the interactive TUI viewer, and a
    programmatic API for scripted analysis.
 

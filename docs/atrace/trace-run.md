@@ -330,7 +330,6 @@ ensures stale events from before process creation are never delivered.
 
 This fallback is used when:
 
-- atrace version < 2 (the `filter_task` field was added in version 2).
 - Another TRACE RUN already owns `filter_task` (only one TRACE RUN
   can set the stub-level filter at a time).
 

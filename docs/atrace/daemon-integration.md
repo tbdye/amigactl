@@ -334,9 +334,9 @@ The history cache serves two purposes:
 - Providing names for PROC filter matching when the task pointer is no
   longer in the main cache.
 
-### Embedded Task Name (v3+ Events)
+### Embedded Task Name
 
-Events from atrace version 3 and later include a 22-byte `task_name`
+Events include a 22-byte `task_name`
 field (offset 106) captured by the stub at call time. If
 `resolve_task_name()` returns a generic `"<task 0x...>"` string (process
 already exited, not in any cache), the daemon falls back to this
@@ -530,7 +530,6 @@ After formatting the return value, an IoErr epilogue appends DOS error
 information for dos.library failures. This fires only when all of the
 following are true:
 
-- Anchor version >= 4.
 - Status is `E` (error).
 - `ev->valid == 1` (post-call handler completed).
 - `FLAG_HAS_IOERR` (0x02) is set in `ev->flags`.
@@ -543,7 +542,7 @@ shown as `"(err N)"`.
 
 ### EClock Timestamp Formatting (eclock_format_time)
 
-For events with `FLAG_HAS_ECLOCK` set (atrace version 3+), the daemon
+For events with `FLAG_HAS_ECLOCK` set, the daemon
 formats per-event timestamps with microsecond precision as
 `HH:MM:SS.uuuuuu`. The conversion uses a session epoch captured at
 TRACE START/RUN:
@@ -563,7 +562,7 @@ TRACE START/RUN:
    which are converted to seconds and microseconds, then added to the
    wall-clock epoch.
 
-When EClock is unavailable (pre-v3 events, or `FLAG_HAS_ECLOCK` not
+When EClock is unavailable (`FLAG_HAS_ECLOCK` not
 set), the daemon falls back to a per-batch DateStamp timestamp at
 millisecond resolution (`HH:MM:SS.mmm`).
 
@@ -584,7 +583,7 @@ Seven fields separated by tab characters. For example:
 
 Task name selection: the caller provides a resolved name from
 `resolve_task_name()`. If that name is a generic `"<task 0x...>"` string
-and the event has an embedded `task_name` (v3+), the embedded name is
+and the event has an embedded `task_name`, the embedded name is
 used instead.
 
 Cache population is also performed during formatting: successful Lock,
@@ -714,8 +713,8 @@ Returns a multi-line payload with current state information:
 | `poll_count`       | Total poll cycles since startup                 |
 | `filter_task`      | Current stub-level task filter (hex)            |
 | `anchor_version`   | Anchor struct version number                    |
-| `eclock_freq`      | EClock frequency in Hz (v3+)                    |
-| `ioerr_capture`    | 1 if version >= 4 (IoErr capture supported)     |
+| `eclock_freq`      | EClock frequency in Hz                          |
+| `ioerr_capture`    | 1 (IoErr capture supported)                     |
 | `noise_disabled`   | Count of currently disabled noise functions      |
 | `patch_N`          | Per-patch status: `lib.func enabled=0/1`        |
 
@@ -857,7 +856,7 @@ At the start of each TRACE START or TRACE RUN session, the daemon emits
 a series of comment lines (prefixed with `#`) as DATA chunks:
 
 ```
-# atrace v4, 2026-03-14 19:33:38
+# atrace, 2026-03-14 19:33:38
 # eclock_freq: 709379 Hz
 # timestamp_precision: microsecond
 # command: C:atrace_test               (TRACE RUN only)
@@ -868,8 +867,8 @@ a series of comment lines (prefixed with `#`) as DATA chunks:
 
 The header includes:
 
-- **Version and timestamp**: atrace anchor version and wall-clock time.
-- **EClock info** (v3+): frequency in Hz and precision indicator.
+- **Timestamp**: wall-clock time at session start.
+- **EClock info**: frequency in Hz and precision indicator.
 - **Command** (TRACE RUN only): the command being traced.
 - **Filter description**: current tier and any active filters.
 - **Enable/disable deviations**: functions whose enable state differs

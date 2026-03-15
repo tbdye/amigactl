@@ -13,7 +13,7 @@ primary diagnostic tools.
 ### trace status (CLI)
 
 The `amigactl trace status` command queries atrace state remotely from the
-host machine:
+client machine:
 
 ```
 $ amigactl --host 192.168.6.228 trace status
@@ -43,15 +43,14 @@ Key fields:
 | `buffer_capacity` | Ring buffer size in entries (default: 8192). |
 | `buffer_used` | Number of entries currently occupied in the ring buffer. |
 | `poll_count` | Number of polling cycles performed by the daemon consumer. |
-| `ioerr_capture` | Whether IoErr capture is active (1 when anchor version >= 4). |
+| `ioerr_capture` | Whether IoErr capture is active. |
 
 When atrace is loaded, additional fields appear: `noise_disabled` (count of
-non-Basic tier functions currently disabled), `anchor_version` (currently 4),
+non-Basic tier functions currently disabled), `anchor_version` (protocol version identifier),
 `eclock_freq` (EClock frequency in Hz, e.g., 709379 for PAL systems),
 `filter_task` (hex address of the stub-level task filter pointer, or
 `0x00000000` when no TRACE RUN is active), `poll_count` (daemon consumer
-polling cycles), and `ioerr_capture` (whether IoErr capture is active,
-emitted when anchor version >= 4).
+polling cycles), and `ioerr_capture` (whether IoErr capture is active).
 
 Per-patch status lines (`patch_N=lib.func enabled=0/1`) show which individual
 functions are enabled or disabled.
@@ -131,7 +130,7 @@ events are displayed, even though activity is happening on the Amiga.
 Check `trace status` -- if `enabled=0`, tracing is globally disabled.
 All stubs take the disabled fast path and produce no events.
 
-Fix from the host:
+Fix from the client:
 ```
 $ amigactl trace enable
 ```
@@ -324,11 +323,11 @@ Error: could not connect to 192.168.6.228:6800
 - **amigactld is not running.** Start it on the Amiga: `Run >NIL: C:amigactld`.
 - **Wrong IP address or port.** Verify with `--host` and `--port` flags, or
   check `amigactl.conf`. The default port is 6800.
-- **Network connectivity.** Ping the Amiga from the host. Check that the
+- **Network connectivity.** Ping the Amiga from the client. Check that the
   Amiga's TCP/IP stack (e.g., Roadshow) is running and the network interface
   is configured.
 - **Firewall or routing.** Ensure port 6800/TCP is not blocked between the
-  host and the Amiga.
+  client and the Amiga.
 
 ### Connection drops during trace session
 
@@ -338,7 +337,7 @@ or connection reset error.
 **Causes:**
 
 - **Network instability.** TCP connections over emulated Amiga networking
-  (e.g., Amiberry's TAP bridge) can be fragile under high load.
+  (e.g., UAE's TAP bridge) can be fragile under high load.
 - **Daemon restart or crash.** If amigactld exits or crashes, all active
   connections are dropped. Check the Amiga console for error messages.
 - **Client timeout.** The Python client sets the socket to blocking mode
@@ -581,25 +580,25 @@ C:atrace_loader
 This allocates a fresh ring buffer with all slots zeroed.
 
 
-## Amiberry-Specific Issues
+## UAE Emulation Considerations
 
 ### JIT Compatibility
 
-atrace works with Amiberry's JIT compiler enabled. The stubs are
+atrace works with the UAE JIT compiler enabled. The stubs are
 allocated in `MEMF_PUBLIC` memory and use standard 68k instructions
 that the JIT handles correctly. No special JIT configuration is needed.
 
 ### Post-Call Memory Read Issue (Historical)
 
-Early versions of atrace experienced a freeze in Amiberry when the
+During development, atrace experienced a freeze under UAE emulation when the
 post-call handler (suffix code, executed after the original function
 returns via a trampoline `RTS`) performed data memory reads. Register
 operations and memory writes worked correctly, but reads from data
 memory (e.g., dereferencing `SysBase` to find `ThisTask`, traversing
-pointers to copy the task name) caused the Amiberry UI to hang when
+pointers to copy the task name) caused the UAE emulator UI to hang when
 high-frequency functions were traced.
 
-**Root cause:** Amiberry's JIT has specific behavior with code reached
+**Root cause:** the UAE JIT has specific behavior with code reached
 via trampoline `RTS` from dynamically allocated memory. Data memory
 reads in this context can trigger a JIT stall.
 
@@ -609,10 +608,7 @@ to the pre-call variable region of the stub, where memory reads work
 correctly. The task name is the same before and after the call (the
 same task is executing), so this relocation has no semantic effect.
 
-This issue is **fixed in the current codebase** and is documented here
-only for historical reference. If you are running an older version of
-atrace and experience UI freezes correlated with high trace event
-rates, update to the current version.
+This issue is fixed in the current codebase and is documented here for reference.
 
 ### MEMF_PUBLIC Requirement
 

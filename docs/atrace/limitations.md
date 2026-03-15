@@ -212,7 +212,7 @@ incurs a small overhead (test `enabled`, test `global_enable`, branch to
 original) even when tracing is fully disabled. This overhead is minimal
 (a few 68k instructions) but is not zero.
 
-**Workaround:** Reboot to fully remove all patches. On Amiberry, use
+**Workaround:** Reboot to fully remove all patches. Use
 `amigactl reboot` to trigger a clean restart.
 
 ### No Re-Entrancy Tracking
@@ -232,15 +232,15 @@ identity, and domain knowledge. For example, an `OpenLibrary` event
 followed by a `Lock` event from the same task probably represents the
 library's initialization code, but atrace does not make this explicit.
 
-### Post-Call Memory Read Restriction (Amiberry JIT)
+### Post-Call Memory Read Restriction (UAE JIT)
 
 In the stub suffix (post-call handler, reached via trampoline RTS from
 dynamically allocated `MEMF_PUBLIC` memory), data memory reads can cause
-Amiberry's JIT compiler to freeze. Memory writes and register operations
+the UAE JIT compiler to freeze. Memory writes and register operations
 work correctly. This affects only the post-call code path, not the
 pre-call variable region.
 
-**Why:** Amiberry's JIT has specific behavior when executing code reached
+**Why:** The UAE JIT has specific behavior when executing code reached
 via RTS into dynamically allocated memory. The exact mechanism involves
 JIT cache management for code that was not present when the JIT compiled
 the calling code.
@@ -252,7 +252,7 @@ in the pre-call variable region where memory reads work correctly. The
 post-call handler is limited to writing the return value and IoErr into
 the event structure using values already in registers.
 
-This constraint does not affect real 68k hardware.
+This constraint applies only to UAE emulation and does not affect real 68k hardware.
 
 ## Library and Function Table Limits
 
@@ -513,7 +513,7 @@ appropriate for the stub hot path.
 **Impact:** atrace is not safe on hypothetical SMP AmigaOS systems.
 Multi-core systems would require atomic compare-and-swap operations or
 spinlocks for the ring buffer. This is not a practical concern for the
-target platform (classic 68k Amiga and Amiberry emulation).
+target platform (classic 68k Amiga and UAE emulation).
 
 ### 68k Only
 
@@ -525,7 +525,7 @@ portable to other architectures (PPC AmigaOS 4, AROS x86, MorphOS).
 specific.
 
 **Impact:** atrace works only on 68k AmigaOS (real hardware or emulated
-via Amiberry/UAE). It cannot be used on AmigaOS 4, MorphOS, or AROS
+via UAE). It cannot be used on AmigaOS 4, MorphOS, or AROS
 without a complete rewrite of the stub generator.
 
 ### AmigaOS 2.0+ Required

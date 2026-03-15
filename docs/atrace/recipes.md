@@ -6,7 +6,7 @@ output, and tips for interpreting the results.
 
 ## Conventions Used in This Document
 
-- Shell commands prefixed with `$` run on the host (Linux/macOS).
+- Shell commands prefixed with `$` run on the client (Linux/macOS).
 - Commands prefixed with `amigactl>` run inside the interactive shell
   (`amigactl shell`).
 - Example output is fabricated but realistic, based on actual event

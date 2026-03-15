@@ -1,6 +1,6 @@
 # Interactive Trace Viewer (TUI)
 
-The interactive trace viewer provides a full-screen terminal interface for
+The interactive trace viewer provides a full-screen Terminal User Interface (TUI) for
 monitoring atrace events in real time. It supports pause and scrollback,
 per-library/function/process filtering through a toggle grid, text search,
 event detail inspection, statistics, tier switching, and scrollback export.

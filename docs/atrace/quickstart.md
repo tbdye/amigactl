@@ -15,13 +15,13 @@ Before starting, verify four things are in place:
    daemon auto-loads it when the first trace session starts, so no manual
    loading is required.
 
-3. **Python client** is available on the host machine (Python 3.8+). Either
+3. **Python client** is available on the client machine (Python 3.8+). Either
    run directly via the wrapper script (`client/amigactl.sh`) or install
    with pip:
 
        pip install -e client/
 
-4. **Network connectivity** between host and Amiga. Verify with:
+4. **Network connectivity** between client and Amiga. Verify with:
 
        amigactl --host 192.168.6.200 ping
 

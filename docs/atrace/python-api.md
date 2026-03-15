@@ -61,10 +61,10 @@ status = conn.trace_status()
 | `events_dropped` | int | Events lost to ring buffer overflow |
 | `buffer_capacity` | int | Ring buffer slot count |
 | `buffer_used` | int | Slots currently occupied |
-| `filter_task` | str | Hex Task pointer for TRACE RUN filter (e.g. `"0x0e300200"`), or `"0x00000000"` if none. Only present when anchor version >= 2. |
+| `filter_task` | str | Hex Task pointer for TRACE RUN filter (e.g. `"0x0e300200"`), or `"0x00000000"` if none. Only present when loaded. |
 | `noise_disabled` | int | Count of noise functions currently disabled. Only present when loaded. |
-| `anchor_version` | int | atrace kernel module version (currently 4). Only present when loaded. |
-| `eclock_freq` | int | EClock frequency in Hz (e.g. 709379 for PAL). Only present when anchor version >= 3. |
+| `anchor_version` | int | atrace kernel module version. Only present when loaded. |
+| `eclock_freq` | int | EClock frequency in Hz (e.g. 709379 for PAL). Only present when loaded. |
 | `patch_list` | list | List of `{"name": "lib.func", "enabled": bool}` dicts. Only present when loaded. |
 
 Integer fields are only present when atrace is loaded. When `loaded` is

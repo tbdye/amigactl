@@ -650,7 +650,7 @@ for non-CLI processes and plain tasks.
 
 This code runs in the pre-call variable region (not the post-call
 handler) because memory reads in the post-call suffix handler have been
-observed to cause Amiberry JIT freezes when high-frequency functions are
+observed to cause UAE JIT freezes when high-frequency functions are
 traced. The task name is the same before and after the call since the
 same task is executing.
 
@@ -1142,7 +1142,7 @@ stub into the target library's jump table:
 
 - **Post-call memory reads**: Memory reads in the suffix post-call
   handler (after the trampoline `rts` returns from the original
-  function) have been observed to cause Amiberry JIT freezes when
+  function) have been observed to cause UAE JIT freezes when
   high-frequency functions are traced. This is believed to be a JIT
   interaction with code reached via the trampoline mechanism. All memory
   reads that could be moved to the pre-call region (such as task name

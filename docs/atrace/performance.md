@@ -347,7 +347,7 @@ the Amiga side is the more common limiting factor.
 The default Basic tier enables 57 of 99 functions. The remaining 42
 functions are in Detail (13), Verbose (3), and Manual (26) tiers. Keep
 the tier at Basic unless you need deeper visibility. See
-[output-tiers.md](../atrace/output-tiers.md) for tier membership.
+[output-tiers.md](output-tiers.md) for tier membership.
 
 ### Disable Unused Functions
 

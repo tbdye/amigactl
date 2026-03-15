@@ -10,7 +10,7 @@ Adding a single function requires changes in up to five files:
 1. `atrace/funcs.c` -- function metadata (Amiga-side)
 2. `daemon/trace.c` `func_table[]` -- name lookup and display metadata (Amiga-side)
 3. `daemon/trace.c` `format_args()` -- custom argument formatting (optional, Amiga-side)
-4. `client/amigactl/trace_tiers.py` -- tier assignment (host-side)
+4. `client/amigactl/trace_tiers.py` -- tier assignment (client-side)
 5. `atrace/main.c` and `daemon/trace.c` `noise_func_names[]` -- tier disable tables (Amiga-side, only for non-Basic functions)
 
 If the function belongs to a library not yet traced, additional setup is

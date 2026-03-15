@@ -117,8 +117,7 @@ the same task.
 
 ### Fallback Timestamps
 
-If EClock data is unavailable (anchor version < 3, or `eclock_freq`
-is zero), the daemon falls back to per-batch `DateStamp()` timestamps
+If EClock data is unavailable (`eclock_freq` is zero), the daemon falls back to per-batch `DateStamp()` timestamps
 with millisecond resolution in the format `HH:MM:SS.mmm`. All events
 consumed in the same polling cycle share the same fallback timestamp.
 Events with EClock timestamps always use their own per-event time.
@@ -619,7 +618,6 @@ conditions are met:
 3. The event is complete (`ev->valid == 1`).
 4. The `FLAG_HAS_IOERR` flag is set in the event.
 5. The `ioerr` value is non-zero.
-6. The atrace anchor version is 4 or higher.
 
 The `valid == 1` check is important: events from blocking functions
 may be consumed while the function is still executing (`valid == 2`),
