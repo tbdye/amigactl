@@ -28,9 +28,9 @@ from amigactl.trace_tiers import (
 class TestTierDefinitions:
     """Verify tier membership invariants."""
 
-    def test_all_80_functions_assigned(self):
+    def test_all_99_functions_assigned(self):
         """Every function is in exactly one tier."""
-        assert len(_ALL_FUNCTIONS) == 80
+        assert len(_ALL_FUNCTIONS) == 99
 
     def test_tiers_disjoint(self):
         """No function appears in multiple tiers."""
@@ -42,19 +42,19 @@ class TestTierDefinitions:
         assert not (TIER_VERBOSE & TIER_MANUAL)
 
     def test_basic_count(self):
-        assert len(TIER_BASIC) == 43
+        assert len(TIER_BASIC) == 57
 
     def test_detail_count(self):
-        assert len(TIER_DETAIL) == 11
+        assert len(TIER_DETAIL) == 13
 
     def test_verbose_count(self):
-        assert len(TIER_VERBOSE) == 2
+        assert len(TIER_VERBOSE) == 3
 
     def test_manual_count(self):
-        assert len(TIER_MANUAL) == 24
+        assert len(TIER_MANUAL) == 26
 
     def test_union_equals_all(self):
-        """The four tiers together contain all 80 functions."""
+        """The four tiers together contain all 99 functions."""
         union = TIER_BASIC | TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL
         assert union == _ALL_FUNCTIONS
 
@@ -308,7 +308,7 @@ class TestDetectTier:
         assert detect_tier(frozenset()) is None
 
     def test_all_functions_no_match(self):
-        """All 80 functions do not match any tier (includes Manual)."""
+        """All 99 functions do not match any tier (includes Manual)."""
         assert detect_tier(_ALL_FUNCTIONS) is None
 
     def test_accepts_regular_set(self):
@@ -340,3 +340,59 @@ class TestTierName:
         """TIER_NAMES dict matches tier_name() output."""
         for level, name in TIER_NAMES.items():
             assert tier_name(level) == name
+
+
+# ---------------------------------------------------------------------------
+# TestPhase10TierMembership
+# ---------------------------------------------------------------------------
+
+class TestPhase10TierMembership:
+    """Verify Phase 10 functions are in the correct tiers."""
+
+    def test_phase10_basic_functions(self):
+        """Phase 10 Basic-tier functions are in TIER_BASIC."""
+        expected_basic = {
+            "GetDiskObject", "PutDiskObject", "FreeDiskObject",
+            "FindToolType", "MatchToolValue",
+            "AddAppIconA", "RemoveAppIcon", "AddAppWindowA",
+            "RemoveAppWindow", "AddAppMenuItemA", "RemoveAppMenuItem",
+            "SetProtection", "OpenWindowTagList", "OpenScreenTagList",
+        }
+        for f in expected_basic:
+            assert f in TIER_BASIC, "{} not in TIER_BASIC".format(f)
+
+    def test_phase10_detail_functions(self):
+        """Phase 10 Detail-tier functions are in TIER_DETAIL."""
+        for f in ("UnLoadSeg", "UnlockPubScreen"):
+            assert f in TIER_DETAIL, "{} not in TIER_DETAIL".format(f)
+
+    def test_phase10_verbose_functions(self):
+        """Phase 10 Verbose-tier functions are in TIER_VERBOSE."""
+        for f in ("CloseFont",):
+            assert f in TIER_VERBOSE, "{} not in TIER_VERBOSE".format(f)
+
+    def test_phase10_manual_functions(self):
+        """Phase 10 Manual-tier functions are in TIER_MANUAL."""
+        for f in ("AddPort", "WaitPort"):
+            assert f in TIER_MANUAL, "{} not in TIER_MANUAL".format(f)
+
+    def test_phase10_basic_tier_for_function(self):
+        """Phase 10 Basic functions return tier 1 from tier_for_function."""
+        for f in ("SetProtection", "OpenWindowTagList",
+                  "GetDiskObject", "AddAppIconA"):
+            assert tier_for_function(f) == 1, \
+                "{} should be tier 1".format(f)
+
+    def test_phase10_detail_tier_for_function(self):
+        """Phase 10 Detail functions return tier 2 from tier_for_function."""
+        assert tier_for_function("UnLoadSeg") == 2
+        assert tier_for_function("UnlockPubScreen") == 2
+
+    def test_phase10_verbose_tier_for_function(self):
+        """Phase 10 Verbose functions return tier 3 from tier_for_function."""
+        assert tier_for_function("CloseFont") == 3
+
+    def test_phase10_manual_tier_for_function(self):
+        """Phase 10 Manual functions return None from tier_for_function."""
+        assert tier_for_function("AddPort") is None
+        assert tier_for_function("WaitPort") is None

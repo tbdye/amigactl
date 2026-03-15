@@ -23,6 +23,8 @@
 #define LIB_INTUITION  2
 #define LIB_BSDSOCKET  3
 #define LIB_GRAPHICS   4
+#define LIB_ICON       5
+#define LIB_WORKBENCH  6
 
 /* Event entry size -- must be 128 bytes for shift-based indexing */
 #define ATRACE_EVENT_SIZE   128
@@ -37,6 +39,10 @@
 #define DEREF_IOREQUEST  2   /* Two-level: IORequest->io_Device->ln_Name + io_Command */
 #define DEREF_TEXTATTR   3   /* TextAttr->ta_Name (offset 0) + ta_YSize */
 #define DEREF_LOCK_VOLUME  4   /* Lock BPTR -> fl_Volume -> dol_Name BSTR */
+#define DEREF_NW_TITLE     5   /* NewWindow.Title at offset 26 */
+#define DEREF_WIN_TITLE    6   /* Window.Title at offset 32 */
+#define DEREF_NS_TITLE     7   /* NewScreen.DefaultTitle at offset 20 */
+#define DEREF_SCR_TITLE    8   /* Screen.Title at offset 22 */
 
 /* ---- struct atrace_anchor ----
  *

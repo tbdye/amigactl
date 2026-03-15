@@ -68,7 +68,7 @@ struct trace_func_entry {
 };
 
 static const struct trace_func_entry func_table[] = {
-    /* exec.library functions (20) */
+    /* exec.library functions (31) */
     { "exec", "FindPort",         LIB_EXEC, -390, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "FindResident",     LIB_EXEC,  -96, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
     { "exec", "FindSemaphore",    LIB_EXEC, -594, ERR_CHECK_NULL,  1, RET_PTR_OPAQUE},
@@ -100,7 +100,10 @@ static const struct trace_func_entry func_table[] = {
     { "exec", "CloseLibrary",   LIB_EXEC, -414, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "CloseDevice",    LIB_EXEC, -450, ERR_CHECK_VOID,  1, RET_VOID     },
     { "exec", "ReplyMsg",       LIB_EXEC, -378, ERR_CHECK_VOID,  0, RET_VOID     },
-    /* dos.library functions (24) */
+    /* exec.library additions (Phase 10) */
+    { "exec", "AddPort",    LIB_EXEC, -354, ERR_CHECK_VOID,  1, RET_VOID     },
+    { "exec", "WaitPort",   LIB_EXEC, -384, ERR_CHECK_ANY,   1, RET_MSG_PTR  },
+    /* dos.library functions (26) */
     { "dos", "Open",              LIB_DOS,   -30, ERR_CHECK_NULL,  1, RET_PTR      },
     { "dos", "Close",             LIB_DOS,   -36, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Lock",              LIB_DOS,   -84, ERR_CHECK_NULL,  1, RET_LOCK     },
@@ -126,19 +129,26 @@ static const struct trace_func_entry func_table[] = {
     { "dos", "Examine",         LIB_DOS,  -102, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "ExNext",          LIB_DOS,  -108, ERR_CHECK_NULL,  0, RET_BOOL_DOS },
     { "dos", "Seek",            LIB_DOS,   -66, ERR_CHECK_NEG1,  0, RET_IO_LEN   },
-    /* intuition.library functions (11) */
-    { "intuition", "OpenWindow",     LIB_INTUITION, -204, ERR_CHECK_NULL, 0, RET_PTR      },
-    { "intuition", "CloseWindow",    LIB_INTUITION,  -72, ERR_CHECK_VOID, 0, RET_VOID     },
-    { "intuition", "OpenScreen",     LIB_INTUITION, -198, ERR_CHECK_NULL, 0, RET_PTR      },
-    { "intuition", "CloseScreen",    LIB_INTUITION,  -66, ERR_CHECK_VOID, 0, RET_VOID     },
-    { "intuition", "ActivateWindow", LIB_INTUITION, -450, ERR_CHECK_VOID, 0, RET_VOID     },
-    { "intuition", "WindowToFront",  LIB_INTUITION, -312, ERR_CHECK_VOID, 0, RET_VOID     },
-    { "intuition", "WindowToBack",   LIB_INTUITION, -306, ERR_CHECK_VOID, 0, RET_VOID     },
+    /* dos.library additions (Phase 10) */
+    { "dos", "SetProtection", LIB_DOS, -186, ERR_CHECK_NULL, 1, RET_BOOL_DOS },
+    { "dos", "UnLoadSeg",     LIB_DOS, -156, ERR_CHECK_VOID, 0, RET_VOID     },
+    /* intuition.library functions (14) */
+    { "intuition", "OpenWindow",     LIB_INTUITION, -204, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "intuition", "CloseWindow",    LIB_INTUITION,  -72, ERR_CHECK_VOID, 1, RET_VOID     },
+    { "intuition", "OpenScreen",     LIB_INTUITION, -198, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "intuition", "CloseScreen",    LIB_INTUITION,  -66, ERR_CHECK_VOID, 1, RET_VOID     },
+    { "intuition", "ActivateWindow", LIB_INTUITION, -450, ERR_CHECK_VOID, 1, RET_VOID     },
+    { "intuition", "WindowToFront",  LIB_INTUITION, -312, ERR_CHECK_VOID, 1, RET_VOID     },
+    { "intuition", "WindowToBack",   LIB_INTUITION, -306, ERR_CHECK_VOID, 1, RET_VOID     },
     { "intuition", "ModifyIDCMP",    LIB_INTUITION, -150, ERR_CHECK_VOID, 0, RET_VOID     },
     { "intuition", "OpenWorkBench",  LIB_INTUITION, -210, ERR_CHECK_ANY,  0, RET_PTR      },
     { "intuition", "CloseWorkBench", LIB_INTUITION,  -78, ERR_CHECK_ANY,  0, RET_BOOL_DOS },
     /* intuition.library addition (Phase 9) */
     { "intuition", "LockPubScreen", LIB_INTUITION, -510, ERR_CHECK_NULL, 1, RET_PTR },
+    /* intuition.library additions (Phase 10) */
+    { "intuition", "OpenWindowTagList",  LIB_INTUITION, -606, ERR_CHECK_NULL, 1, RET_PTR  },
+    { "intuition", "OpenScreenTagList",  LIB_INTUITION, -612, ERR_CHECK_NULL, 1, RET_PTR  },
+    { "intuition", "UnlockPubScreen",    LIB_INTUITION, -516, ERR_CHECK_VOID, 1, RET_VOID },
     /* bsdsocket.library functions (Phase 9) */
     { "bsdsocket", "socket",       LIB_BSDSOCKET,  -30, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "bind",         LIB_BSDSOCKET,  -36, ERR_CHECK_NEG1, 0, RET_IO_LEN },
@@ -155,8 +165,30 @@ static const struct trace_func_entry func_table[] = {
     { "bsdsocket", "IoctlSocket",  LIB_BSDSOCKET, -114, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "CloseSocket",  LIB_BSDSOCKET, -120, ERR_CHECK_NEG1, 0, RET_IO_LEN },
     { "bsdsocket", "WaitSelect",   LIB_BSDSOCKET, -126, ERR_CHECK_NEG1, 0, RET_IO_LEN },
-    /* graphics.library functions (Phase 9) */
+    /* graphics.library functions (2) */
     { "graphics", "OpenFont",     LIB_GRAPHICS,  -72, ERR_CHECK_NULL,  1, RET_PTR },
+    /* graphics.library addition (Phase 10) */
+    { "graphics", "CloseFont", LIB_GRAPHICS, -78, ERR_CHECK_VOID, 0, RET_VOID },
+    /* icon.library functions (Phase 10) */
+    { "icon", "GetDiskObject",  LIB_ICON, -78, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "icon", "PutDiskObject",  LIB_ICON, -84, ERR_CHECK_NULL, 1, RET_BOOL_DOS },
+    { "icon", "FreeDiskObject", LIB_ICON, -90, ERR_CHECK_VOID, 0, RET_VOID     },
+    { "icon", "FindToolType",   LIB_ICON, -96, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "icon", "MatchToolValue", LIB_ICON, -102, ERR_CHECK_NONE, 0, RET_BOOL_DOS },
+    /* MatchToolValue returns BOOL (TRUE=match, FALSE=no match).
+     * FALSE is a normal expected result, not an error condition.
+     * ERR_CHECK_NONE prevents FALSE returns from appearing in
+     * ERRORS-only filtered output. */
+    /* workbench.library functions (Phase 10)
+     * Note: RemoveAppIcon, RemoveAppWindow, RemoveAppMenuItem return
+     * standard BOOL (TRUE=1), not DOSTRUE (-1). RET_BOOL_DOS handles
+     * both correctly: it formats any non-zero return as "OK". */
+    { "workbench", "AddAppIconA",     LIB_WORKBENCH, -60, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "workbench", "RemoveAppIcon",   LIB_WORKBENCH, -66, ERR_CHECK_NULL, 0, RET_BOOL_DOS },
+    { "workbench", "AddAppWindowA",   LIB_WORKBENCH, -48, ERR_CHECK_NULL, 0, RET_PTR      },
+    { "workbench", "RemoveAppWindow", LIB_WORKBENCH, -54, ERR_CHECK_NULL, 0, RET_BOOL_DOS },
+    { "workbench", "AddAppMenuItemA", LIB_WORKBENCH, -72, ERR_CHECK_NULL, 1, RET_PTR      },
+    { "workbench", "RemoveAppMenuItem", LIB_WORKBENCH, -78, ERR_CHECK_NULL, 0, RET_BOOL_DOS },
 };
 
 #define FUNC_TABLE_SIZE  (sizeof(func_table) / sizeof(func_table[0]))
@@ -326,7 +358,7 @@ static int find_patch_index_by_name(const char *name)
 
 /* Noise function names -- non-Basic tier functions that are disabled
  * by default at install time.  Union of Detail + Verbose + Manual
- * tiers (32 functions).
+ * tiers (42 functions: 13 Detail + 3 Verbose + 26 Manual).
  *
  * MUST match the union of tier_detail_funcs + tier_verbose_funcs +
  * tier_manual_funcs in atrace/main.c.
@@ -344,10 +376,14 @@ static const char *noise_func_names[] = {
     "ModifyIDCMP",
     /* Detail tier: bsdsocket.library */
     "sendto", "recvfrom",
+    /* Phase 10 additions: Detail tier */
+    "UnLoadSeg", "UnlockPubScreen",
     /* Verbose tier */
     "ExNext",
     /* Verbose tier: graphics.library */
     "OpenFont",
+    /* Phase 10 addition: Verbose tier */
+    "CloseFont",
     /* Manual tier: exec.library */
     "FindPort", "FindSemaphore", "FindTask",
     "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
@@ -359,6 +395,8 @@ static const char *noise_func_names[] = {
     "Read", "Write",
     /* Manual tier: bsdsocket.library */
     "send", "recv", "WaitSelect",
+    /* Phase 10 additions: Manual tier */
+    "AddPort", "WaitPort",
     NULL
 };
 
@@ -1710,9 +1748,9 @@ static int string_likely_truncated(const char *s)
  * waste slots and risk false matches if AmigaOS reuses the BPTR
  * address for a different type.
  *
- * The cache is 64 entries with FIFO eviction.
+ * The cache is 128 entries with FIFO eviction.
  * Lock values are opaque 32-bit integers (BPTRs shifted << 2). */
-#define LOCK_CACHE_SIZE  64
+#define LOCK_CACHE_SIZE  128
 
 struct lock_cache_entry {
     ULONG lock_val;     /* retval from Lock/CreateDir */
@@ -1784,7 +1822,7 @@ static void lock_cache_remove(ULONG lock_val)
  * Populated from successful Open() events (retval != 0).
  * Looked up and removed by Close() events. */
 
-#define FH_CACHE_SIZE  32
+#define FH_CACHE_SIZE  128
 
 struct fh_cache_entry {
     ULONG fh_val;       /* retval BPTR from Open() */
@@ -1834,6 +1872,121 @@ static void fh_cache_clear(void)
 {
     memset(fh_cache, 0, sizeof(fh_cache));
     fh_cache_next = 0;
+}
+
+/* ---- DiskObject pointer-to-name cache ----
+ * Maps GetDiskObject() return values (DiskObject pointers) to their
+ * name strings.  Used to resolve FreeDiskObject() arguments to
+ * human-readable names.
+ *
+ * Like fh_cache, has explicit remove on FreeDiskObject -- AmigaOS
+ * reuses DiskObject addresses after FreeDiskObject. */
+
+#define DISKOBJ_CACHE_SIZE  128
+
+struct diskobj_cache_entry {
+    ULONG obj_val;      /* retval pointer from GetDiskObject() */
+    char  name[64];     /* name string */
+};
+
+static struct diskobj_cache_entry diskobj_cache[DISKOBJ_CACHE_SIZE];
+static int diskobj_cache_next = 0;
+
+static void diskobj_cache_add(ULONG obj_val, const char *name)
+{
+    if (obj_val == 0 || !name || !name[0])
+        return;
+    diskobj_cache[diskobj_cache_next].obj_val = obj_val;
+    strncpy(diskobj_cache[diskobj_cache_next].name, name, 63);
+    diskobj_cache[diskobj_cache_next].name[63] = '\0';
+    diskobj_cache_next = (diskobj_cache_next + 1) % DISKOBJ_CACHE_SIZE;
+}
+
+static const char *diskobj_cache_lookup(ULONG obj_val)
+{
+    int i;
+    if (obj_val == 0)
+        return NULL;
+    for (i = 0; i < DISKOBJ_CACHE_SIZE; i++) {
+        if (diskobj_cache[i].obj_val == obj_val)
+            return diskobj_cache[i].name;
+    }
+    return NULL;
+}
+
+static void diskobj_cache_remove(ULONG obj_val)
+{
+    int i;
+    if (obj_val == 0)
+        return;
+    for (i = 0; i < DISKOBJ_CACHE_SIZE; i++) {
+        if (diskobj_cache[i].obj_val == obj_val) {
+            diskobj_cache[i].obj_val = 0;
+            diskobj_cache[i].name[0] = '\0';
+            return;
+        }
+    }
+}
+
+static void diskobj_cache_clear(void)
+{
+    memset(diskobj_cache, 0, sizeof(diskobj_cache));
+    diskobj_cache_next = 0;
+}
+
+/* ---- Segment-to-filename cache ----
+ * Maps LoadSeg()/NewLoadSeg() return values (BPTR segment lists) to
+ * their filename strings.  Used to resolve RunCommand() and
+ * UnLoadSeg() arguments to human-readable program names.
+ *
+ * Like fh_cache, has explicit remove on UnLoadSeg -- AmigaOS reuses
+ * segment list addresses after UnLoadSeg frees the memory. */
+
+#define SEG_CACHE_SIZE  128
+
+static struct { ULONG seg; char name[60]; } seg_cache[SEG_CACHE_SIZE];
+static int seg_cache_next = 0;
+
+static void seg_cache_add(ULONG seg, const char *name)
+{
+    if (seg == 0 || !name || !name[0])
+        return;
+    seg_cache[seg_cache_next].seg = seg;
+    strncpy(seg_cache[seg_cache_next].name, name, 59);
+    seg_cache[seg_cache_next].name[59] = '\0';
+    seg_cache_next = (seg_cache_next + 1) % SEG_CACHE_SIZE;
+}
+
+static const char *seg_cache_lookup(ULONG seg)
+{
+    int i;
+    if (seg == 0)
+        return NULL;
+    for (i = 0; i < SEG_CACHE_SIZE; i++) {
+        if (seg_cache[i].seg == seg)
+            return seg_cache[i].name;
+    }
+    return NULL;
+}
+
+static void seg_cache_remove(ULONG seg)
+{
+    int i;
+    if (seg == 0)
+        return;
+    for (i = 0; i < SEG_CACHE_SIZE; i++) {
+        if (seg_cache[i].seg == seg) {
+            seg_cache[i].seg = 0;
+            seg_cache[i].name[0] = '\0';
+            return;
+        }
+    }
+}
+
+static void seg_cache_clear(void)
+{
+    memset(seg_cache, 0, sizeof(seg_cache));
+    seg_cache_next = 0;
 }
 
 /* ---- Trace log header emission ---- */
@@ -2466,6 +2619,24 @@ static void format_args(struct atrace_event *ev,
                           (unsigned long)ev->args[0]);
             return;
 
+        case -354:  /* AddPort(port) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "port=0x%lx",
+                              (unsigned long)ev->args[0]);
+            return;
+
+        case -384:  /* WaitPort(port) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "port=0x%lx",
+                              (unsigned long)ev->args[0]);
+            return;
+
         }  /* end exec switch */
     }
 
@@ -2626,11 +2797,20 @@ static void format_args(struct atrace_event *ev,
         }
 
         case -504:  /* RunCommand(seg, stack, paramptr, paramlen) */
-            p += snprintf(p, remaining, "seg=0x%lx,stack=%lu,%lu",
-                          (unsigned long)ev->args[0],
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[3]);
+        {
+            const char *prog = seg_cache_lookup(ev->args[0]);
+            if (prog)
+                p += snprintf(p, remaining, "\"%s\",stack=%lu,%lu",
+                              prog,
+                              (unsigned long)ev->args[1],
+                              (unsigned long)ev->args[3]);
+            else
+                p += snprintf(p, remaining, "seg=0x%lx,stack=%lu,%lu",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[1],
+                              (unsigned long)ev->args[3]);
             return;
+        }
 
         case -900:  /* SetVar(name, buffer, size, flags) */
         {
@@ -2752,6 +2932,42 @@ static void format_args(struct atrace_event *ev,
             return;
         }
 
+        case -186:  /* SetProtection(name, protect) */
+        {
+            /* Format protection bits as rwed string.
+             * AmigaOS dos/dos.h bit positions:
+             *   FIBB_HOLD=7, FIBB_SCRIPT=6, FIBB_PURE=5, FIBB_ARCHIVE=4
+             *   FIBB_READ=3, FIBB_WRITE=2, FIBB_EXECUTE=1, FIBB_DELETE=0
+             * HSPA bits (7-4): 1 = flag active. RWED bits (3-0): 0 = allowed, 1 = denied. */
+            ULONG prot = ev->args[1];
+            char prot_buf[16];
+            prot_buf[0] = (prot & (1<<7)) ? 'h' : '-';  /* FIBB_HOLD */
+            prot_buf[1] = (prot & (1<<6)) ? 's' : '-';  /* FIBB_SCRIPT */
+            prot_buf[2] = (prot & (1<<5)) ? 'p' : '-';  /* FIBB_PURE */
+            prot_buf[3] = (prot & (1<<4)) ? 'a' : '-';  /* FIBB_ARCHIVE */
+            prot_buf[4] = (prot & (1<<3)) ? '-' : 'r';  /* FIBB_READ (inverted) */
+            prot_buf[5] = (prot & (1<<2)) ? '-' : 'w';  /* FIBB_WRITE (inverted) */
+            prot_buf[6] = (prot & (1<<1)) ? '-' : 'e';  /* FIBB_EXECUTE (inverted) */
+            prot_buf[7] = (prot & (1<<0)) ? '-' : 'd';  /* FIBB_DELETE (inverted) */
+            prot_buf[8] = '\0';
+            p += snprintf(p, remaining, "\"%s%s\",%s",
+                          ev->string_data, trunc, prot_buf);
+            return;
+        }
+
+        case -156:  /* UnLoadSeg(seglist) */
+        {
+            const char *prog = seg_cache_lookup(ev->args[0]);
+            if (prog) {
+                p += snprintf(p, remaining, "\"%s\"", prog);
+                seg_cache_remove(ev->args[0]);
+            } else {
+                p += snprintf(p, remaining, "seg=0x%lx",
+                              (unsigned long)ev->args[0]);
+            }
+            return;
+        }
+
         }  /* end dos switch */
     }
 
@@ -2761,38 +2977,66 @@ static void format_args(struct atrace_event *ev,
         switch (fe->lvo_offset) {
 
         case -204:  /* OpenWindow(newWindow) */
-            p += snprintf(p, remaining, "nw=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "nw=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -72:   /* CloseWindow(window) */
-            p += snprintf(p, remaining, "win=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "win=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -198:  /* OpenScreen(newScreen) */
-            p += snprintf(p, remaining, "ns=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "ns=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -66:   /* CloseScreen(screen) */
-            p += snprintf(p, remaining, "scr=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "scr=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -450:  /* ActivateWindow(window) */
-            p += snprintf(p, remaining, "win=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "win=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -312:  /* WindowToFront(window) */
-            p += snprintf(p, remaining, "win=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "win=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -306:  /* WindowToBack(window) */
-            p += snprintf(p, remaining, "win=0x%lx",
-                          (unsigned long)ev->args[0]);
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "win=0x%lx",
+                              (unsigned long)ev->args[0]);
             return;
 
         case -150:  /* ModifyIDCMP(window, flags) */
@@ -2817,6 +3061,37 @@ static void format_args(struct atrace_event *ev,
                 p += snprintf(p, remaining, "\"%s%s\"",
                               ev->string_data, trunc);
             }
+            return;
+
+        case -606:  /* OpenWindowTagList(newWindow, tagList) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\",tags=0x%lx",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
+            else
+                p += snprintf(p, remaining, "nw=0x%lx,tags=0x%lx",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[1]);
+            return;
+
+        case -612:  /* OpenScreenTagList(newScreen, tagList) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\",tags=0x%lx",
+                              ev->string_data, trunc,
+                              (unsigned long)ev->args[1]);
+            else
+                p += snprintf(p, remaining, "ns=0x%lx,tags=0x%lx",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[1]);
+            return;
+
+        case -516:  /* UnlockPubScreen(name, screen) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "\"%s%s\"",
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "screen=0x%lx",
+                              (unsigned long)ev->args[1]);
             return;
 
         }  /* end intuition switch */
@@ -2961,7 +3236,106 @@ static void format_args(struct atrace_event *ev,
                               (unsigned long)ev->args[0]);
             return;
 
+        case -78:  /* CloseFont(textFont) */
+            p += snprintf(p, remaining, "font=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
         }  /* end graphics switch */
+    }
+
+    /* --- icon.library --- */
+
+    if (fe->lib_id == LIB_ICON) {
+        switch (fe->lvo_offset) {
+
+        case -78:  /* GetDiskObject(name) */
+            p += snprintf(p, remaining, "\"%s%s\"",
+                          ev->string_data, trunc);
+            return;
+
+        case -84:  /* PutDiskObject(name, diskObj) */
+            p += snprintf(p, remaining, "\"%s%s\",obj=0x%lx",
+                          ev->string_data, trunc,
+                          (unsigned long)ev->args[1]);
+            return;
+
+        case -90:  /* FreeDiskObject(diskObj) */
+        {
+            const char *name = diskobj_cache_lookup(ev->args[0]);
+            if (name) {
+                p += snprintf(p, remaining, "\"%s\"", name);
+                /* Remove from cache -- AmigaOS reuses DiskObject
+                 * addresses after FreeDiskObject. */
+                diskobj_cache_remove(ev->args[0]);
+            } else {
+                p += snprintf(p, remaining, "obj=0x%lx",
+                              (unsigned long)ev->args[0]);
+            }
+            return;
+        }
+
+        case -96:  /* FindToolType(toolTypeArray, typeName) */
+            p += snprintf(p, remaining, "\"%s%s\"",
+                          ev->string_data, trunc);
+            return;
+
+        case -102:  /* MatchToolValue(typeString, value) */
+            p += snprintf(p, remaining, "str=0x%lx,val=0x%lx",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[1]);
+            return;
+        }
+    }
+
+    /* --- workbench.library --- */
+
+    if (fe->lib_id == LIB_WORKBENCH) {
+        switch (fe->lvo_offset) {
+
+        case -60:  /* AddAppIconA(id, userdata, text, msgport) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "id=%lu,\"%s%s\"",
+                              (unsigned long)ev->args[0],
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "id=%lu,text=0x%lx",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[2]);
+            return;
+
+        case -66:  /* RemoveAppIcon(appIcon) */
+            p += snprintf(p, remaining, "icon=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -48:  /* AddAppWindowA(id, userdata, window, msgport) */
+            p += snprintf(p, remaining, "id=%lu,win=0x%lx",
+                          (unsigned long)ev->args[0],
+                          (unsigned long)ev->args[2]);
+            return;
+
+        case -54:  /* RemoveAppWindow(appWindow) */
+            p += snprintf(p, remaining, "win=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+
+        case -72:  /* AddAppMenuItemA(id, userdata, text, msgport) */
+            if (ev->string_data[0])
+                p += snprintf(p, remaining, "id=%lu,\"%s%s\"",
+                              (unsigned long)ev->args[0],
+                              ev->string_data, trunc);
+            else
+                p += snprintf(p, remaining, "id=%lu,text=0x%lx",
+                              (unsigned long)ev->args[0],
+                              (unsigned long)ev->args[2]);
+            return;
+
+        case -78:  /* RemoveAppMenuItem(appMenuItem) */
+            p += snprintf(p, remaining, "item=0x%lx",
+                          (unsigned long)ev->args[0]);
+            return;
+        }
     }
 
     /* Fallback: should not reach here for known functions,
@@ -3392,6 +3766,15 @@ static void trace_format_event(struct atrace_event *ev,
         if (fe->lib_id == LIB_DOS && fe->lvo_offset == -30) {      /* Open */
             fh_cache_add(ev->retval, ev->string_data);
         }
+        /* diskobj_cache population for GetDiskObject */
+        if (fe->lib_id == LIB_ICON && fe->lvo_offset == -78) {     /* GetDiskObject */
+            diskobj_cache_add(ev->retval, ev->string_data);
+        }
+        /* seg_cache population for LoadSeg and NewLoadSeg */
+        if (fe->lib_id == LIB_DOS &&
+            (fe->lvo_offset == -150 || fe->lvo_offset == -768)) {
+            seg_cache_add(ev->retval, ev->string_data);
+        }
     }
 
     snprintf(buf, bufsz, "%lu\t%s\t%s.%s\t%s\t%s\t%s\t%c",
@@ -3600,6 +3983,10 @@ void trace_poll_events(struct daemon_state *d)
             ring->read_pos = pos;
             total_consumed++;
             g_self_filtered++;
+            /* Cache lock-to-path even when suppressed */
+            if (ev->string_data[0] != '\0') {
+                lock_cache_add(ev->retval, ev->string_data);
+            }
             continue;
         }
 
@@ -3954,6 +4341,8 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Clear caches for the new session */
     lock_cache_clear();
     fh_cache_clear();
+    diskobj_cache_clear();
+    seg_cache_clear();
     g_current_tier = 1;
 
     /* Enter streaming mode */
@@ -4120,6 +4509,8 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
      * Lock(), caching with stale session data. */
     lock_cache_clear();
     fh_cache_clear();
+    diskobj_cache_clear();
+    seg_cache_clear();
     g_current_tier = 1;
 
     /* Find a proc_slot (same logic as exec_async) */

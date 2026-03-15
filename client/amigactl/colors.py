@@ -171,17 +171,34 @@ TRACE_HEADER = "{:<10s} {:>13s}  {:<28s} {:<20s} {:<40s} {}".format(
     "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT")
 
 
-def format_trace_event(event, cw):
+def format_trace_event(event, cw, handle_resolver=None):
     """Format a trace event dict for columnar terminal output.
 
-    Returns a string ready to print, or None for comment events
-    (which are printed directly by the caller via cw.warning).
+    Returns a formatted string ready to print.
 
     This function is shared between the shell and CLI so both display
     identical output.  cw is a ColorWriter instance.
+
+    Args:
+        event: Parsed event dict.
+        cw: ColorWriter instance.
+        handle_resolver: Optional HandleResolver instance for
+            annotating Close and CurrentDir events with file paths.
+            Note: Read/Write/Seek annotation is not currently
+            supported by HandleResolver.annotate() -- those events
+            would require a cache lookup by the file handle argument,
+            which is not yet implemented.
     """
     if event.get("type") == "comment":
         return cw.warning("# {}".format(event.get("text", "")))
+
+    # Handle annotation: resolve file handles to paths
+    annotation = None
+    if handle_resolver is not None:
+        handle_resolver.track(event)
+        annotation = handle_resolver.annotate(event)
+        # Note: consume parameter omitted (defaults to False) because
+        # track() already handles eviction of the cache entry on Close.
 
     retval = event.get("retval", "")
     status = event.get("status", "-")
@@ -200,6 +217,10 @@ def format_trace_event(event, cw):
     lib_func = "{}.{}".format(cw.cyan(lib_str), cw.yellow(func_str))
     task_str = cw.green(event.get("task", ""))
 
+    args_str = event.get("args", "")
+    if annotation:
+        args_str = "{} [{}]".format(args_str, annotation)
+
     # For column alignment, compute visible widths and pad manually
     # since ANSI escape codes add invisible characters.
     seq_vis = len(str(event.get("seq", "")))
@@ -214,5 +235,5 @@ def format_trace_event(event, cw):
         " " * max(0, 28 - lib_func_vis),
         task_str,
         " " * max(0, 20 - task_vis),
-        event.get("args", ""),
+        args_str,
         retval_formatted)

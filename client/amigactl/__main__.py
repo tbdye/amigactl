@@ -326,6 +326,7 @@ def cmd_tail(conn, args):
 def cmd_trace(conn, args):
     """Handle the 'trace' subcommand."""
     from .colors import ColorWriter, TRACE_HEADER, format_trace_event
+    from .trace_ui import HandleResolver
 
     sub = args.trace_cmd
     if sub is None:
@@ -364,8 +365,13 @@ def cmd_trace(conn, args):
         # Column header
         print(TRACE_HEADER)
 
+        resolver = HandleResolver()
+
         def trace_callback(event):
-            print(format_trace_event(event, cw))
+            line = format_trace_event(event, cw,
+                                      handle_resolver=resolver)
+            if line is not None:
+                print(line)
 
         try:
             # If tier > Basic, enable additional functions before
@@ -432,8 +438,13 @@ def cmd_trace(conn, args):
         # Column header
         print(TRACE_HEADER)
 
+        resolver = HandleResolver()
+
         def trace_callback(event):
-            print(format_trace_event(event, cw))
+            line = format_trace_event(event, cw,
+                                      handle_resolver=resolver)
+            if line is not None:
+                print(line)
 
         kwargs = {}
         if args.lib:

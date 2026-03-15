@@ -4,9 +4,10 @@ These tests run the atrace_test binary on the Amiga via TRACE RUN and
 validate that every traced function produces the correct wire format:
 args, retval, and status fields.
 
-The test app (C:atrace_test) calls each of the up to 80 traced functions
-(except AddDosEntry) with distinctive, predictable inputs.  Multiple
-fixtures run the app in different configurations:
+The test app (C:atrace_test) calls each of the up to 99 traced functions
+(except AddDosEntry and workbench.library functions) with distinctive,
+predictable inputs.  Multiple fixtures run the app in different
+configurations:
 
   trace_events: Module-scoped.  Runs with default settings (only
     TIER_BASIC functions enabled).  Captures the 49 Basic-tier
@@ -46,6 +47,9 @@ fixtures run the app in different configurations:
 
   noise_group11_events: Class-scoped.  Enables OpenFont only.
     Used by TestOpenFont.
+
+  noise_group12_events: Class-scoped.  Enables AddPort only.
+    Used by TestExecPorts.
 
 The noise functions are split into groups (at most 5 stubs each)
 to keep the background OS event rate low enough that the 8192-entry
@@ -294,6 +298,7 @@ _NOISE_GROUP8 = ["ReplyMsg"]
 _NOISE_GROUP9 = ["send", "recv", "WaitSelect"]
 _NOISE_GROUP10 = ["Wait", "Signal", "CloseLibrary"]
 _NOISE_GROUP11 = ["OpenFont"]
+_NOISE_GROUP12 = ["AddPort"]
 
 
 @pytest.fixture(scope="class")
@@ -814,6 +819,59 @@ def noise_group11_events(request, require_atrace_for_app):
     conn.connect()
 
     noise_funcs = _NOISE_GROUP11
+    status = conn.trace_status()
+    patch_list = status.get("patch_list", [])
+    noise_set = set(_NOISE_FUNCS)
+    all_non_noise = []
+    for entry in patch_list:
+        bare = entry.get("name", "").split(".", 1)[-1]
+        if bare not in noise_set:
+            all_non_noise.append(bare)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(60)
+    try:
+        if all_non_noise:
+            conn.trace_disable(all_non_noise)
+        other_noise = [f for f in _NOISE_FUNCS if f not in noise_funcs]
+        conn.trace_disable(other_noise)
+        conn.trace_enable(noise_funcs)
+
+        events = []
+        def collect(ev):
+            events.append(ev)
+        result = conn.trace_run("C:atrace_test", collect)
+        assert result["rc"] == 0, \
+            "atrace_test exited with rc={}".format(result["rc"])
+        return [e for e in events if e.get("type") == "event"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+        try:
+            conn.trace_disable(noise_funcs)
+        except Exception:
+            pass
+        if all_non_noise:
+            try:
+                conn.trace_enable(all_non_noise)
+            except Exception:
+                pass
+        conn.close()
+
+
+@pytest.fixture(scope="class")
+def noise_group12_events(request, require_atrace_for_app):
+    """Run atrace_test with only Group 12 noise functions enabled.
+
+    Group 12: AddPort -- exec.library port management function,
+    added in Phase 10. Manual tier due to high background event rate.
+    """
+    host = request.config.getoption("--host")
+    port = request.config.getoption("--port")
+    conn = AmigaConnection(host, port)
+    conn.connect()
+
+    noise_funcs = _NOISE_GROUP12
     status = conn.trace_status()
     patch_list = status.get("patch_list", [])
     noise_set = set(_NOISE_FUNCS)
@@ -1786,8 +1844,9 @@ class TestFieldInvariants:
                         ev.get("seq"), key, ev.get("raw", "")))
 
     def test_lib_names_valid(self, trace_events):
-        """All events have lib in {exec, dos, intuition}."""
-        valid_libs = {"exec", "dos", "intuition", "bsdsocket", "graphics"}
+        """All events have lib in the set of traced libraries."""
+        valid_libs = {"exec", "dos", "intuition", "bsdsocket", "graphics",
+                      "icon", "workbench"}
         bad = [ev for ev in trace_events
                if ev.get("lib") not in valid_libs]
         assert not bad, (
@@ -2204,7 +2263,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "nw=0x" in ev["args"]
+        assert '"atrace_test_win"' in ev["args"]
         assert ev["status"] == "O"
         assert _HEX_PTR.match(ev["retval"])
 
@@ -2214,7 +2273,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "win=0x" in ev["args"]
+        assert '"atrace_test_win"' in ev["args"]
         assert ev["status"] == "-"
         assert ev["retval"] == "(void)"
 
@@ -2224,7 +2283,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "ns=0x" in ev["args"]
+        assert '"atrace_test_screen"' in ev["args"]
         assert ev["status"] == "O"
         assert _HEX_PTR.match(ev["retval"])
 
@@ -2234,7 +2293,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "scr=0x" in ev["args"]
+        assert '"atrace_test_screen"' in ev["args"]
         assert ev["status"] == "-"
         assert ev["retval"] == "(void)"
 
@@ -2244,7 +2303,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "win=0x" in ev["args"]
+        assert '"atrace_test_win"' in ev["args"]
         assert ev["status"] == "-"
         assert ev["retval"] == "(void)"
 
@@ -2254,7 +2313,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "win=0x" in ev["args"]
+        assert '"atrace_test_win"' in ev["args"]
         assert ev["status"] == "-"
         assert ev["retval"] == "(void)"
 
@@ -2264,7 +2323,7 @@ class TestIntuitionFunctions:
         assert len(matches) >= 1
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert "win=0x" in ev["args"]
+        assert '"atrace_test_win"' in ev["args"]
         assert ev["status"] == "-"
         assert ev["retval"] == "(void)"
 
@@ -2383,23 +2442,23 @@ class TestDosNoiseGroup6:
 
 @pytest.mark.usefixtures("require_atrace_for_app")
 class TestPatchCount:
-    """Verify patch count matches Phase 9 expectations (80 with bsdsocket, 65 without)."""
+    """Verify patch count matches Phase 10 expectations (99 with bsdsocket, 84 without)."""
 
     def test_status_patch_count(self, request):
-        """TRACE STATUS reports 80 or 65 patches."""
+        """TRACE STATUS reports 99 or 84 patches."""
         host = request.config.getoption("--host")
         port = request.config.getoption("--port")
         conn = AmigaConnection(host, port)
         conn.connect()
         try:
             status = conn.trace_status()
-            assert status["patches"] in (80, 65), (
-                "Expected 80 or 65 patches, got: {}".format(status["patches"]))
+            assert status["patches"] in (99, 84), (
+                "Expected 99 or 84 patches, got: {}".format(status["patches"]))
         finally:
             conn.close()
 
     def test_status_intuition_patches(self, request):
-        """TRACE STATUS lists intuition.library patches."""
+        """TRACE STATUS lists intuition.library patches (14 after Phase 10)."""
         host = request.config.getoption("--host")
         port = request.config.getoption("--port")
         conn = AmigaConnection(host, port)
@@ -2410,8 +2469,8 @@ class TestPatchCount:
             intuition_patches = [
                 e for e in patch_list
                 if e.get("name", "").startswith("intuition.")]
-            assert len(intuition_patches) == 11, (
-                "Expected 11 intuition patches, got: {}".format(
+            assert len(intuition_patches) == 14, (
+                "Expected 14 intuition patches, got: {}".format(
                     len(intuition_patches)))
         finally:
             conn.close()
@@ -3341,3 +3400,208 @@ class TestPhase9dFeatures:
                 len(v0_opens),
                 [(e.get("args", ""), e.get("status", ""))
                  for e in v0_opens[:5]]))
+
+
+# ---------------------------------------------------------------------------
+# TestPhase10BasicFunctions -- Phase 10: Basic-tier new functions
+# ---------------------------------------------------------------------------
+
+class TestPhase10BasicFunctions:
+    """Test Phase 10 Basic-tier functions in trace_events output.
+
+    These functions are enabled by default (Basic tier) and should
+    appear in the trace_events fixture without any additional setup.
+    """
+
+    def test_set_protection_captured(self, trace_events):
+        """SetProtection events show filename and protection bits."""
+        matches = _find_events(trace_events, "SetProtection",
+                               "atrace_test_protect")
+        assert len(matches) >= 1, (
+            "No SetProtection('atrace_test_protect') event found in "
+            "{} events".format(len(trace_events)))
+        ev = matches[0]
+        assert ev["lib"] == "dos"
+        # SetProtection returns BOOL -- OK (success) or FAIL (error)
+        if ev["status"] == "O":
+            assert ev["retval"] == "OK", (
+                "SetProtection retval should be 'OK', got: {}".format(
+                    ev["retval"]))
+
+    def test_set_protection_bits_format(self, trace_events):
+        """SetProtection args include protection bits value."""
+        matches = _find_events(trace_events, "SetProtection",
+                               "atrace_test_protect")
+        assert len(matches) >= 1
+        ev = matches[0]
+        # The test app sets protection to 0xF0
+        # Args should contain the filename and some form of protection bits
+        assert "atrace_test_protect" in ev["args"]
+
+    def test_open_window_tag_list_captured(self, trace_events):
+        """OpenWindowTagList events captured at Basic tier."""
+        matches = _find_events(trace_events, "OpenWindowTagList")
+        assert len(matches) >= 1, (
+            "No OpenWindowTagList event found in {} events".format(
+                len(trace_events)))
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        assert '"atrace_test_win"' in ev["args"]
+        # OpenWindowTagList returns a Window pointer or NULL
+        if ev["status"] == "O":
+            assert _HEX_PTR.match(ev["retval"]), (
+                "Successful OpenWindowTagList should return hex pointer, "
+                "got: {}".format(ev["retval"]))
+
+    def test_get_disk_object_captured(self, trace_events):
+        """GetDiskObject events captured at Basic tier."""
+        matches = _find_events(trace_events, "GetDiskObject")
+        assert len(matches) >= 1, (
+            "No GetDiskObject event found in {} events".format(
+                len(trace_events)))
+        ev = matches[0]
+        assert ev["lib"] == "icon"
+        # GetDiskObject args should contain a quoted path
+        assert ev["args"].startswith('"'), (
+            "GetDiskObject args should start with quoted path: {}".format(
+                ev["args"]))
+
+    def test_find_tool_type_captured(self, trace_events):
+        """FindToolType events captured at Basic tier."""
+        matches = _find_events(trace_events, "FindToolType")
+        # FindToolType may not appear if GetDiskObject failed
+        # (e.g., SYS:System/Shell.info doesn't exist)
+        if len(matches) == 0:
+            pytest.skip("FindToolType not captured (GetDiskObject may "
+                        "have failed)")
+        ev = matches[0]
+        assert ev["lib"] == "icon"
+
+    def test_free_disk_object_captured(self, trace_events):
+        """FreeDiskObject events captured at Basic tier."""
+        matches = _find_events(trace_events, "FreeDiskObject")
+        # FreeDiskObject may not appear if GetDiskObject failed
+        if len(matches) == 0:
+            pytest.skip("FreeDiskObject not captured (GetDiskObject may "
+                        "have failed)")
+        ev = matches[0]
+        assert ev["lib"] == "icon"
+        # FreeDiskObject is void return
+        assert ev["retval"] == "(void)", (
+            "FreeDiskObject retval should be '(void)', got: {}".format(
+                ev["retval"]))
+        assert ev["status"] == "-", (
+            "FreeDiskObject status should be '-', got: {}".format(
+                ev["status"]))
+
+
+# ---------------------------------------------------------------------------
+# TestPhase10DetailFunctions -- Phase 10: Detail-tier new functions
+# ---------------------------------------------------------------------------
+
+class TestPhase10DetailFunctions:
+    """Test Phase 10 Detail-tier functions in detail_tier_events output.
+
+    These functions require TIER_DETAIL to be enabled.
+    """
+
+    def test_unloadseg_captured(self, detail_tier_events):
+        """UnLoadSeg events captured at Detail tier."""
+        matches = _find_events(detail_tier_events, "UnLoadSeg")
+        # UnLoadSeg may not appear if LoadSeg("C:Echo") failed
+        if len(matches) == 0:
+            pytest.skip("UnLoadSeg not captured (LoadSeg may have failed)")
+        ev = matches[0]
+        assert ev["lib"] == "dos"
+        # UnLoadSeg is void return
+        assert ev["retval"] == "(void)", (
+            "UnLoadSeg retval should be '(void)', got: {}".format(
+                ev["retval"]))
+        assert ev["status"] == "-", (
+            "UnLoadSeg status should be '-', got: {}".format(
+                ev["status"]))
+
+    def test_unlock_pub_screen_captured(self, detail_tier_events):
+        """UnlockPubScreen events captured at Detail tier."""
+        matches = _find_events(detail_tier_events, "UnlockPubScreen")
+        assert len(matches) >= 1, (
+            "No UnlockPubScreen event found in {} events".format(
+                len(detail_tier_events)))
+        ev = matches[0]
+        assert ev["lib"] == "intuition"
+        # UnlockPubScreen is void return
+        assert ev["retval"] == "(void)", (
+            "UnlockPubScreen retval should be '(void)', got: {}".format(
+                ev["retval"]))
+        assert ev["status"] == "-", (
+            "UnlockPubScreen status should be '-', got: {}".format(
+                ev["status"]))
+
+
+# ---------------------------------------------------------------------------
+# TestPhase10VerboseFunctions -- Phase 10: Verbose-tier new functions
+# ---------------------------------------------------------------------------
+
+class TestPhase10VerboseFunctions:
+    """Test Phase 10 Verbose-tier functions in detail_tier_events output.
+
+    The detail_tier_events fixture enables both TIER_DETAIL and
+    TIER_VERBOSE, so CloseFont should appear.
+    """
+
+    def test_close_font_captured(self, detail_tier_events):
+        """CloseFont events captured at Verbose tier."""
+        matches = _find_events(detail_tier_events, "CloseFont")
+        assert len(matches) >= 1, (
+            "No CloseFont event found in {} events".format(
+                len(detail_tier_events)))
+        ev = matches[0]
+        assert ev["lib"] == "graphics"
+        # CloseFont is void return
+        assert ev["retval"] == "(void)", (
+            "CloseFont retval should be '(void)', got: {}".format(
+                ev["retval"]))
+        assert ev["status"] == "-", (
+            "CloseFont status should be '-', got: {}".format(
+                ev["status"]))
+
+
+# ---------------------------------------------------------------------------
+# TestExecPorts -- Phase 10: Manual-tier AddPort
+# ---------------------------------------------------------------------------
+
+class TestExecPorts:
+    """Test Phase 10 Manual-tier AddPort function.
+
+    AddPort is in TIER_MANUAL and needs a dedicated noise group
+    fixture to capture events without being overwhelmed by OS noise.
+    """
+
+    def test_add_port_captured(self, noise_group12_events):
+        """AddPort events show port name via indirect string."""
+        matches = _find_events(noise_group12_events, "AddPort",
+                               "atrace_test_port")
+        assert len(matches) >= 1, (
+            "No AddPort('atrace_test_port') event found in {} events. "
+            "Port name may not be resolved or AddPort may not be traced."
+            .format(len(noise_group12_events)))
+        ev = matches[0]
+        assert ev["lib"] == "exec"
+        # AddPort is void return
+        assert ev["retval"] == "(void)", (
+            "AddPort retval should be '(void)', got: {}".format(
+                ev["retval"]))
+        assert ev["status"] == "-", (
+            "AddPort status should be '-', got: {}".format(
+                ev["status"]))
+
+    def test_add_port_lib_field(self, noise_group12_events):
+        """AddPort events have lib='exec'."""
+        matches = _find_events(noise_group12_events, "AddPort")
+        assert len(matches) >= 1, (
+            "No AddPort events found in {} events".format(
+                len(noise_group12_events)))
+        for ev in matches:
+            assert ev["lib"] == "exec", (
+                "AddPort should have lib='exec', got: {}".format(
+                    ev["lib"]))

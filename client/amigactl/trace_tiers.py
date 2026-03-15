@@ -1,6 +1,6 @@
 """Output tier definitions for atrace function tracing.
 
-Three tiers organize 80 traced functions into progressive verbosity
+Three tiers organize 99 traced functions into progressive verbosity
 levels. Tier membership is the authoritative source of truth for:
 - Loader auto-disable decisions (atrace/main.c)
 - Interactive viewer tier switching (trace_ui.py)
@@ -9,6 +9,8 @@ levels. Tier membership is the authoritative source of truth for:
 
 Tier assignments are finalized after Phase 9b empirical testing.
 Phase 9d audit moved idle-firing functions to Manual tier.
+Phase 10 added 19 functions from icon, workbench, dos, intuition,
+exec, and graphics libraries.
 """
 
 # --- Tier level constants ---
@@ -21,21 +23,29 @@ TIER_VERBOSE_LEVEL = 3
 # Functions where a single event provides immediate diagnostic value.
 # SnoopDOS-equivalent + atrace extensions. DEFAULT on trace start.
 TIER_BASIC = frozenset({
-    # dos.library (18)
+    # dos.library (19)
     "Open", "Close", "Lock", "DeleteFile", "Execute",
     "GetVar", "FindVar", "LoadSeg", "NewLoadSeg", "CreateDir",
     "MakeLink", "Rename", "RunCommand", "SetVar", "DeleteVar",
     "SystemTagList", "AddDosEntry", "CurrentDir",
+    "SetProtection",
     # exec.library (5)
     "OpenDevice", "CloseDevice", "OpenLibrary",
     "OpenResource", "FindResident",
-    # intuition.library (10)
+    # intuition.library (12)
     "OpenWindow", "CloseWindow", "OpenScreen", "CloseScreen",
     "ActivateWindow", "WindowToFront", "WindowToBack",
     "OpenWorkBench", "CloseWorkBench", "LockPubScreen",
+    "OpenWindowTagList", "OpenScreenTagList",
     # bsdsocket.library (10)
     "socket", "bind", "listen", "accept", "connect", "shutdown",
     "CloseSocket", "setsockopt", "getsockopt", "IoctlSocket",
+    # icon.library (5)
+    "GetDiskObject", "PutDiskObject", "FreeDiskObject",
+    "FindToolType", "MatchToolValue",
+    # workbench.library (6)
+    "AddAppIconA", "RemoveAppIcon", "AddAppWindowA",
+    "RemoveAppWindow", "AddAppMenuItemA", "RemoveAppMenuItem",
 })
 
 # --- Tier 2: Detail ---
@@ -44,10 +54,12 @@ TIER_DETAIL = frozenset({
     # exec.library (5)
     "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
     "CloseLibrary",
-    # dos.library (3)
+    # dos.library (4)
     "UnLock", "Examine", "Seek",
-    # intuition.library (1)
+    "UnLoadSeg",
+    # intuition.library (2)
     "ModifyIDCMP",
+    "UnlockPubScreen",
     # bsdsocket.library (2)
     "sendto", "recvfrom",
 })
@@ -57,20 +69,21 @@ TIER_DETAIL = frozenset({
 TIER_VERBOSE = frozenset({
     # dos.library (1)
     "ExNext",
-    # graphics.library (1)
-    "OpenFont",
+    # graphics.library (2)
+    "OpenFont", "CloseFont",
 })
 
 # --- Manual ---
 # Extreme event rate functions, only useful with task filtering.
 # Never auto-enabled by any tier.
 TIER_MANUAL = frozenset({
-    # exec.library (19)
+    # exec.library (21)
     "FindPort", "FindSemaphore", "FindTask",
     "PutMsg", "GetMsg", "ObtainSemaphore", "ReleaseSemaphore",
     "AllocMem", "FreeMem", "AllocVec", "FreeVec",
     "Wait", "Signal", "DoIO", "SendIO", "WaitIO", "AbortIO",
     "CheckIO", "ReplyMsg",
+    "AddPort", "WaitPort",
     # dos.library (2)
     "Read", "Write",
     # bsdsocket.library (3)
@@ -90,8 +103,8 @@ TIER_NAMES = {
 _ALL_FUNCTIONS = TIER_BASIC | TIER_DETAIL | TIER_VERBOSE | TIER_MANUAL
 
 # Module-level assertions: catch tier definition errors at import time.
-assert len(_ALL_FUNCTIONS) == 80, \
-    "Tier sets contain {} functions, expected 80".format(
+assert len(_ALL_FUNCTIONS) == 99, \
+    "Tier sets contain {} functions, expected 99".format(
         len(_ALL_FUNCTIONS))
 assert not (TIER_BASIC & TIER_DETAIL), "Basic/Detail overlap"
 assert not (TIER_BASIC & TIER_VERBOSE), "Basic/Verbose overlap"

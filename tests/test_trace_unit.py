@@ -1744,3 +1744,156 @@ class TestPhase5bHeaderComments:
         assert result is not None
         assert result["type"] == "comment"
         assert result["text"] == ""
+
+
+# ---------------------------------------------------------------------------
+# TestTraceRunStats -- Phase 10h: stats accumulation and preset tests
+# ---------------------------------------------------------------------------
+
+class TestTraceRunStats:
+    """Tests for trace_run stats accumulation and filter presets."""
+
+    def test_filter_preset_file_io(self):
+        """file-io preset expands to correct filter parameters."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["file-io"]
+        assert p["lib"] == "dos"
+        assert "Open" in p["func_list"]
+        assert "Close" in p["func_list"]
+        assert "SetProtection" in p["func_list"]
+
+    def test_filter_preset_lib_load(self):
+        """lib-load preset includes library management functions."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["lib-load"]
+        assert "OpenLibrary" in p["func_list"]
+        assert "CloseLibrary" in p["func_list"]
+
+    def test_filter_preset_network(self):
+        """network preset filters by bsdsocket library."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["network"]
+        assert p["lib"] == "bsdsocket"
+
+    def test_filter_preset_ipc(self):
+        """ipc preset includes message port functions."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["ipc"]
+        assert "FindPort" in p["func_list"]
+        assert "GetMsg" in p["func_list"]
+        assert "PutMsg" in p["func_list"]
+        assert "AddPort" in p["func_list"]
+
+    def test_filter_preset_errors_only(self):
+        """errors-only preset sets errors_only flag."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["errors-only"]
+        assert p["errors_only"] is True
+
+    def test_filter_preset_memory(self):
+        """memory preset includes memory allocation functions."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["memory"]
+        assert "AllocMem" in p["func_list"]
+        assert "FreeMem" in p["func_list"]
+        assert "AllocVec" in p["func_list"]
+        assert "FreeVec" in p["func_list"]
+
+    def test_filter_preset_window(self):
+        """window preset includes window and screen functions."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["window"]
+        assert "OpenWindow" in p["func_list"]
+        assert "CloseWindow" in p["func_list"]
+        assert "OpenWindowTagList" in p["func_list"]
+        assert "OpenScreenTagList" in p["func_list"]
+
+    def test_filter_preset_icon(self):
+        """icon preset filters by icon library."""
+        from amigactl import FILTER_PRESETS
+        p = FILTER_PRESETS["icon"]
+        assert p["lib"] == "icon"
+
+    def test_all_presets_have_valid_keys(self):
+        """All presets contain only recognized keys."""
+        from amigactl import FILTER_PRESETS
+        valid_keys = {"lib", "func_list", "errors_only"}
+        for name, preset in FILTER_PRESETS.items():
+            for key in preset:
+                assert key in valid_keys, (
+                    "Preset {!r} has unknown key {!r}".format(name, key))
+
+    def test_unknown_preset_raises_in_trace_run(self):
+        """Unknown preset name raises ValueError in trace_run."""
+        conn = _make_mock_conn()
+        conn._sock = mock.MagicMock()
+        with pytest.raises(ValueError, match="Unknown preset"):
+            conn.trace_run("C:test", lambda ev: None, preset="nonexistent")
+
+    def test_unknown_preset_raises_in_trace_start(self):
+        """Unknown preset name raises ValueError in trace_start."""
+        conn = _make_mock_conn()
+        conn._sock = mock.MagicMock()
+        with pytest.raises(ValueError, match="Unknown preset"):
+            conn.trace_start(lambda ev: None, preset="nonexistent")
+
+    def test_trace_run_stats_structure(self):
+        """trace_run returns result dict with stats sub-dict."""
+        # This test verifies the return structure using a mock that
+        # simulates the server side: OK, DATA events, END, sentinel.
+        conn = _make_mock_conn()
+        sock = conn._sock
+
+        # Simulate server responses: OK line, then 2 DATA events, END, sentinel
+        event_text_1 = '1\t12:00:00.001\tdos.Open\t[5] test\t"RAM:file",Read\t0x01234abc\tO'
+        event_text_2 = '2\t12:00:00.002\tdos.Open\t[5] test\t"RAM:missing",Read\tNULL\tE'
+        exit_text = "# PROCESS EXITED rc=0"
+
+        lines = [
+            "OK 42",
+            "DATA {}".format(len(event_text_1.encode("iso-8859-1"))),
+            event_text_1,
+            "DATA {}".format(len(event_text_2.encode("iso-8859-1"))),
+            event_text_2,
+            "DATA {}".format(len(exit_text.encode("iso-8859-1"))),
+            exit_text,
+            "END",
+            ".",
+        ]
+
+        # Build the byte buffer the mock socket will return
+        buf = bytearray()
+        for i, line in enumerate(lines):
+            if i in (2, 4, 6):
+                # These are raw DATA chunk payloads (no newline)
+                buf.extend(line.encode("iso-8859-1"))
+            else:
+                buf.extend((line + "\n").encode("iso-8859-1"))
+
+        # Create a position tracker for recv
+        pos = [0]
+        raw_buf = bytes(buf)
+
+        def mock_recv(n):
+            if pos[0] >= len(raw_buf):
+                return b""
+            chunk = raw_buf[pos[0]:pos[0] + n]
+            pos[0] += len(chunk)
+            return chunk
+
+        sock.recv = mock.MagicMock(side_effect=mock_recv)
+        sock.sendall = mock.MagicMock()
+        sock.gettimeout = mock.MagicMock(return_value=10)
+        sock.settimeout = mock.MagicMock()
+
+        events_received = []
+        result = conn.trace_run("C:test", lambda ev: events_received.append(ev))
+
+        assert result["proc_id"] == 42
+        assert result["rc"] == 0
+        assert "stats" in result
+        stats = result["stats"]
+        assert stats["total_events"] == 2
+        assert stats["by_function"]["Open"] == 2
+        assert stats["errors"] == 1
+        assert stats["error_functions"]["Open"] == 1

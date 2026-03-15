@@ -1588,6 +1588,10 @@ class TraceViewer:
             parts = ["TRACE " + tier_label + ": " + shown_text]
             if filter_parts:
                 parts.append(" | ".join(filter_parts))
+            if self.timestamp_mode == "relative":
+                parts.append("time:rel")
+            elif self.timestamp_mode == "delta":
+                parts.append("time:delta")
             parts.append(elapsed)
             text = " | ".join(parts)
 
@@ -1640,19 +1644,34 @@ class TraceViewer:
         else:
             errors_text = "[e] errors"
 
+        if self.timestamp_mode == "relative":
+            time_text = "[t] RELATIVE"
+        elif self.timestamp_mode == "delta":
+            time_text = "[t] DELTA"
+        else:
+            time_text = "[t] time"
+
         full = ("  [Tab] filters  [/] search  {}  {}  "
-                "{}  [c] clear  [S] save  [1/2/3] tier  [t] time  "
+                "{}  [c] clear  [S] save  [1/2/3] tier  {}  "
                 "[?] help  [q] quit").format(
-                    pause_text, stats_text, errors_text)
+                    pause_text, stats_text, errors_text, time_text)
 
         if len(full) <= self.term.cols:
             return full
 
         # Abbreviated
-        short = "[Tab]filt [/]srch {} {} {} [c] [S] [123] [t] [?] [q]".format(
+        if self.timestamp_mode == "relative":
+            time_short = "[t]REL"
+        elif self.timestamp_mode == "delta":
+            time_short = "[t]DELT"
+        else:
+            time_short = "[t]"
+
+        short = "[Tab]filt [/]srch {} {} {} [c] [S] [123] {} [?] [q]".format(
             "[p]PAUS" if self.paused else "[p]",
             "[s]STAT" if self.stats_mode else "[s]",
-            "[e]ERR" if self.errors_filter else "[e]")
+            "[e]ERR" if self.errors_filter else "[e]",
+            time_short)
 
         if len(short) <= self.term.cols:
             return short
@@ -2437,6 +2456,10 @@ class TraceViewer:
         idx = modes.index(self.timestamp_mode)
         self.timestamp_mode = modes[(idx + 1) % len(modes)]
         self._draw_status_bar()
+        if self.paused:
+            self._scroll_pause_buffer(0)
+        else:
+            self._rerender_from_scrollback()
 
     def _format_timestamp(self, event):
         """Format the event timestamp based on the current mode.

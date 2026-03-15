@@ -290,8 +290,22 @@ def _parse_trace_event(text):
     All keys are initialized to defaults so callers can access any key
     without checking for existence, even if the event line is malformed.
 
-    Returns a dict with keys: type, raw, seq, time, lib, func, task,
-    args, retval, status.
+    Guaranteed fields (stable API contract for agent consumers):
+
+    ========  ====  ===========  ==========================================
+    Field     Type  Default      Description
+    ========  ====  ===========  ==========================================
+    type      str   ``"event"``  Always ``"event"`` (comments: ``"comment"``)
+    raw       str   (input)      Raw event line for debugging
+    seq       int   ``0``        Sequence number (0 if unparseable)
+    time      str   ``""``       Timestamp string (empty if missing)
+    lib       str   ``""``       Library short name (empty if missing)
+    func      str   ``""``       Function name (empty if missing)
+    task      str   ``""``       Task identifier ``[pid] name``
+    args      str   ``""``       Formatted arguments (empty if missing)
+    retval    str   ``""``       Return value string (empty if missing)
+    status    str   ``"-"``      ``"O"`` ok, ``"E"`` error, ``"-"`` neutral
+    ========  ====  ===========  ==========================================
     """
     parts = text.split("\t")
     event = {

@@ -527,6 +527,102 @@ int stub_generate_and_install(
             var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
             /* .vol_done: */
             break;
+
+        case DEREF_NW_TITLE:
+            /* NewWindow->Title (offset 26)
+             * 36 bytes, 18 words.
+             * Same pattern as DEREF_LN_NAME but with offset 26. */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            var_buf[var_words++] = 0x2068;      /* movea.l 26(a0), a0    */
+            var_buf[var_words++] = 0x001A;      /* [26 = nw_Title offset]*/
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            break;
+
+        case DEREF_WIN_TITLE:
+            /* Window->Title (offset 32)
+             * 36 bytes, 18 words.
+             * Same pattern as DEREF_LN_NAME but with offset 32. */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            var_buf[var_words++] = 0x2068;      /* movea.l 32(a0), a0    */
+            var_buf[var_words++] = 0x0020;      /* [32 = win_Title ofs]  */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            break;
+
+        case DEREF_NS_TITLE:
+            /* NewScreen->DefaultTitle (offset 20)
+             * 36 bytes, 18 words.
+             * Same pattern as DEREF_LN_NAME but with offset 20. */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            var_buf[var_words++] = 0x2068;      /* movea.l 20(a0), a0    */
+            var_buf[var_words++] = 0x0014;      /* [20 = ns_DefaultTitle]*/
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            break;
+
+        case DEREF_SCR_TITLE:
+            /* Screen->Title (offset 22)
+             * 36 bytes, 18 words.
+             * Same pattern as DEREF_LN_NAME but with offset 22. */
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0   */
+            var_buf[var_words++] = (UWORD)frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6718;      /* beq.s +24 .skip_name  */
+            var_buf[var_words++] = 0x2068;      /* movea.l 22(a0), a0    */
+            var_buf[var_words++] = 0x0016;      /* [22 = scr_Title ofs]  */
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0              */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 .skip_name  */
+            var_buf[var_words++] = 0x43ED;      /* lea d16(a5), a1       */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x703E;      /* moveq #62, d0         */
+            var_buf[var_words++] = 0x12D8;      /* move.b (a0)+, (a1)+   */
+            var_buf[var_words++] = 0x57C8;      /* dbeq d0, .copy        */
+            var_buf[var_words++] = 0xFFFC;      /* displacement -4       */
+            var_buf[var_words++] = 0x4211;      /* clr.b (a1)            */
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 .done        */
+            var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            break;
         }
     } else if (patch->string_args != 0) {
         /* Count string arguments */

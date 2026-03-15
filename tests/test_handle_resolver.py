@@ -768,3 +768,53 @@ class TestSaveScrollback:
 
         msg = stub.term.write_hotkey_bar.call_args[0][0]
         assert "Saved 2 of 3 events" in msg
+
+
+# ---------------------------------------------------------------------------
+# HandleResolver in format_trace_event (Phase 10h)
+# ---------------------------------------------------------------------------
+
+class TestHandleResolverInFormatEvent:
+    """Test HandleResolver integration with format_trace_event."""
+
+    def test_close_annotation_in_format_output(self):
+        """format_trace_event annotates Close with path when
+        HandleResolver is provided."""
+        from amigactl.colors import ColorWriter, format_trace_event
+
+        cw = ColorWriter(force_color=False)
+        hr = HandleResolver()
+
+        # Track Open
+        open_ev = {
+            "seq": "1", "time": "12:00:00.001", "lib": "dos",
+            "func": "Open", "task": "[5] bbs",
+            "args": '"RAM:test",Read', "retval": "0x01234abc",
+            "status": "O",
+        }
+        # Format Open (this calls track internally)
+        format_trace_event(open_ev, cw, handle_resolver=hr)
+
+        # Format Close -- should include annotation
+        close_ev = {
+            "seq": "2", "time": "12:00:00.005", "lib": "dos",
+            "func": "Close", "task": "[5] bbs",
+            "args": "fh=0x1234abc", "retval": "OK",
+            "status": "O",
+        }
+        result = format_trace_event(close_ev, cw, handle_resolver=hr)
+        assert "RAM:test" in result
+
+    def test_no_annotation_without_resolver(self):
+        """format_trace_event without resolver does not annotate."""
+        from amigactl.colors import ColorWriter, format_trace_event
+
+        cw = ColorWriter(force_color=False)
+        close_ev = {
+            "seq": "2", "time": "12:00:00.005", "lib": "dos",
+            "func": "Close", "task": "[5] bbs",
+            "args": "fh=0x1234abc", "retval": "OK",
+            "status": "O",
+        }
+        result = format_trace_event(close_ev, cw)
+        assert "RAM:" not in result

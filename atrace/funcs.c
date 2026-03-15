@@ -1,13 +1,14 @@
 /*
  * atrace -- function table
  *
- * Phase 9: 80 functions (29 exec.library + 24 dos.library +
- *   11 intuition.library + 15 bsdsocket.library + 1 graphics.library).
+ * Phase 10: 99 functions (31 exec.library + 26 dos.library +
+ *   14 intuition.library + 15 bsdsocket.library + 2 graphics.library +
+ *   5 icon.library + 6 workbench.library).
  */
 
 #include "atrace.h"
 
-/* exec.library functions (29) */
+/* exec.library functions (31) */
 static struct func_info exec_funcs[] = {
     /* 0: FindPort(a1=name) -> d0=port */
     {
@@ -182,10 +183,22 @@ static struct func_info exec_funcs[] = {
         "ReplyMsg", -378, 1,
         { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
         REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 29: AddPort(a1=port) -> void */
+    {
+        "AddPort", -354, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_LN_NAME, 0, 0  /* indirect: port->mp_Node.ln_Name */
+    },
+    /* 30: WaitPort(a0=port) -> d0=message */
+    {
+        "WaitPort", -384, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_LN_NAME, 0, 0  /* indirect: port->mp_Node.ln_Name */
     }
 };
 
-/* dos.library functions (24) */
+/* dos.library functions (26) */
 static struct func_info dos_funcs[] = {
     /* 0: Open(d1=name, d2=accessMode) -> d0=fileHandle */
     {
@@ -330,52 +343,64 @@ static struct func_info dos_funcs[] = {
         "Seek", -66, 3,
         { REG_D1, REG_D2, REG_D3, 0, 0, 0, 0, 0 },
         REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 24: SetProtection(d1=name, d2=protect) -> d0=success */
+    {
+        "SetProtection", -186, 2,
+        { REG_D1, REG_D2, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x01, DEREF_NONE, 0, 0  /* string_args: bit 0 = arg0 (name) */
+    },
+    /* 25: UnLoadSeg(d1=seglist) -> void */
+    {
+        "UnLoadSeg", -156, 1,
+        { REG_D1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
     }
 };
 
-/* intuition.library functions (11) */
+/* intuition.library functions (14) */
 static struct func_info intuition_funcs[] = {
     /* 0: OpenWindow(a0=newWindow) -> d0=window */
     {
         "OpenWindow", -204, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_NW_TITLE, 0, 0
     },
     /* 1: CloseWindow(a0=window) -> void */
     {
         "CloseWindow", -72, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_WIN_TITLE, 0, 0
     },
     /* 2: OpenScreen(a0=newScreen) -> d0=screen */
     {
         "OpenScreen", -198, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_NS_TITLE, 0, 0
     },
     /* 3: CloseScreen(a0=screen) -> void */
     {
         "CloseScreen", -66, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_SCR_TITLE, 0, 0
     },
     /* 4: ActivateWindow(a0=window) -> void */
     {
         "ActivateWindow", -450, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_WIN_TITLE, 0, 0
     },
     /* 5: WindowToFront(a0=window) -> void */
     {
         "WindowToFront", -312, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_WIN_TITLE, 0, 0
     },
     /* 6: WindowToBack(a0=window) -> void */
     {
         "WindowToBack", -306, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_WIN_TITLE, 0, 0
     },
     /* 7: ModifyIDCMP(a0=window, d0=flags) -> void */
     {
@@ -400,6 +425,25 @@ static struct func_info intuition_funcs[] = {
         "LockPubScreen", -510, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
         REG_D0, 0x01, DEREF_NONE, REG_A0, 0  /* skip_null_arg = a0 */
+    },
+    /* 11: OpenWindowTagList(a0=newWindow, a1=tagList) -> d0=window */
+    {
+        "OpenWindowTagList", -606, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NW_TITLE, 0, 0
+    },
+    /* 12: OpenScreenTagList(a0=newScreen, a1=tagList) -> d0=screen */
+    {
+        "OpenScreenTagList", -612, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NS_TITLE, 0, 0
+    },
+    /* 13: UnlockPubScreen(a0=name, a1=screen) -> void */
+    {
+        "UnlockPubScreen", -516, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x01, DEREF_NONE, REG_A0, 0
+        /* string_args: bit 0 = arg0 (name), skip_null_arg = a0 */
     }
 };
 
@@ -504,13 +548,104 @@ static struct func_info bsdsocket_funcs[] = {
     }
 };
 
-/* graphics.library functions (1) */
+/* graphics.library functions (2) */
 static struct func_info graphics_funcs[] = {
     /* 0: OpenFont(a0=textAttr) -> d0=font */
     {
         "OpenFont", -72, 1,
         { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
         REG_D0, 0x00, DEREF_TEXTATTR, 0, 0
+    },
+    /* 1: CloseFont(a1=textFont) -> void */
+    {
+        "CloseFont", -78, 1,
+        { REG_A1, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
+    }
+};
+
+/* icon.library functions (5) */
+static struct func_info icon_funcs[] = {
+    /* 0: GetDiskObject(a0=name) -> d0=diskObj */
+    {
+        "GetDiskObject", -78, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x01, DEREF_NONE, 0, 0  /* string_args: bit 0 = arg0 (name) */
+    },
+    /* 1: PutDiskObject(a0=name, a1=diskObj) -> d0=success */
+    {
+        "PutDiskObject", -84, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x01, DEREF_NONE, 0, 0  /* string_args: bit 0 = arg0 (name) */
+    },
+    /* 2: FreeDiskObject(a0=diskObj) -> void */
+    {
+        "FreeDiskObject", -90, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 3: FindToolType(a0=toolTypeArray, a1=typeName) -> d0=value */
+    {
+        "FindToolType", -96, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x02, DEREF_NONE, 0, 0  /* string_args: bit 1 = arg1 (typeName) */
+    },
+    /* 4: MatchToolValue(a0=typeString, a1=value) -> d0=match */
+    {
+        "MatchToolValue", -102, 2,
+        { REG_A0, REG_A1, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0  /* no string capture */
+    }
+};
+
+/* workbench.library functions (6) */
+static struct func_info workbench_funcs[] = {
+    /* 0: AddAppIconA(d0=id, d1=userdata, a0=text, a1=msgport,
+     *               a2=lock, a3=diskobj, a4=taglist) -> d0=appIcon
+     * 7 args total, only first 4 captured: id, userdata, text, msgport.
+     * arg_count=7 (real count); codegen caps capture at min(arg_count, 4).
+     * string_args bit 2 = arg2 (text, which is a0 in capture order). */
+    {
+        "AddAppIconA", -60, 7,
+        { REG_D0, REG_D1, REG_A0, REG_A1, 0, 0, 0, 0 },
+        REG_D0, 0x04, DEREF_NONE, 0, 0  /* string_args: bit 2 = arg2 (text) */
+    },
+    /* 1: RemoveAppIcon(a0=appIcon) -> d0=success */
+    {
+        "RemoveAppIcon", -66, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 2: AddAppWindowA(d0=id, d1=userdata, a0=window, a1=msgport,
+     *                  a2=taglist) -> d0=appWindow
+     * 5 args total, only first 4 captured: id, userdata, window, msgport.
+     * arg_count=5 (real count); codegen caps capture at min(arg_count, 4). */
+    {
+        "AddAppWindowA", -48, 5,
+        { REG_D0, REG_D1, REG_A0, REG_A1, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 3: RemoveAppWindow(a0=appWindow) -> d0=success */
+    {
+        "RemoveAppWindow", -54, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
+    },
+    /* 4: AddAppMenuItemA(d0=id, d1=userdata, a0=text, a1=msgport,
+     *                    a2=taglist) -> d0=appMenuItem
+     * 5 args total, only first 4 captured: id, userdata, text, msgport.
+     * arg_count=5 (real count); codegen caps capture at min(arg_count, 4).
+     * string_args bit 2 = arg2 (text, which is a0 in capture order). */
+    {
+        "AddAppMenuItemA", -72, 5,
+        { REG_D0, REG_D1, REG_A0, REG_A1, 0, 0, 0, 0 },
+        REG_D0, 0x04, DEREF_NONE, 0, 0  /* string_args: bit 2 = arg2 (text) */
+    },
+    /* 5: RemoveAppMenuItem(a0=appMenuItem) -> d0=success */
+    {
+        "RemoveAppMenuItem", -78, 1,
+        { REG_A0, 0, 0, 0, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_NONE, 0, 0
     }
 };
 
@@ -519,38 +654,52 @@ struct lib_info atrace_libs[] = {
     {
         "exec.library",     /* name */
         exec_funcs,         /* funcs */
-        29,                 /* func_count (was 20) */
+        31,                 /* func_count: was 29, now 31 */
         LIB_EXEC,           /* lib_id = 0 */
         0                   /* padding */
     },
     {
         "dos.library",      /* name */
         dos_funcs,          /* funcs */
-        24,                 /* func_count (was 20) */
+        26,                 /* func_count: was 24, now 26 */
         LIB_DOS,            /* lib_id = 1 */
         0                   /* padding */
     },
     {
         "intuition.library", /* name */
         intuition_funcs,     /* funcs */
-        11,                  /* func_count (was 10) */
+        14,                  /* func_count: was 11, now 14 */
         LIB_INTUITION,       /* lib_id = 2 */
         0                    /* padding */
     },
     {
         "bsdsocket.library", /* name */
         bsdsocket_funcs,     /* funcs */
-        15,                  /* func_count */
+        15,                  /* func_count: unchanged */
         LIB_BSDSOCKET,       /* lib_id = 3 */
         0                    /* padding */
     },
     {
         "graphics.library",  /* name */
         graphics_funcs,      /* funcs */
-        1,                   /* func_count */
+        2,                   /* func_count: was 1, now 2 */
         LIB_GRAPHICS,        /* lib_id = 4 */
+        0                    /* padding */
+    },
+    {
+        "icon.library",      /* name */
+        icon_funcs,          /* funcs */
+        5,                   /* func_count */
+        LIB_ICON,            /* lib_id = 5 */
+        0                    /* padding */
+    },
+    {
+        "workbench.library", /* name */
+        workbench_funcs,     /* funcs */
+        6,                   /* func_count */
+        LIB_WORKBENCH,       /* lib_id = 6 */
         0                    /* padding */
     }
 };
 
-int atrace_lib_count = 5;
+int atrace_lib_count = 7;   /* was 5 */

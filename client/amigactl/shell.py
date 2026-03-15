@@ -14,6 +14,7 @@ from . import (
     AmigaConnection, AmigactlError, NotFoundError, ProtocolError,
 )
 from .colors import ColorWriter, TRACE_HEADER, format_trace_event
+from .trace_ui import HandleResolver
 
 
 # ---------------------------------------------------------------------------
@@ -3158,8 +3159,13 @@ class AmigaShell(cmd.Cmd):
                             self.conn.trace_enable(
                                 funcs=sorted(to_enable))
                     print(TRACE_HEADER)
+                    resolver = HandleResolver()
+
                     def trace_callback(event):
-                        print(format_trace_event(event, self.cw))
+                        line = format_trace_event(event, self.cw,
+                                                  handle_resolver=resolver)
+                        if line is not None:
+                            print(line)
                     self.conn.trace_start(trace_callback, **kwargs)
             except KeyboardInterrupt:
                 try:
@@ -3263,8 +3269,13 @@ class AmigaShell(cmd.Cmd):
                                 funcs=sorted(to_enable))
                     print(TRACE_HEADER)
 
+                    resolver = HandleResolver()
+
                     def trace_callback(event):
-                        print(format_trace_event(event, self.cw))
+                        line = format_trace_event(event, self.cw,
+                                                  handle_resolver=resolver)
+                        if line is not None:
+                            print(line)
 
                     result = self.conn.trace_run(command, trace_callback,
                                                  **kwargs)

@@ -66,7 +66,7 @@ extern int stub_generate_and_install(
  * to match the union of Detail + Verbose + Manual tiers.
  */
 
-/* Detail tier: deeper debugging, noisy for casual use (11 functions) */
+/* Detail tier: deeper debugging, noisy for casual use (13 functions) */
 static const char *tier_detail_funcs[] = {
     /* exec.library */
     "AllocSignal", "FreeSignal", "CreateMsgPort", "DeleteMsgPort",
@@ -77,19 +77,23 @@ static const char *tier_detail_funcs[] = {
     "ModifyIDCMP",
     /* bsdsocket.library */
     "sendto", "recvfrom",
+    /* Phase 10 additions (2) */
+    "UnLoadSeg", "UnlockPubScreen",
     NULL  /* sentinel */
 };
 
-/* Verbose tier: high-volume burst events (2 functions) */
+/* Verbose tier: high-volume burst events (3 functions) */
 static const char *tier_verbose_funcs[] = {
     /* dos.library */
     "ExNext",
     /* graphics.library */
     "OpenFont",
+    /* Phase 10 addition (1) */
+    "CloseFont",
     NULL  /* sentinel */
 };
 
-/* Manual tier: extreme event rate, task filter only (24 functions) */
+/* Manual tier: extreme event rate, task filter only (26 functions) */
 static const char *tier_manual_funcs[] = {
     /* exec.library */
     "FindPort", "FindSemaphore", "FindTask",
@@ -102,6 +106,8 @@ static const char *tier_manual_funcs[] = {
     "Read", "Write",
     /* bsdsocket.library */
     "send", "recv", "WaitSelect",
+    /* Phase 10 additions */
+    "AddPort", "WaitPort",
     NULL  /* sentinel */
 };
 
@@ -504,11 +510,12 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     return RETURN_OK;
 }
 
-/* Short library names for STATUS display, indexed by lib_id (0-4).
- * If future phases add libraries with lib_id >= 5, this array must
+/* Short library names for STATUS display, indexed by lib_id (0-6).
+ * If future phases add libraries with lib_id >= 7, this array must
  * be extended.  The array size implicitly limits the maximum lib_id. */
 static const char *lib_short_names[] = {
-    "exec", "dos", "intuition", "bsdsocket", "graphics"
+    "exec", "dos", "intuition", "bsdsocket", "graphics",
+    "icon", "workbench"
 };
 
 /* ---- STATUS: print current state ---- */

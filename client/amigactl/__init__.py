@@ -36,7 +36,48 @@ __all__ = [
     "InternalError",
     "ProtocolError",
     "ServerError",
+    "FILTER_PRESETS",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Filter presets
+# ---------------------------------------------------------------------------
+
+FILTER_PRESETS = {
+    "file-io": {
+        "lib": "dos",
+        "func_list": ["Open", "Close", "Lock", "DeleteFile",
+                       "CreateDir", "Rename", "MakeLink",
+                       "SetProtection"],
+    },
+    "lib-load": {
+        "func_list": ["OpenLibrary", "OpenDevice", "OpenResource",
+                       "CloseLibrary", "CloseDevice"],
+    },
+    "network": {
+        "lib": "bsdsocket",
+    },
+    "ipc": {
+        "func_list": ["FindPort", "GetMsg", "PutMsg",
+                       "ObtainSemaphore", "ReleaseSemaphore",
+                       "AddPort", "WaitPort"],
+    },
+    "errors-only": {
+        "errors_only": True,
+    },
+    "memory": {
+        "func_list": ["AllocMem", "FreeMem", "AllocVec", "FreeVec"],
+    },
+    "window": {
+        "func_list": ["OpenWindow", "CloseWindow", "OpenScreen",
+                       "CloseScreen", "OpenWindowTagList",
+                       "OpenScreenTagList", "ActivateWindow"],
+    },
+    "icon": {
+        "lib": "icon",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1305,8 +1346,8 @@ class AmigaConnection:
         return result
 
     def trace_start(self, callback, lib=None, func=None, proc=None,
-                    errors_only=False):
-        # type: (Callable, Optional[str], Optional[str], Optional[str], bool) -> None
+                    errors_only=None, preset=None):
+        # type: (Callable, Optional[str], Optional[str], Optional[str], Optional[bool], Optional[str]) -> None
         """Start a trace event stream.
 
         callback(event_dict) is called for each trace event.
@@ -1317,9 +1358,34 @@ class AmigaConnection:
 
         Does NOT catch KeyboardInterrupt -- the caller should catch it
         and call stop_trace() to terminate cleanly.
+
+        Args:
+            callback: Function called with each event dict.
+            lib: Optional library filter (e.g. "dos").
+            func: Optional function filter (e.g. "Open").
+            proc: Optional process filter (e.g. "bbs").
+            errors_only: If True, only show error returns.
+            preset: Optional filter preset name from FILTER_PRESETS.
         """
         if self._sock is None:
             raise ProtocolError("Not connected")
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}. Available: {}".format(
+                    preset, ", ".join(sorted(FILTER_PRESETS))))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                # Join function list for FUNC= filter
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
 
         cmd = "TRACE START"
         if lib:
@@ -1426,8 +1492,8 @@ class AmigaConnection:
             self._sock.settimeout(old_timeout)
 
     def trace_run(self, command, callback, lib=None, func=None,
-                  errors_only=False, cd=None):
-        # type: (str, Callable, Optional[str], Optional[str], bool, Optional[str]) -> dict
+                  errors_only=None, cd=None, preset=None):
+        # type: (str, Callable, Optional[str], Optional[str], Optional[bool], Optional[str], Optional[str]) -> dict
         """Launch a program and trace its library calls.
 
         callback(event_dict) is called for each trace event.
@@ -1436,9 +1502,21 @@ class AmigaConnection:
         The stream auto-terminates when the process exits.  The final
         callback receives a comment event with text "PROCESS EXITED rc=N".
 
+        Note: trace_run() does not accept a ``proc`` parameter because
+        TRACE RUN already filters by the launched process automatically.
+        Presets that contain only ``lib``, ``func_list``, or
+        ``errors_only`` keys work correctly with trace_run().  Presets
+        should not contain ``proc`` filters -- proc filtering is only
+        meaningful for trace_start()/trace_events().
+
         Returns a dict with keys:
             proc_id (int) -- daemon-assigned process ID
             rc (int or None) -- process exit code (from the exit comment)
+            stats (dict) -- summary statistics:
+                total_events (int) -- total events received
+                by_function (dict) -- {func_name: count}
+                errors (int) -- total error events
+                error_functions (dict) -- {func_name: error_count}
 
         Does NOT catch KeyboardInterrupt -- the caller should catch it
         and call stop_trace() to terminate cleanly.
@@ -1450,9 +1528,27 @@ class AmigaConnection:
             func: Optional function filter (e.g. "Open").
             errors_only: If True, only show error returns.
             cd: Optional working directory for the command.
+            preset: Optional filter preset name from FILTER_PRESETS.
         """
         if self._sock is None:
             raise ProtocolError("Not connected")
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}. Available: {}".format(
+                    preset, ", ".join(sorted(FILTER_PRESETS))))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                # Join function list for FUNC= filter
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
 
         cmd = "TRACE RUN"
         if lib:
@@ -1485,6 +1581,14 @@ class AmigaConnection:
             except ValueError:
                 pass
 
+        # Initialize stats
+        stats = {
+            "total_events": 0,
+            "by_function": {},
+            "errors": 0,
+            "error_functions": {},
+        }
+
         # Stream events (same loop as trace_start)
         rc = None
         old_timeout = self._sock.gettimeout()
@@ -1515,6 +1619,15 @@ class AmigaConnection:
                         })
                     else:
                         event = _parse_trace_event(text)
+                        # Accumulate stats
+                        stats["total_events"] += 1
+                        func_name = event.get("func", "")
+                        stats["by_function"][func_name] = \
+                            stats["by_function"].get(func_name, 0) + 1
+                        if event.get("status") == "E":
+                            stats["errors"] += 1
+                            stats["error_functions"][func_name] = \
+                                stats["error_functions"].get(func_name, 0) + 1
                         callback(event)
                 elif line == "END":
                     sentinel = read_line(self._sock)
@@ -1522,7 +1635,7 @@ class AmigaConnection:
                         raise ProtocolError(
                             "Expected sentinel, got: {!r}".format(
                                 sentinel))
-                    return {"proc_id": proc_id, "rc": rc}
+                    return {"proc_id": proc_id, "rc": rc, "stats": stats}
                 elif line == "ERR" or line.startswith("ERR "):
                     sentinel = read_line(self._sock)
                     _raise_for_error(line[4:])
@@ -1532,6 +1645,178 @@ class AmigaConnection:
                             line))
         finally:
             self._sock.settimeout(old_timeout)
+
+    def trace_events(self, lib=None, func=None, proc=None,
+                     errors_only=None, preset=None):
+        """Yield trace events as dicts from a TRACE START session.
+
+        Usage::
+
+            with AmigaConnection("host") as conn:
+                for event in conn.trace_events(lib="dos"):
+                    print(event["func"], event["args"])
+
+        The generator yields event dicts.  When the caller breaks out
+        of the loop or the generator is garbage-collected, the trace
+        is stopped automatically.
+
+        Warning: This uses a second connection internally for stop_trace()
+        because the primary connection is occupied by the streaming session.
+        The caller must ensure the daemon can accept an additional connection.
+
+        Args:
+            lib: Optional library filter.
+            func: Optional function filter.
+            proc: Optional process filter.
+            errors_only: If True, only yield error events.
+            preset: Optional filter preset name.
+        """
+        import collections
+        import threading
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}".format(preset))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
+
+        queue = collections.deque()
+        done = threading.Event()
+        error_holder = [None]
+
+        def collector(event):
+            queue.append(event)
+
+        def run_trace():
+            try:
+                self.trace_start(collector, lib=lib, func=func,
+                                 proc=proc, errors_only=errors_only)
+            except Exception as e:
+                error_holder[0] = e
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=run_trace, daemon=True)
+        thread.start()
+
+        try:
+            while not done.is_set() or queue:
+                while queue:
+                    yield queue.popleft()
+                if not done.is_set():
+                    done.wait(timeout=0.01)
+            if error_holder[0]:
+                raise error_holder[0]
+        finally:
+            # Stop the trace -- requires a separate connection because
+            # the primary socket is blocking in trace_start()
+            stop_conn = None
+            try:
+                stop_conn = AmigaConnection(self.host, self.port)
+                stop_conn.connect()
+                stop_conn.stop_trace()
+            except Exception:
+                pass  # Best-effort cleanup
+            finally:
+                if stop_conn is not None:
+                    try:
+                        stop_conn.close()
+                    except Exception:
+                        pass
+            thread.join(timeout=5)
+            # If the thread is still alive after join timeout (e.g., daemon
+            # unreachable so stop_trace failed and trace_start is blocked on
+            # socket recv), the background thread is orphaned. Close the
+            # primary socket as a fallback to unblock the recv.
+            if thread.is_alive():
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+
+    def trace_analyze(self, command, max_events=10000, cd=None,
+                      lib=None, func=None, errors_only=False,
+                      preset=None):
+        """Run a command under trace and return structured analysis.
+
+        This is a convenience method that combines trace_run() with
+        post-processing to produce a diagnostic summary.
+
+        Args:
+            command: AmigaOS command to trace.
+            max_events: Maximum events to capture (safety limit).
+            cd: Optional working directory.
+            lib: Optional library filter (passed to trace_run).
+            func: Optional function filter (passed to trace_run).
+            errors_only: If True, only capture error events
+                (passed to trace_run).
+            preset: Optional filter preset name (passed to trace_run).
+
+        Returns:
+            dict with keys:
+                events: list of event dicts (up to max_events)
+                stats: summary statistics (same as trace_run)
+                errors: list of error event dicts
+                file_access: list of unique files accessed
+                lib_opens: list of libraries opened
+                rc: process exit code
+        """
+        events = []
+        error_events = []
+        files_accessed = set()
+        libs_opened = set()
+        event_count = [0]
+
+        def collector(event):
+            if event.get("type") == "comment":
+                return
+            event_count[0] += 1
+            if event_count[0] <= max_events:
+                events.append(event)
+
+            # Collect error events
+            if event.get("status") == "E":
+                error_events.append(event)
+
+            # Collect file access
+            fn = event.get("func", "")
+            args = event.get("args", "")
+            if fn in ("Open", "Lock", "DeleteFile", "CreateDir",
+                         "SetProtection", "GetDiskObject"):
+                # Extract quoted filename from args
+                if args.startswith('"'):
+                    end = args.find('"', 1)
+                    if end > 0:
+                        files_accessed.add(args[1:end])
+
+            # Collect library opens
+            if fn == "OpenLibrary":
+                if args.startswith('"'):
+                    end = args.find('"', 1)
+                    if end > 0:
+                        libs_opened.add(args[1:end])
+
+        result = self.trace_run(command, collector, lib=lib, func=func,
+                                errors_only=errors_only, cd=cd,
+                                preset=preset)
+
+        return {
+            "events": events,
+            "stats": result.get("stats", {}),
+            "errors": error_events,
+            "file_access": sorted(files_accessed),
+            "lib_opens": sorted(libs_opened),
+            "rc": result.get("rc"),
+        }
 
     def trace_start_raw(self, lib=None, func=None, proc=None,
                         errors_only=False):

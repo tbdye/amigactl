@@ -99,20 +99,20 @@ class TestTraceStatus:
         assert "buffer_used" in status
 
     def test_status_field_types(self, conn):
-        """Numeric fields are ints, booleans are bools, patches in (80, 65)."""
+        """Numeric fields are ints, booleans are bools, patches in (99, 84)."""
         status = conn.trace_status()
         assert isinstance(status["loaded"], bool)
         assert isinstance(status["enabled"], bool)
         assert isinstance(status["patches"], int)
         assert isinstance(status["events_produced"], int)
-        assert status["patches"] in (80, 65)
+        assert status["patches"] in (99, 84)
         assert status["buffer_capacity"] > 0
 
     def test_status_patch_list(self, conn):
-        """patch_list has 80 or 65 entries, each with name and enabled bool."""
+        """patch_list has 99 or 84 entries, each with name and enabled bool."""
         status = conn.trace_status()
         assert "patch_list" in status
-        assert len(status["patch_list"]) in (80, 65)
+        assert len(status["patch_list"]) in (99, 84)
         for entry in status["patch_list"]:
             assert "name" in entry
             assert "enabled" in entry
@@ -618,7 +618,7 @@ class TestTraceRun:
 class TestNoiseDefaults:
     """Tests for noise function auto-disable defaults (Phase 4/9c).
 
-    After loading atrace, 37 non-Basic tier functions should be
+    After loading atrace, 42 non-Basic tier functions should be
     disabled by default.  These tests verify the default state and
     user override behavior.
     """
@@ -648,21 +648,24 @@ class TestNoiseDefaults:
             "exec.DoIO", "exec.SendIO", "exec.WaitIO",
             "exec.AbortIO", "exec.CheckIO",
             "exec.ReplyMsg",
+            "exec.AddPort", "exec.WaitPort",
             # dos.library -- TIER_DETAIL
             "dos.UnLock", "dos.Examine", "dos.Seek",
+            "dos.UnLoadSeg",
             # dos.library -- TIER_VERBOSE
             "dos.ExNext",
             # dos.library -- TIER_MANUAL
             "dos.Read", "dos.Write",
             # intuition.library -- TIER_DETAIL
             "intuition.ModifyIDCMP",
+            "intuition.UnlockPubScreen",
             # bsdsocket.library -- TIER_DETAIL
             "bsdsocket.sendto", "bsdsocket.recvfrom",
             # bsdsocket.library -- TIER_MANUAL
             "bsdsocket.send", "bsdsocket.recv",
             "bsdsocket.WaitSelect",
             # graphics.library -- TIER_VERBOSE
-            "graphics.OpenFont",
+            "graphics.OpenFont", "graphics.CloseFont",
         }
         for patch in patches:
             if patch["name"] in noise_names:
@@ -2770,14 +2773,14 @@ class TestBsdSocketFilter:
 # ---------------------------------------------------------------------------
 
 class TestPatchCount:
-    """Verify patch count reflects Phase 9 additions."""
+    """Verify patch count reflects Phase 10 additions."""
 
-    def test_80_patches(self, conn):
-        """TRACE STATUS shows 80 patches (or 65 if no bsdsocket)."""
+    def test_99_patches(self, conn):
+        """TRACE STATUS shows 99 patches (or 84 if no bsdsocket)."""
         status = conn.trace_status()
         patches = status.get("patches", 0)
-        assert patches in (80, 65), (
-            "Expected 80 patches (or 65 without bsdsocket), got {}".format(
+        assert patches in (99, 84), (
+            "Expected 99 patches (or 84 without bsdsocket), got {}".format(
                 patches))
 
     def test_bsdsocket_in_patch_list(self, conn):

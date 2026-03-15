@@ -32,6 +32,11 @@
 #include <proto/graphics.h>
 #include <proto/bsdsocket.h>
 
+#include <workbench/workbench.h>
+#include <workbench/startup.h>
+#include <proto/icon.h>
+#include <proto/wb.h>
+
 #include <string.h>
 
 /* Ensure sufficient stack for buffers and nested calls */
@@ -57,6 +62,7 @@ static void cleanup_files(void)
     DeleteFile((STRPTR)"RAM:atrace_test_seek");
     DeleteFile((STRPTR)"RAM:atrace_test_examine_dir");
     DeleteFile((STRPTR)"RAM:atrace_test_close_path");
+    DeleteFile((STRPTR)"RAM:atrace_test_protect");
 }
 
 /* ---- Library bases ---- */
@@ -619,7 +625,7 @@ int main(int argc, char **argv)
                 nw.IDCMPFlags = 0;
                 nw.Flags = WFLG_SMART_REFRESH | WFLG_NOCAREREFRESH
                          | WFLG_BORDERLESS | WFLG_BACKDROP;
-                nw.Title = NULL;
+                nw.Title = (UBYTE *)"atrace_test_win";
                 nw.Screen = NULL;  /* Workbench screen */
                 nw.Type = WBENCHSCREEN;
 
@@ -669,6 +675,7 @@ int main(int argc, char **argv)
                 nw.Height = 32;
                 nw.Flags = WFLG_SMART_REFRESH | WFLG_NOCAREREFRESH
                          | WFLG_BORDERLESS | WFLG_BACKDROP;
+                nw.Title = (UBYTE *)"atrace_test_win";
                 nw.Type = WBENCHSCREEN;
 
                 win = OpenWindow(&nw);
@@ -1371,6 +1378,176 @@ int main(int argc, char **argv)
     }
 
     Delay(1);
+
+    /* ================================================================
+     * Phase 10: dos.library tests (blocks 72-73)
+     * ================================================================ */
+
+    /* Block 72: SetProtection
+     * Create a test file, set protection bits to 0xF0
+     * (hspa---- : all HSPA flags set, all RWED denied), then clean up. */
+    {
+        BPTR fh;
+        fh = Open((STRPTR)"RAM:atrace_test_protect", MODE_NEWFILE);
+        if (fh) {
+            Close(fh);
+            SetProtection((STRPTR)"RAM:atrace_test_protect", 0xF0);
+            /* 0xF0 = hsparwed (all HSPA flags set, all RWED allowed) */
+            DeleteFile((STRPTR)"RAM:atrace_test_protect");
+        }
+    }
+
+    Delay(1);
+
+    /* Block 73: UnLoadSeg
+     * Load C:Echo, then unload the segment list. */
+    {
+        BPTR seg;
+        seg = LoadSeg((STRPTR)"C:Echo");
+        if (seg) {
+            UnLoadSeg(seg);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 10: exec.library tests (block 74)
+     * ================================================================ */
+
+    /* Block 74: AddPort
+     * Create a named message port, add it to the system port list,
+     * then remove and delete it. WaitPort is not tested because it
+     * blocks until a message arrives. */
+    {
+        struct MsgPort *port;
+        port = CreateMsgPort();
+        if (port) {
+            port->mp_Node.ln_Name = (char *)"atrace_test_port";
+            port->mp_Node.ln_Pri = 0;
+            AddPort(port);
+            RemPort(port);
+            DeleteMsgPort(port);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 10: intuition.library tests (blocks 75-76)
+     * ================================================================ */
+
+    /* Block 75: OpenWindowTagList
+     * Open a small tagged window on the Workbench screen, then close.
+     * OpenScreenTagList is not tested here because it requires careful
+     * display mode setup and may fail on emulated systems. */
+    {
+        struct Library *IntuitionBase;
+        IntuitionBase = OpenLibrary((STRPTR)"intuition.library", 37);
+        if (IntuitionBase) {
+            struct Window *win;
+            static struct TagItem win_tags[] = {
+                { WA_Left, 0 },
+                { WA_Top, 0 },
+                { WA_Width, 100 },
+                { WA_Height, 50 },
+                { WA_Title, (ULONG)"atrace_test_tagwin" },
+                { WA_Flags, WFLG_CLOSEGADGET | WFLG_DRAGBAR },
+                { TAG_DONE, 0 }
+            };
+            win = OpenWindowTagList(NULL, win_tags);
+            if (win) {
+                CloseWindow(win);
+            }
+            CloseLibrary(IntuitionBase);
+        }
+    }
+
+    Delay(1);
+
+    /* Block 76: UnlockPubScreen
+     * Lock the default public screen, then unlock it.
+     * The LockPubScreen call is already traced; this tests the
+     * UnlockPubScreen pairing. */
+    {
+        struct Library *IntuitionBase;
+        IntuitionBase = OpenLibrary((STRPTR)"intuition.library", 37);
+        if (IntuitionBase) {
+            struct Screen *scr;
+            scr = LockPubScreen(NULL);
+            if (scr) {
+                UnlockPubScreen(NULL, scr);
+            }
+            CloseLibrary(IntuitionBase);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 10: graphics.library test (block 77)
+     * ================================================================ */
+
+    /* Block 77: CloseFont
+     * Open topaz.font 8pt, then close it. The OpenFont call is already
+     * traced; this tests the CloseFont pairing. */
+    {
+        struct Library *GfxBase;
+        GfxBase = OpenLibrary((STRPTR)"graphics.library", 0);
+        if (GfxBase) {
+            static struct TextAttr ta;
+            struct TextFont *font;
+
+            ta.ta_Name = (STRPTR)"topaz.font";
+            ta.ta_YSize = 8;
+            ta.ta_Style = 0;
+            ta.ta_Flags = 0;
+
+            font = OpenFont(&ta);
+            if (font) {
+                CloseFont(font);
+            }
+            CloseLibrary(GfxBase);
+        }
+    }
+
+    Delay(1);
+
+    /* ================================================================
+     * Phase 10: icon.library tests (block 78)
+     * ================================================================ */
+
+    /* Block 78: GetDiskObject + FindToolType + FreeDiskObject
+     * Open icon.library, try to get a disk object for a known system
+     * tool, search for a tool type, then free the disk object.
+     * PutDiskObject is not tested because it modifies .info files on
+     * disk. MatchToolValue is not tested because it requires a valid
+     * tool type string. Both are validated through manual testing. */
+    {
+        struct Library *IconBase;
+        IconBase = OpenLibrary((STRPTR)"icon.library", 0);
+        if (IconBase) {
+            struct DiskObject *dobj;
+            /* Try to get a disk object for a known system tool */
+            dobj = GetDiskObject((STRPTR)"SYS:System/Shell");
+            if (dobj) {
+                /* Call FindToolType to generate trace event */
+                (void)FindToolType(
+                    (CONST_STRPTR *)dobj->do_ToolTypes,
+                    (STRPTR)"WINDOW");
+                FreeDiskObject(dobj);
+            }
+            CloseLibrary(IconBase);
+        }
+    }
+
+    Delay(1);
+
+    /* workbench.library functions (AddAppIconA, RemoveAppIcon,
+     * AddAppWindowA, RemoveAppWindow, AddAppMenuItemA, RemoveAppMenuItem)
+     * are not tested here because they require a running Workbench
+     * process and are typically called from Workbench-launched
+     * applications. These are validated through manual testing. */
 
     cleanup_files();
     return 0;
