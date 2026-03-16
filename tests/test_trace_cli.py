@@ -58,7 +58,7 @@ def _make_args(**kwargs):
         "cd": None,
         "tier": None,
         "funcs": None,
-        "command": [],
+        "cmd": [],
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -163,7 +163,7 @@ class TestTraceRunCLI:
     def test_run_requires_command(self, capsys):
         """trace run with empty command shows usage error and exits."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=[])
+        args = _make_args(trace_cmd="run", cmd=[])
         with pytest.raises(SystemExit) as exc_info:
             _run_cmd_trace(conn, args)
         assert exc_info.value.code == 1
@@ -173,7 +173,7 @@ class TestTraceRunCLI:
     def test_run_strips_separator(self, capsys):
         """trace run with -- separator strips it before passing command."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=["--", "C:atrace_test"])
+        args = _make_args(trace_cmd="run", cmd=["--", "C:atrace_test"])
         _run_cmd_trace(conn, args)
         # The command passed to trace_run should be "C:atrace_test"
         call_args = conn.trace_run.call_args
@@ -182,7 +182,7 @@ class TestTraceRunCLI:
     def test_run_passes_lib_filter(self, capsys):
         """trace run --lib=dos passes lib filter to trace_run."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=["C:test"], lib="dos")
+        args = _make_args(trace_cmd="run", cmd=["C:test"], lib="dos")
         _run_cmd_trace(conn, args)
         call_kwargs = conn.trace_run.call_args[1]
         assert call_kwargs.get("lib") == "dos"
@@ -190,7 +190,7 @@ class TestTraceRunCLI:
     def test_run_passes_func_filter(self, capsys):
         """trace run --func=Open passes func filter to trace_run."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=["C:test"], func="Open")
+        args = _make_args(trace_cmd="run", cmd=["C:test"], func="Open")
         _run_cmd_trace(conn, args)
         call_kwargs = conn.trace_run.call_args[1]
         assert call_kwargs.get("func") == "Open"
@@ -198,7 +198,7 @@ class TestTraceRunCLI:
     def test_run_passes_errors_flag(self, capsys):
         """trace run --errors passes errors_only=True to trace_run."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=["C:test"], errors=True)
+        args = _make_args(trace_cmd="run", cmd=["C:test"], errors=True)
         _run_cmd_trace(conn, args)
         call_kwargs = conn.trace_run.call_args[1]
         assert call_kwargs.get("errors_only") is True
@@ -206,7 +206,7 @@ class TestTraceRunCLI:
     def test_run_passes_cd(self, capsys):
         """trace run --cd=RAM: passes cd to trace_run."""
         conn = _make_mock_conn()
-        args = _make_args(trace_cmd="run", command=["C:test"], cd="RAM:")
+        args = _make_args(trace_cmd="run", cmd=["C:test"], cd="RAM:")
         _run_cmd_trace(conn, args)
         call_kwargs = conn.trace_run.call_args[1]
         assert call_kwargs.get("cd") == "RAM:"
@@ -219,7 +219,7 @@ class TestTraceRunCLI:
             "stats": {"total_events": 0, "by_function": {},
                       "errors": 0, "error_functions": {}},
         }
-        args = _make_args(trace_cmd="run", command=["C:failing_cmd"])
+        args = _make_args(trace_cmd="run", cmd=["C:failing_cmd"])
         with pytest.raises(SystemExit) as exc_info:
             _run_cmd_trace(conn, args)
         assert exc_info.value.code == 20

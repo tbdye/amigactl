@@ -3079,50 +3079,92 @@ class TestBsdSocket:
         assert "fd=" in evts[0].get("args", "")
         assert "req=" in evts[0].get("args", "")
 
-    def test_sendto_event(self, trace_events):
-        """sendto() produces event with fd, len, flags args."""
-        evts = [e for e in trace_events
+    def test_sendto_not_at_basic_tier(self, trace_events):
+        """sendto (Detail tier) must not appear in Basic-tier capture."""
+        evts = [e for e in trace_events if e.get("func") == "sendto"]
+        assert len(evts) == 0, (
+            "sendto is Detail tier but appeared in Basic-tier trace")
+
+    def test_recvfrom_not_at_basic_tier(self, trace_events):
+        """recvfrom (Detail tier) must not appear in Basic-tier capture."""
+        evts = [e for e in trace_events if e.get("func") == "recvfrom"]
+        assert len(evts) == 0, (
+            "recvfrom is Detail tier but appeared in Basic-tier trace")
+
+
+# ---------------------------------------------------------------------------
+# TestBsdSocketDetailTier -- bsdsocket Detail-tier functions
+# ---------------------------------------------------------------------------
+
+class TestBsdSocketDetailTier:
+    """Tests for bsdsocket Detail-tier functions (sendto, recvfrom).
+
+    Uses detail_tier_events which enables TIER_BASIC + TIER_DETAIL +
+    TIER_VERBOSE. After per-opener patching, bsdsocket events from
+    atrace_test appear in the capture.
+    """
+
+    def test_sendto_detail_tier(self, detail_tier_events):
+        """sendto() produces event with fd, len, flags at Detail tier."""
+        evts = [e for e in detail_tier_events
                 if e.get("func") == "sendto"]
         if not evts:
-            pytest.skip("no bsdsocket events")
+            pytest.skip("no sendto events (no TCP/IP stack?)")
         assert "fd=" in evts[0].get("args", "")
         assert "len=" in evts[0].get("args", "")
 
-    def test_recvfrom_event(self, trace_events):
-        """recvfrom() produces event with fd, len, flags args."""
-        evts = [e for e in trace_events
+    def test_recvfrom_detail_tier(self, detail_tier_events):
+        """recvfrom() produces event with fd, len, flags at Detail tier."""
+        evts = [e for e in detail_tier_events
                 if e.get("func") == "recvfrom"]
         if not evts:
-            pytest.skip("no bsdsocket events")
+            pytest.skip("no recvfrom events (no TCP/IP stack?)")
         assert "fd=" in evts[0].get("args", "")
         assert "len=" in evts[0].get("args", "")
 
-    def test_send_recv_pair(self, trace_events):
-        """send() and recv() produce events with fd, len, flags args."""
-        send_evts = [e for e in trace_events
-                     if e.get("func") == "send"]
-        recv_evts = [e for e in trace_events
-                     if e.get("func") == "recv"]
-        if not send_evts and not recv_evts:
-            pytest.skip("no bsdsocket send/recv events")
-        # send and recv are noise functions; they may not appear in
-        # the default trace_events fixture.  If present, validate format.
-        if send_evts:
-            assert "fd=" in send_evts[0].get("args", "")
-            assert "len=" in send_evts[0].get("args", "")
-        if recv_evts:
-            assert "fd=" in recv_evts[0].get("args", "")
-            assert "len=" in recv_evts[0].get("args", "")
+    def test_basic_functions_present_at_detail(self, detail_tier_events):
+        """Basic-tier bsdsocket functions appear when Detail tier is enabled.
 
-    def test_waitselect_event(self, trace_events):
-        """WaitSelect() produces event with nfds and signal mask args."""
-        evts = [e for e in trace_events
+        Tiers are cumulative: Detail includes Basic. This test validates
+        that enabling Detail tier does not suppress Basic-tier bsdsocket
+        functions (socket, bind, listen, connect, etc.).
+        """
+        basic_bsd_funcs = [
+            # accept excluded: atrace_test does not exercise it (requires incoming connection)
+            "socket", "bind", "listen", "connect", "shutdown",
+            "CloseSocket", "setsockopt", "getsockopt", "IoctlSocket",
+        ]
+        found = set()
+        for ev in detail_tier_events:
+            func = ev.get("func")
+            if func in basic_bsd_funcs:
+                found.add(func)
+        if not found:
+            pytest.skip("no bsdsocket events (no TCP/IP stack?)")
+        # At least socket and CloseSocket should appear (atrace_test
+        # always opens and closes a socket in the bsdsocket block)
+        assert "socket" in found, (
+            "socket (Basic tier) missing from Detail-tier capture")
+        assert "CloseSocket" in found, (
+            "CloseSocket (Basic tier) missing from Detail-tier capture")
+
+    def test_send_recv_not_at_detail_tier(self, detail_tier_events):
+        """send/recv (Manual tier) must not appear in Detail-tier capture."""
+        send_evts = [e for e in detail_tier_events
+                     if e.get("func") == "send"]
+        recv_evts = [e for e in detail_tier_events
+                     if e.get("func") == "recv"]
+        assert len(send_evts) == 0, (
+            "send is Manual tier but appeared in Detail-tier trace")
+        assert len(recv_evts) == 0, (
+            "recv is Manual tier but appeared in Detail-tier trace")
+
+    def test_waitselect_not_at_detail_tier(self, detail_tier_events):
+        """WaitSelect (Manual tier) must not appear in Detail-tier capture."""
+        evts = [e for e in detail_tier_events
                 if e.get("func") == "WaitSelect"]
-        if not evts:
-            # WaitSelect is a noise function -- may not appear in
-            # default trace_events.  Skip gracefully.
-            pytest.skip("no WaitSelect events (noise function, disabled by default)")
-        assert "nfds=" in evts[0].get("args", "")
+        assert len(evts) == 0, (
+            "WaitSelect is Manual tier but appeared in Detail-tier trace")
 
 
 # ---------------------------------------------------------------------------

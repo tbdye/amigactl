@@ -144,6 +144,11 @@ void net_close(LONG fd)
         CloseSocket(fd);
 }
 
+int net_get_errno(void)
+{
+    return (int)bsd_errno;
+}
+
 /* ---- Low-level send helper ---- */
 
 /* Send exactly len bytes, looping on partial send().

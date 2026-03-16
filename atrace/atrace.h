@@ -13,7 +13,7 @@
 /* ---- Constants ---- */
 
 #define ATRACE_MAGIC        0x41545243  /* 'ATRC' */
-#define ATRACE_VERSION      4
+#define ATRACE_VERSION      6
 #define ATRACE_SEM_NAME     "atrace_patches"
 #define ATRACE_DEFAULT_BUFSZ 8192
 
@@ -44,6 +44,23 @@
 #define DEREF_NS_TITLE     7   /* NewScreen.DefaultTitle at offset 20 */
 #define DEREF_SCR_TITLE    8   /* Screen.Title at offset 22 */
 
+/* ---- struct bsd_patch_entry ----
+ *
+ * Compact table entry for stub-side bsdsocket per-opener patching.
+ * Used by the OpenLibrary stub's post-call handler to call SetFunction
+ * for each bsdsocket LVO on a newly-opened bsdsocket.library base.
+ *
+ *   lvo_offset:  offset  0,  2 bytes (WORD, e.g. -30 for socket)
+ *   padding:     offset  2,  2 bytes (UWORD, alignment to 4 bytes)
+ *   stub_code:   offset  4,  4 bytes (APTR, address of generated stub)
+ *   Total: 8 bytes per entry
+ */
+struct bsd_patch_entry {
+    WORD  lvo_offset;
+    UWORD padding;
+    APTR  stub_code;
+};
+
 /* ---- struct atrace_anchor ----
  *
  * Top-level structure, found via named semaphore.
@@ -66,7 +83,11 @@
  *   filter_task:      offset  80,   4 bytes (volatile APTR)
  *   eclock_freq:      offset  84,   4 bytes (ULONG, Hz from ReadEClock)
  *   timer_base:       offset  88,   4 bytes (struct Device *)
- *   Total: 92 bytes
+ *   bsd_table:        offset  92,   4 bytes (struct bsd_patch_entry *)
+ *   bsd_table_count:  offset  96,   2 bytes (UWORD)
+ *   padding2:         offset  98,   2 bytes (UWORD)
+ *   daemon_task:      offset 100,   4 bytes (volatile APTR)
+ *   Total: 104 bytes
  */
 struct atrace_anchor {
     struct SignalSemaphore sem;
@@ -91,6 +112,21 @@ struct atrace_anchor {
     /* EClock timestamp support */
     ULONG eclock_freq;            /* EClock frequency in Hz (from ReadEClock) */
     struct Device *timer_base;    /* timer.device base (for stub ReadEClock calls) */
+
+    /* Stub-side bsdsocket per-opener patching (version >= 5).
+     * The OpenLibrary stub's post-call handler iterates this table
+     * to call SetFunction for each bsdsocket LVO on a newly-opened
+     * bsdsocket.library base, eliminating the daemon-side race window.
+     * NULL when no bsdsocket patches are installed. */
+    struct bsd_patch_entry *bsd_table;
+    UWORD bsd_table_count;
+    UWORD padding2;
+
+    /* Stub-level daemon task exclusion filter (version >= 6).
+     * Non-NULL = skip event recording when SysBase->ThisTask matches.
+     * Set by daemon at startup; stubs compare ThisTask against this
+     * value before ring buffer slot allocation. */
+    volatile APTR daemon_task;
 };
 
 /* ---- struct atrace_ringbuf ----
@@ -123,7 +159,7 @@ struct atrace_ringbuf {
  *   flags:        offset  33,  1 byte  (UBYTE, FLAG_HAS_ECLOCK etc.)
  *   string_data:  offset  34, 64 bytes (char[64])
  *   ioerr:        offset  98,  1 byte  (UBYTE)
- *   reserved1:    offset  99,  1 byte  (UBYTE, alignment)
+ *   bsd_flag:     offset  99,  1 byte  (UBYTE, bsdsocket detection flag)
  *   eclock_lo:    offset 100,  4 bytes (ULONG, low 32 bits of EClock)
  *   eclock_hi:    offset 104,  2 bytes (UWORD, low 16 bits of ev_hi)
  *   task_name:    offset 106, 22 bytes (char[22], 21 chars + NUL)
@@ -141,7 +177,7 @@ struct atrace_event {
     UBYTE flags;
     char  string_data[64];
     UBYTE ioerr;
-    UBYTE reserved1;
+    UBYTE bsd_flag;           /* bsdsocket detection flag (set by OpenLibrary stub) */
     ULONG eclock_lo;
     UWORD eclock_hi;
     char  task_name[22];

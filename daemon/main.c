@@ -104,6 +104,8 @@ int main(int argc, char **argv)
 
     /* WaitSelect variables */
     fd_set rfds;
+    fd_set wfds;           /* write readiness for trace clients */
+    int have_wfds;
     LONG nfds;
     struct timeval tv;
     ULONG sigmask;
@@ -278,6 +280,21 @@ int main(int argc, char **argv)
                     nfds = daemon.clients[i].fd;
             }
         }
+
+        /* Write fd_set: track clients with buffered trace data */
+        FD_ZERO(&wfds);
+        have_wfds = 0;
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            if (daemon.clients[i].fd >= 0 &&
+                daemon.clients[i].trace.active &&
+                daemon.clients[i].trace.sendbuf.len > 0) {
+                FD_SET(daemon.clients[i].fd, &wfds);
+                have_wfds = 1;
+                if (daemon.clients[i].fd > nfds)
+                    nfds = daemon.clients[i].fd;
+            }
+        }
+
         nfds++;
 
         /* Reduce timeout when tracing is active */
@@ -285,7 +302,7 @@ int main(int argc, char **argv)
         tv.tv_micro = 0;
         if (trace_any_active(&daemon)) {
             tv.tv_secs = 0;
-            tv.tv_micro = 20000;  /* 20ms */
+            tv.tv_micro = 20000;  /* 20ms -- ring buffer polling latency */
         }
         sigmask = SIGBREAKF_CTRL_C;
         if (g_proc_sigbit >= 0)
@@ -293,7 +310,8 @@ int main(int argc, char **argv)
         if (g_arexx_sigbit >= 0)
             sigmask |= (1L << g_arexx_sigbit);
 
-        rc = WaitSelect(nfds, &rfds, NULL, NULL, &tv, &sigmask);
+        rc = WaitSelect(nfds, &rfds, have_wfds ? &wfds : NULL,
+                        NULL, &tv, &sigmask);
 
         /* Check for Ctrl-C */
         if (sigmask & SIGBREAKF_CTRL_C) {
@@ -323,6 +341,20 @@ int main(int argc, char **argv)
             /* Check listener for new connections */
             if (FD_ISSET(daemon.listener_fd, &rfds))
                 handle_accept(&daemon);
+
+            /* Drain trace send buffers for writable clients */
+            if (have_wfds) {
+                for (i = 0; i < MAX_CLIENTS; i++) {
+                    if (daemon.clients[i].fd >= 0 &&
+                        daemon.clients[i].trace.active &&
+                        FD_ISSET(daemon.clients[i].fd, &wfds)) {
+                        if (trace_drain_client(&daemon, i) < 0) {
+                            /* Socket broken -- do NOT send END/sentinel */
+                            disconnect_client(&daemon, i);
+                        }
+                    }
+                }
+            }
 
             /* Process each client based on its current mode */
             for (i = 0; i < MAX_CLIENTS; i++) {
@@ -803,6 +835,8 @@ static void disconnect_client(struct daemon_state *d, int idx)
     d->clients[idx].trace.mode = TRACE_MODE_START;
     d->clients[idx].trace.run_proc_slot = -1;
     d->clients[idx].trace.run_task_ptr = NULL;
+    d->clients[idx].trace.sendbuf.len = 0;
+    d->clients[idx].trace.sendbuf.events_dropped = 0;
     arexx_orphan_client(d, idx);
     d->clients[idx].arexx_pending = 0;
 

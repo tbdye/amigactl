@@ -50,4 +50,11 @@ void trace_check_run_completed(struct daemon_state *d);
  * Clears filter_task if this client owned the stub-level filter. */
 void trace_run_disconnect_cleanup(struct daemon_state *d, int idx);
 
+/* Drain buffered trace data for a client (non-blocking send).
+ * Returns 0 if buffer empty, 1 if data remains, -1 on error. */
+int trace_drain_client(struct daemon_state *d, int idx);
+
+/* Returns 1 if any trace client has buffered send data. */
+int trace_any_buffered(struct daemon_state *d);
+
 #endif /* AMIGACTLD_TRACE_H */

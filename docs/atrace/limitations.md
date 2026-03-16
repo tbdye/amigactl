@@ -545,6 +545,34 @@ are skipped.
 is already loaded without bsdsocket patches, reboot and reload after
 starting the stack.
 
+### bsdsocket.library Per-Opener Patching
+
+bsdsocket.library uses per-opener library bases on AmigaOS. Each
+process that calls `OpenLibrary("bsdsocket.library", ...)` receives
+a unique library base with its own jump table. The `exec.OpenLibrary`
+stub detects when bsdsocket.library is opened and patches the new
+base synchronously — calling `SetFunction()` for all 15 bsdsocket
+LVO stubs before returning control to the caller. This eliminates
+any timing gap between `OpenLibrary` returning and the first socket
+call.
+
+This means bsdsocket tracing requires an active trace session to be
+running when the target process opens bsdsocket.library. If a process
+has already opened bsdsocket.library before tracing starts, that base
+is unpatched and its calls are not traced. To trace such a process,
+restart it while a trace session is active.
+
+The daemon also contains patching code that detects
+`exec.OpenLibrary("bsdsocket.library")` events in the trace event
+stream and applies `SetFunction()` to the returned base. This
+serves as a fallback for anchors created by older loaders that lack
+stub-side patching. When both paths are active, the daemon finds
+the base already patched and skips redundant work.
+
+The daemon's own bsdsocket base (used for client connections) is
+never patched, preventing feedback loops. The daemon tracks up to
+16 patched bsdsocket bases to avoid redundant patching.
+
 ## Memory Persistence
 
 ### Allocated Memory Persists Until Reboot

@@ -293,7 +293,7 @@ def cmd_touch(conn, args):
 
 def cmd_arexx(conn, args):
     """Handle the 'arexx' subcommand."""
-    parts = args.command
+    parts = args.cmd
     # argparse.REMAINDER may include a leading '--'; strip it
     if parts and parts[0] == "--":
         parts = parts[1:]
@@ -337,7 +337,7 @@ def cmd_trace(conn, args):
 
     if sub == "run":
         # Join the command parts (argparse splits on spaces)
-        cmd_parts = args.command
+        cmd_parts = args.cmd
         # Strip leading "--" if present (argparse may include it)
         if cmd_parts and cmd_parts[0] == "--":
             cmd_parts = cmd_parts[1:]
@@ -842,7 +842,7 @@ def main() -> None:
     p_arexx = subparsers.add_parser("arexx",
                                      help="Send ARexx command to named port")
     p_arexx.add_argument("port", help="ARexx port name")
-    p_arexx.add_argument("command", nargs=argparse.REMAINDER,
+    p_arexx.add_argument("cmd", nargs=argparse.REMAINDER,
                           help="ARexx command string (use -- before flags)")
 
     p_tail = subparsers.add_parser("tail",
@@ -902,7 +902,7 @@ def main() -> None:
     tier_group_run.add_argument("--verbose", action="store_const",
                                 const=3, dest="tier",
                                 help="Verbose output tier")
-    p_trace_run.add_argument("command", nargs=argparse.REMAINDER,
+    p_trace_run.add_argument("cmd", nargs=argparse.REMAINDER,
         help="Command to execute (after --)")
 
     p_trace_disable = trace_sub.add_parser(

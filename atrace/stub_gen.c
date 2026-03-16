@@ -6,16 +6,17 @@
  * from the patch descriptor.
  *
  * The stub consists of three regions:
- *   1. Prefix (196 bytes standard, 204 with NULL-argument filter):
- *      fast-path checks, task filter, optional NULL-arg skip,
+ *   1. Prefix (216 bytes standard, 224 with NULL-argument filter):
+ *      fast-path checks, task filter, daemon task exclusion,
+ *      optional NULL-arg skip,
  *      register save, ring buffer slot reservation, EClock capture,
  *      event header fields.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
- *   3. Suffix (126 bytes): MOVEM restore, trampoline, post-call handler
- *      with IoErr capture, disabled path, overflow path.
- *      Identical for all functions except that byte offsets shift based
- *      on variable region size.
+ *   3. Suffix (126 bytes, 196 for OpenLibrary): MOVEM restore, trampoline,
+ *      post-call handler with IoErr capture, disabled path, overflow path.
+ *      OpenLibrary suffix includes a 70-byte bsdsocket per-opener
+ *      patching block.  Byte offsets shift based on variable region size.
  */
 
 #include "atrace.h"
@@ -106,7 +107,7 @@ static const UWORD stub_prefix[] = {
     /*190: */ 0x2B6E, 0x0114, 0x0008,   /* move.l 276(a6), 8(a5) caller_task  */
 };
 
-#define STUB_PREFIX_BYTES  196  /* 98 words */
+#define STUB_PREFIX_BYTES  216  /* 108 words (196 template + 20 daemon task check) */
 
 /*
  * Suffix template -- MOVEM restore, trampoline construction,
@@ -201,48 +202,54 @@ static const UWORD stub_suffix[] = {
 #define ORIG_SUFFIX_REL_2           98   /* was 58 -- .disabled push    */
 #define ORIG_SUFFIX_REL_3          120   /* was 80 -- .overflow push    */
 
+/* BSD patching block inserted into OpenLibrary suffix (Section 5 of plan) */
+#define BSD_PATCH_BLOCK_BYTES       70   /* 35 words */
+#define BSD_TABLE_SUFFIX_REL        58   /* suffix-relative offset of bsd_table addr */
+
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
 /* PATCH_ADDR -- 3 occurrences in prefix */
 #define PATCH_OFF_1     4    /* per-patch enable check                  */
-#define PATCH_OFF_2   102    /* use_count increment                     */
-#define PATCH_OFF_3   170    /* lib_id/lvo_offset copy (was 142, +28 for EClock block) */
+#define PATCH_OFF_2   122    /* use_count increment (was 102, +20 for daemon task check) */
+#define PATCH_OFF_3   190    /* lib_id/lvo_offset copy (was 170, +20 for daemon task check) */
 
 /* ANCHOR_ADDR -- 1 occurrence in prefix */
 #define ANCHOR_OFF_1   18    /* global enable check                     */
 
 /* RING_ENTRIES_ADDR -- 1 occurrence in prefix */
-#define ENTRIES_OFF_1  130   /* entry base address                      */
+#define ENTRIES_OFF_1  150   /* entry base address (was 130, +20 for daemon task check) */
 
 /* TIMER_BASE_ADDR -- 1 occurrence in prefix */
-#define TIMER_BASE_OFF 138   /* EClock block: movea.l #TIMER_BASE, a6  */
+#define TIMER_BASE_OFF 158   /* EClock block: movea.l #TIMER_BASE, a6 (was 138, +20) */
 
 /* ---- Prefix struct field displacement patches ---- */
 
 /* atrace_patch field displacements */
 #define DISP_ENABLED       10   /* tst.l OFS_ENABLED(a5): word at byte 10  */
-#define DISP_USE_COUNT_INC 108  /* addq.l #1, OFS_USE_COUNT(a0): byte 108  */
+#define DISP_USE_COUNT_INC 128  /* addq.l #1, OFS_USE_COUNT(a0): byte 128 (was 108, +20) */
 
 /* atrace_anchor field displacements */
 #define DISP_GLOBAL_ENABLE 24   /* tst.l OFS_GLOBAL_ENABLE(a5): byte 24    */
 #define DISP_FILTER_TASK_1 32   /* tst.l OFS_FILTER_TASK(a5): byte 32      */
 #define DISP_FILTER_TASK_2 48   /* cmpa.l OFS_FILTER_TASK(a5), a6: byte 48 */
-#define DISP_RING          70   /* movea.l OFS_RING(a5), a0: byte 70       */
-#define DISP_EVENT_SEQ_RD 112   /* move.l OFS_EVENT_SEQ(a5), d1: byte 112  */
-#define DISP_EVENT_SEQ_WR 116   /* addq.l #1, OFS_EVENT_SEQ(a5): byte 116  */
+#define DISP_DAEMON_TASK_1 68   /* cmpa.l OFS_DAEMON_TASK(a5), a6: byte 68 (daemon check block) */
+#define DISP_RING          90   /* movea.l OFS_RING(a5), a0: byte 90 (was 70, +20) */
+#define DISP_EVENT_SEQ_RD 132   /* move.l OFS_EVENT_SEQ(a5), d1: byte 132 (was 112, +20) */
+#define DISP_EVENT_SEQ_WR 136   /* addq.l #1, OFS_EVENT_SEQ(a5): byte 136 (was 116, +20) */
 
 /* atrace_ringbuf field displacements */
-#define DISP_WRITE_POS_RD  74   /* move.l OFS_WRITE_POS(a0), d0: byte 74   */
-#define DISP_CAPACITY      82   /* cmp.l OFS_CAPACITY(a0), d1: byte 82     */
-#define DISP_READ_POS      90   /* cmp.l OFS_READ_POS(a0), d1: byte 90     */
-#define DISP_WRITE_POS_WR  98   /* move.l d1, OFS_WRITE_POS(a0): byte 98   */
+#define DISP_WRITE_POS_RD  94   /* move.l OFS_WRITE_POS(a0), d0: byte 94 (was 74, +20) */
+#define DISP_CAPACITY     102   /* cmp.l OFS_CAPACITY(a0), d1: byte 102 (was 82, +20) */
+#define DISP_READ_POS     110   /* cmp.l OFS_READ_POS(a0), d1: byte 110 (was 90, +20) */
+#define DISP_WRITE_POS_WR 118   /* move.l d1, OFS_WRITE_POS(a0): byte 118 (was 98, +20) */
 
 /* ---- Branch displacement byte offsets (word containing displacement) ---- */
 
 #define BEQ_DISABLED_1     14   /* beq.w .disabled at prefix byte 12 */
 #define BEQ_DISABLED_2     28   /* beq.w .disabled at prefix byte 26 */
 #define BNE_DISABLED_3     54   /* bne.w .disabled at prefix byte 52 */
-#define BEQ_OVERFLOW       94   /* beq.w .overflow at prefix byte 92 */
+#define BEQ_DISABLED_4     74   /* beq.w .disabled at daemon check byte 72 (56+16), disp at 74 */
+#define BEQ_OVERFLOW      114   /* beq.w .overflow at prefix byte 112 (was 94, +20) */
 
 /* ---- Helper: patch a 32-bit address into the stub ---- */
 
@@ -257,7 +264,7 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
 /* Generate and install a stub for one patched function.
  *
  * The stub is assembled from three pieces:
- *   1. Fixed prefix (196 bytes) - task filter, register save, ring buffer,
+ *   1. Fixed prefix (216 bytes) - task filter, daemon check, register save, ring buffer,
  *      EClock capture, event header
  *   2. Variable region - argument copy, flags, string capture, built from metadata
  *   3. Fixed suffix (126 bytes) - post-call handler with IoErr capture,
@@ -271,6 +278,9 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *   libbase   -- the library base pointer for SetFunction
  *   entries   -- pointer to ring buffer entries array
  *   dos_base  -- dos.library base pointer for IoErr()
+ *   out_suffix_start -- output: byte offset where suffix begins in
+ *                the assembled stub (for late-patching by caller).
+ *                May be NULL if caller does not need it.
  *
  * Returns 0 on success, -1 on failure (AllocMem failed).
  *
@@ -283,7 +293,8 @@ int stub_generate_and_install(
     struct atrace_patch *patch,
     struct Library *libbase,
     struct atrace_event *entries,
-    ULONG dos_base)
+    ULONG dos_base,
+    int *out_suffix_start)
 {
     UBYTE *stub_mem;
     UWORD *p;
@@ -293,7 +304,7 @@ int stub_generate_and_install(
                            *   120 provides ample margin.
                            *   (cli_CommandName + DEREF_LOCK_VOLUME) */
     int var_words;
-    int prefix_bytes;     /* 196 standard, 204 with NULL-argument filter */
+    int prefix_bytes;     /* 216 standard, 224 with NULL-argument filter */
     int total_bytes;
     int alloc_size;
     int suffix_start;     /* byte offset where suffix begins in assembled stub */
@@ -305,7 +316,7 @@ int stub_generate_and_install(
     /* NULL-argument filter extends the prefix by 8 bytes */
     prefix_bytes = STUB_PREFIX_BYTES;
     if (patch->skip_null_arg != 0) {
-        prefix_bytes = STUB_PREFIX_BYTES + 8;  /* 204 */
+        prefix_bytes = STUB_PREFIX_BYTES + 8;  /* 224 */
     }
 
     var_words = 0;
@@ -719,6 +730,31 @@ int stub_generate_and_install(
         }
     }
 
+    /* BSD flag check for OpenLibrary (exec, LVO -552) only.
+     * After string capture has filled string_data, check for
+     * "bsdsocke" prefix (8-byte match) and set bsd_flag (offset 99)
+     * to 0xFF if matched.  The post-call suffix handler reads this
+     * byte to decide whether to patch the returned library base.
+     * 30 bytes = 15 words. */
+    if (patch->lib_id == LIB_EXEC && patch->lvo_offset == -552) {
+        var_buf[var_words++] = 0x422D;  /* clr.b 99(a5)                         */
+        var_buf[var_words++] = 0x0063;  /* offset 99 = bsd_flag                 */
+        var_buf[var_words++] = 0x0CAD;  /* cmpi.l #$62736473, 34(a5)  "bsds"   */
+        var_buf[var_words++] = 0x6273;
+        var_buf[var_words++] = 0x6473;
+        var_buf[var_words++] = 0x0022;  /* offset 34 = string_data              */
+        var_buf[var_words++] = 0x6610;  /* bne.s +16  -> .skip_flag             */
+        var_buf[var_words++] = 0x0CAD;  /* cmpi.l #$6F636B65, 38(a5)  "ocke"   */
+        var_buf[var_words++] = 0x6F63;
+        var_buf[var_words++] = 0x6B65;
+        var_buf[var_words++] = 0x0026;  /* offset 38 = string_data + 4          */
+        var_buf[var_words++] = 0x6606;  /* bne.s +6   -> .skip_flag             */
+        var_buf[var_words++] = 0x1B7C;  /* move.b #$FF, 99(a5)                  */
+        var_buf[var_words++] = 0x00FF;
+        var_buf[var_words++] = 0x0063;  /* offset 99 = bsd_flag                 */
+        /* .skip_flag: */
+    }
+
     /* Task name capture: cli_CommandName resolution with fallback.
      * Tries pr_CLI -> cli_CommandName (BSTR) first for CLI processes,
      * falls back to tc_Node.ln_Name for non-CLI processes/tasks.
@@ -840,7 +876,13 @@ int stub_generate_and_install(
 
     /* ---- 2. Calculate total size and allocate ---- */
 
-    total_bytes = prefix_bytes + (var_words * 2) + STUB_SUFFIX_BYTES;
+    /* OpenLibrary suffix includes 70-byte BSD patching block */
+    {
+    int bsd_insert = 0;
+    if (patch->lib_id == LIB_EXEC && patch->lvo_offset == -552)
+        bsd_insert = BSD_PATCH_BLOCK_BYTES;
+
+    total_bytes = prefix_bytes + (var_words * 2) + STUB_SUFFIX_BYTES + bsd_insert;
     alloc_size = (total_bytes + 3) & ~3;  /* ULONG-align */
 
     stub_mem = (UBYTE *)AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
@@ -849,28 +891,56 @@ int stub_generate_and_install(
 
     /* ---- 3. Assemble: prefix + variable + suffix ---- */
 
-    /* NULL-argument filter is inserted at byte 56, between
-     * the task filter check and the MOVEM save.  This placement is
-     * critical: the .disabled path only pops saved_a5, so the NULL
-     * check branch to .disabled must fire BEFORE the MOVEM push.
+    /* The prefix is assembled from the 196-byte template with two
+     * inline insertions at byte 56 (between task filter and MOVEM save):
      *
-     * For functions without skip_null_arg, the full 196-byte prefix
-     * template is copied as a single block (no change from before).
-     * For functions with skip_null_arg, the prefix is split:
-     *   bytes 0-55:   fast-path checks + task filter (copied first)
-     *   bytes 56-63:  NULL-argument check (emitted inline)
-     *   bytes 64-203: MOVEM save through event header (template 56-195)
+     *   1. Daemon task exclusion check (20 bytes, always emitted).
+     *      Uses only a6 (saved/restored via stack), no data registers.
+     *      When daemon_task is NULL, cmpa.l #0 never matches because
+     *      ThisTask is always a valid non-zero pointer.
+     *
+     *   2. NULL-argument filter (8 bytes, conditional on skip_null_arg).
+     *      Inserted after the daemon check at byte 76.
+     *
+     * Both must fire BEFORE the MOVEM push because the .disabled path
+     * only pops saved_a5.
+     *
+     * Layout:
+     *   bytes 0-55:    template fast-path checks + task filter
+     *   bytes 56-75:   daemon task exclusion check (20 bytes, always)
+     *   bytes 76-83:   NULL-argument check (8 bytes, conditional)
+     *   bytes 76/84+:  template bytes 56-195 (MOVEM save through event header)
      */
-#define NULL_INSERT_POINT  56  /* byte offset where NULL check is inserted */
+#define DAEMON_INSERT_POINT  56  /* byte offset where daemon check is inserted */
+#define DAEMON_INSERT_BYTES  20  /* size of daemon task check block */
+#define STUB_PREFIX_BYTES_TEMPLATE 196  /* original template size before daemon insert */
+#define NULL_INSERT_POINT  (DAEMON_INSERT_POINT + DAEMON_INSERT_BYTES)  /* 76 */
 
+    /* Stage 1: Copy template bytes 0-55 (fast-path checks + task filter) */
+    CopyMem((APTR)stub_prefix, (APTR)stub_mem, DAEMON_INSERT_POINT);
+
+    /* Stage 2: Emit 20-byte daemon task exclusion check at byte 56 */
+    {
+        UWORD *dt = (UWORD *)(stub_mem + DAEMON_INSERT_POINT);
+        dt[0] = 0x2F0E;  /* move.l a6, -(sp)              */
+        dt[1] = 0x2C78;  /* movea.l 4.w, a6               */
+        dt[2] = 0x0004;  /* SysBase at abs addr 4          */
+        dt[3] = 0x2C6E;  /* movea.l 276(a6), a6  ThisTask  */
+        dt[4] = 0x0114;  /* 276 = ExecBase.ThisTask        */
+        dt[5] = 0xBDED;  /* cmpa.l d(a5), a6              */
+        dt[6] = 0x0000;  /* displacement (patched below)   */
+        dt[7] = 0x2C5F;  /* movea.l (sp)+, a6             */
+        dt[8] = 0x6700;  /* beq.w .disabled                */
+        dt[9] = 0x0000;  /* displacement (patched below)   */
+        /* .no_daemon_check: byte 76 */
+    }
+
+    /* Stage 3: Handle NULL filter and copy rest of template */
     if (patch->skip_null_arg != 0) {
         UWORD *null_check;
         UWORD cmpa_opcode;
 
-        /* Copy pre-MOVEM portion (bytes 0-55) */
-        CopyMem((APTR)stub_prefix, (APTR)stub_mem, NULL_INSERT_POINT);
-
-        /* Emit 8-byte NULL-argument check at byte 56 */
+        /* Emit 8-byte NULL-argument check at byte 76 */
         null_check = (UWORD *)(stub_mem + NULL_INSERT_POINT);
 
         /* NULL-argument check: compare register to zero.
@@ -897,29 +967,112 @@ int stub_generate_and_install(
         null_check[2] = 0x6700;       /* beq.w .disabled      */
         null_check[3] = 0x0000;       /* displacement (patched below) */
 
-        /* Copy post-MOVEM portion (template bytes 56-195 -> stub bytes 64-203) */
-        CopyMem((APTR)((UBYTE *)stub_prefix + NULL_INSERT_POINT),
+        /* Copy template bytes 56-195 -> stub bytes 84-223 */
+        CopyMem((APTR)((UBYTE *)stub_prefix + DAEMON_INSERT_POINT),
                 (APTR)(stub_mem + NULL_INSERT_POINT + 8),
-                STUB_PREFIX_BYTES - NULL_INSERT_POINT);
+                STUB_PREFIX_BYTES_TEMPLATE - DAEMON_INSERT_POINT);
     } else {
-        /* No NULL filter -- copy full prefix template as before */
-        CopyMem((APTR)stub_prefix, (APTR)stub_mem, STUB_PREFIX_BYTES);
+        /* No NULL filter -- copy template bytes 56-195 -> stub bytes 76-215 */
+        CopyMem((APTR)((UBYTE *)stub_prefix + DAEMON_INSERT_POINT),
+                (APTR)(stub_mem + NULL_INSERT_POINT),
+                STUB_PREFIX_BYTES_TEMPLATE - DAEMON_INSERT_POINT);
     }
 
     CopyMem((APTR)var_buf, (APTR)(stub_mem + prefix_bytes),
             var_words * 2);
 
     suffix_start = prefix_bytes + (var_words * 2);
-    CopyMem((APTR)stub_suffix, (APTR)(stub_mem + suffix_start),
-            STUB_SUFFIX_BYTES);
+
+    if (bsd_insert > 0) {
+        /* OpenLibrary: insert BSD patching block between suffix bytes 30 and 34.
+         * Copy suffix bytes 0-33 (17 words), emit 70-byte BSD block,
+         * then copy suffix bytes 34-125 (46 words). */
+#define BSD_INSERT_POINT 34  /* suffix byte offset of insertion point */
+
+        /* Copy suffix bytes 0-33 */
+        CopyMem((APTR)stub_suffix,
+                (APTR)(stub_mem + suffix_start),
+                BSD_INSERT_POINT);
+
+        /* Emit 70-byte BSD patching block (35 words) */
+        {
+            UWORD *bsd = (UWORD *)(stub_mem + suffix_start + BSD_INSERT_POINT);
+
+            /* === BSD patching check (14 bytes) === */
+            bsd[0]  = 0x4A28;  /*  +0: tst.b 99(a0)              */
+            bsd[1]  = 0x0063;  /*       offset 99 = bsd_flag      */
+            bsd[2]  = 0x6700;  /*  +4: beq.w .no_bsd_patch        */
+            bsd[3]  = 0x0040;  /*       disp = 64                 */
+            bsd[4]  = 0x4A80;  /*  +8: tst.l d0                   */
+            bsd[5]  = 0x6700;  /* +10: beq.w .no_bsd_patch        */
+            bsd[6]  = 0x003A;  /*       disp = 58                 */
+
+            /* === Save registers (4 bytes) === */
+            bsd[7]  = 0x48E7;  /* +14: movem.l d1-d2/a1-a3/a6, -(sp) */
+            bsd[8]  = 0x6072;  /*       save mask                 */
+
+            /* === Load SysBase and table (16 bytes) === */
+            bsd[9]  = 0x2C78;  /* +18: movea.l 4.w, a6            */
+            bsd[10] = 0x0004;  /*       SysBase at abs addr 4     */
+            bsd[11] = 0x247C;  /* +22: movea.l #BSD_TABLE, a2     */
+            bsd[12] = 0x0000;  /*       [high word - patched]     */
+            bsd[13] = 0x0000;  /*       [low word - patched]      */
+            bsd[14] = 0x240A;  /* +28: move.l a2, d2              */
+            bsd[15] = 0x6700;  /* +30: beq.w .bsd_done            */
+            bsd[16] = 0x001C;  /*       disp = 28                 */
+
+            /* === Setup loop (4 bytes) === */
+            bsd[17] = 0x2640;  /* +34: movea.l d0, a3             */
+            bsd[18] = 0x740E;  /* +36: moveq #14, d2              */
+
+            /* === SetFunction loop (18 bytes) === */
+            /* .bsd_loop: */
+            bsd[19] = 0x224B;  /* +38: movea.l a3, a1             */
+            bsd[20] = 0x3052;  /* +40: movea.w (a2), a0           */
+            bsd[21] = 0x202A;  /* +42: move.l 4(a2), d0           */
+            bsd[22] = 0x0004;  /*       offset 4 = stub_code      */
+            bsd[23] = 0x4EAE;  /* +46: jsr -420(a6)  SetFunction  */
+            bsd[24] = 0xFE5C;  /*       -420 = 0xFE5C             */
+            bsd[25] = 0x504A;  /* +50: addq.l #8, a2              */
+            bsd[26] = 0x51CA;  /* +52: dbf d2, .bsd_loop          */
+            bsd[27] = 0xFFF0;  /*       disp = -16                */
+
+            /* === Cache flush (4 bytes) === */
+            bsd[28] = 0x4EAE;  /* +56: jsr -636(a6)  CacheClearU  */
+            bsd[29] = 0xFD84;  /*       -636 = 0xFD84             */
+
+            /* === Restore registers and reload (10 bytes) === */
+            /* .bsd_done: */
+            bsd[30] = 0x4CDF;  /* +60: movem.l (sp)+, d1-d2/a1-a3/a6 */
+            bsd[31] = 0x4E06;  /*       restore mask              */
+            bsd[32] = 0x206F;  /* +64: movea.l 4(sp), a0          */
+            bsd[33] = 0x0004;  /*       reload entry ptr          */
+            bsd[34] = 0x2017;  /* +68: move.l (sp), d0            */
+            /* .no_bsd_patch: (byte 70, continues to IoErr check) */
+        }
+
+        /* Copy suffix bytes 34-125 (shifted past BSD block) */
+        CopyMem((APTR)((UBYTE *)stub_suffix + BSD_INSERT_POINT),
+                (APTR)(stub_mem + suffix_start + BSD_INSERT_POINT + bsd_insert),
+                STUB_SUFFIX_BYTES - BSD_INSERT_POINT);
+    } else {
+        /* Non-OpenLibrary: copy full suffix template */
+        CopyMem((APTR)stub_suffix, (APTR)(stub_mem + suffix_start),
+                STUB_SUFFIX_BYTES);
+    }
 
     p = (UWORD *)stub_mem;
 
     /* ---- 4. Patch addresses and displacements ---- */
 
     /* For NULL-filtered functions, all prefix byte offsets
-     * at or after NULL_INSERT_POINT (56) are shifted by +8 because the
-     * 8-byte NULL check was inserted there.  ns (null_shift) is 0 or 8. */
+     * at or after NULL_INSERT_POINT (76) are shifted by +8 because the
+     * 8-byte NULL check was inserted there.  ns (null_shift) is 0 or 8.
+     *
+     * Byte ranges:
+     *   0-55:   no shift (fast-path checks, task filter)
+     *   56-75:  no shift (daemon task check block, always present)
+     *   76+:    shifted by ns (0 or 8) */
     {
         int ns = (patch->skip_null_arg != 0) ? 8 : 0;
 
@@ -927,72 +1080,78 @@ int stub_generate_and_install(
          *   3 in prefix (fixed offsets), 1 in suffix (suffix-relative) */
         {
             ULONG pa = (ULONG)patch;
-            patch_addr(p, PATCH_OFF_1, pa);          /* prefix byte 4: enable check (< 56, no shift) */
-            patch_addr(p, PATCH_OFF_2 + ns, pa);     /* prefix byte 102: use_count inc (>= 56, shift) */
-            patch_addr(p, PATCH_OFF_3 + ns, pa);     /* prefix byte 170: lib_id/lvo copy (>= 56, shift) */
-            /* occurrence 4 is in suffix at suffix-relative offset PATCH_SUFFIX_REL */
-            patch_addr(p, suffix_start + PATCH_SUFFIX_REL, pa);
+            patch_addr(p, PATCH_OFF_1, pa);          /* prefix byte 4: enable check (< 76, no shift) */
+            patch_addr(p, PATCH_OFF_2 + ns, pa);     /* prefix byte 122: use_count inc (>= 76, shift) */
+            patch_addr(p, PATCH_OFF_3 + ns, pa);     /* prefix byte 190: lib_id/lvo copy (>= 76, shift) */
+            /* occurrence 4 is in suffix at suffix-relative offset PATCH_SUFFIX_REL
+             * (shifted by bsd_insert for OpenLibrary because it's after byte 34) */
+            patch_addr(p, suffix_start + PATCH_SUFFIX_REL + bsd_insert, pa);
         }
 
-        /* ANCHOR_ADDR -- 1 occurrence (prefix byte 18, < 56, no shift) */
+        /* ANCHOR_ADDR -- 1 occurrence (prefix byte 18, < 76, no shift) */
         patch_addr(p, ANCHOR_OFF_1, (ULONG)anchor);
 
-        /* RING_ENTRIES_ADDR -- 1 occurrence (prefix byte 130, >= 56, shift) */
+        /* RING_ENTRIES_ADDR -- 1 occurrence (prefix byte 150, >= 76, shift) */
         patch_addr(p, ENTRIES_OFF_1 + ns, (ULONG)entries);
 
-        /* TIMER_BASE_ADDR -- 1 occurrence (prefix byte 138, >= 56, shift) */
+        /* TIMER_BASE_ADDR -- 1 occurrence (prefix byte 158, >= 76, shift) */
         patch_addr(p, TIMER_BASE_OFF + ns, (ULONG)anchor->timer_base);
 
-        /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block -- no shift) */
+        /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block -- after byte 34, shifted) */
         if (dos_base != 0) {
-            patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL, dos_base);
+            patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL + bsd_insert, dos_base);
         }
 
         /* Struct field displacements (prefix -- patched from offsetof).
-         * Offsets < 56 are unshifted; offsets >= 56 are shifted by ns. */
+         * Offsets < 76 are unshifted; offsets >= 76 are shifted by ns. */
         p[DISP_ENABLED / 2]            = (UWORD)offsetof(struct atrace_patch, enabled);       /* byte 10, no shift */
-        p[(DISP_USE_COUNT_INC + ns) / 2] = (UWORD)offsetof(struct atrace_patch, use_count);   /* byte 108, shift */
+        p[(DISP_USE_COUNT_INC + ns) / 2] = (UWORD)offsetof(struct atrace_patch, use_count);   /* byte 128, shift */
         p[DISP_GLOBAL_ENABLE / 2]      = (UWORD)offsetof(struct atrace_anchor, global_enable); /* byte 24, no shift */
         p[DISP_FILTER_TASK_1 / 2]      = (UWORD)offsetof(struct atrace_anchor, filter_task);   /* byte 32, no shift */
         p[DISP_FILTER_TASK_2 / 2]      = (UWORD)offsetof(struct atrace_anchor, filter_task);   /* byte 48, no shift */
-        p[(DISP_RING + ns) / 2]        = (UWORD)offsetof(struct atrace_anchor, ring);          /* byte 70, shift */
-        p[(DISP_EVENT_SEQ_RD + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 112, shift */
-        p[(DISP_EVENT_SEQ_WR + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 116, shift */
-        p[(DISP_WRITE_POS_RD + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 74, shift */
-        p[(DISP_CAPACITY + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, capacity);     /* byte 82, shift */
-        p[(DISP_READ_POS + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, read_pos);     /* byte 90, shift */
-        p[(DISP_WRITE_POS_WR + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 98, shift */
+        /* DISP_DAEMON_TASK_1 is at byte 68 (within daemon block, no ns shift) */
+        p[DISP_DAEMON_TASK_1 / 2]      = (UWORD)offsetof(struct atrace_anchor, daemon_task);
+        p[(DISP_RING + ns) / 2]        = (UWORD)offsetof(struct atrace_anchor, ring);          /* byte 90, shift */
+        p[(DISP_EVENT_SEQ_RD + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 132, shift */
+        p[(DISP_EVENT_SEQ_WR + ns) / 2] = (UWORD)offsetof(struct atrace_anchor, event_sequence); /* byte 136, shift */
+        p[(DISP_WRITE_POS_RD + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 94, shift */
+        p[(DISP_CAPACITY + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, capacity);     /* byte 102, shift */
+        p[(DISP_READ_POS + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, read_pos);     /* byte 110, shift */
+        p[(DISP_WRITE_POS_WR + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 118, shift */
 
-        /* Suffix displacement patches (suffix-relative offsets -- no shift) */
+        /* Suffix displacement patches (suffix-relative offsets, shifted by bsd_insert
+         * for offsets after the BSD insertion point at suffix byte 34) */
         {
             int s = suffix_start;
-            p[(s + SUFFIX_DISP_USE_COUNT_DEC) / 2] =
+            p[(s + SUFFIX_DISP_USE_COUNT_DEC + bsd_insert) / 2] =
                 (UWORD)offsetof(struct atrace_patch, use_count);
-            p[(s + SUFFIX_DISP_OVERFLOW) / 2] =
+            p[(s + SUFFIX_DISP_OVERFLOW + bsd_insert) / 2] =
                 (UWORD)offsetof(struct atrace_ringbuf, overflow);
         }
 
         /* Branch displacements (prefix to suffix).
-         * Branches at bytes < 56 are unshifted in position but their
+         * Branches at bytes < 76 are unshifted in position but their
          * displacements grow because the target (.disabled/.overflow)
-         * moved further away.  The beq.w .overflow at byte 92 shifts
-         * to byte 92+ns. */
+         * moved further away.  The beq.w .overflow at byte 112 shifts
+         * to byte 112+ns. */
         {
-            int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED;
-            int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW;
+            int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED + bsd_insert;
+            int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW + bsd_insert;
 
-            /* beq.w .disabled at byte 12: displacement word at byte 14 (< 56, no pos shift) */
+            /* beq.w .disabled at byte 12: displacement word at byte 14 (< 76, no pos shift) */
             p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
-            /* beq.w .disabled at byte 26: displacement word at byte 28 (< 56, no pos shift) */
+            /* beq.w .disabled at byte 26: displacement word at byte 28 (< 76, no pos shift) */
             p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
-            /* bne.w .disabled at byte 52: displacement word at byte 54 (< 56, no pos shift) */
+            /* bne.w .disabled at byte 52: displacement word at byte 54 (< 76, no pos shift) */
             p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
-            /* beq.w .overflow at byte 92 (>= 56, shifts to 92+ns): displacement word at 94+ns */
-            p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (92 + ns + 2));
+            /* beq.w .disabled at byte 72 (daemon check): disp word at byte 74 (< 76, no pos shift) */
+            p[BEQ_DISABLED_4 / 2] = (UWORD)(disabled_byte - (72 + 2));
+            /* beq.w .overflow at byte 112 (>= 76, shifts to 112+ns): displacement word at 114+ns */
+            p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (112 + ns + 2));
 
-            /* NULL-argument filter beq.w .disabled at byte 56 */
+            /* NULL-argument filter beq.w .disabled at byte 76 */
             if (patch->skip_null_arg != 0) {
-                /* beq.w at byte 60 (NULL_INSERT_POINT + 4), displacement at byte 62 */
+                /* beq.w at byte 80 (NULL_INSERT_POINT + 4), displacement at byte 82 */
                 p[(NULL_INSERT_POINT + 6) / 2] =
                     (UWORD)(disabled_byte - (NULL_INSERT_POINT + 4 + 2));
             }
@@ -1007,20 +1166,28 @@ int stub_generate_and_install(
     old_addr = SetFunction(libbase, patch->lvo_offset,
                            (APTR)((ULONG)stub_mem));
 
-    /* Patch ORIG_ADDR (3 occurrences, all in suffix) */
+    /* Patch ORIG_ADDR (3 occurrences, all in suffix).
+     * ORIG_SUFFIX_REL_1 is before the BSD insertion point (byte 18).
+     * ORIG_SUFFIX_REL_2 and _3 are after it, so add bsd_insert. */
     {
         ULONG oa = (ULONG)old_addr;
         patch_addr(p, suffix_start + ORIG_SUFFIX_REL_1, oa);
-        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_2, oa);
-        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_3, oa);
+        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_2 + bsd_insert, oa);
+        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_3 + bsd_insert, oa);
     }
     CacheClearU();
     Enable();
+
+    }  /* end bsd_insert scope */
 
     /* 6. Fill patch descriptor */
     patch->original = old_addr;
     patch->stub_code = stub_mem;
     patch->stub_size = alloc_size;
+
+    /* Return suffix_start for late-patching by caller */
+    if (out_suffix_start)
+        *out_suffix_start = suffix_start;
 
     return 0;
 }

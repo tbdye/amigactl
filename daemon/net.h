@@ -62,6 +62,9 @@ int send_payload_line(LONG fd, const char *line);
  * Every command handler must call this as its final action. */
 int send_sentinel(LONG fd);
 
+/* Return the most recent bsdsocket.library errno value. */
+int net_get_errno(void);
+
 /* Send exactly len bytes, looping on partial send().
  * Returns 0 on success, -1 on error. */
 int send_all(LONG fd, const char *buf, int len);

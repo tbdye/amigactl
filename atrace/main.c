@@ -26,7 +26,7 @@ unsigned long __stack = 8192;
 typedef char assert_event_size [(sizeof(struct atrace_event) == 128) ? 1 : -1];
 typedef char assert_patch_size [(sizeof(struct atrace_patch) == 40) ? 1 : -1];
 typedef char assert_ringbuf_hdr[(sizeof(struct atrace_ringbuf) == 16) ? 1 : -1];
-typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 92) ? 1 : -1];
+typedef char assert_anchor_size[(sizeof(struct atrace_anchor) == 104) ? 1 : -1];
 
 /* ReadArgs template */
 #define TEMPLATE "BUFSZ/K/N,DISABLE/S,STATUS/S,ENABLE/S,QUIT/S,FUNCS/M"
@@ -50,7 +50,18 @@ extern int stub_generate_and_install(
     struct atrace_patch *patch,
     struct Library *libbase,
     struct atrace_event *entries,
-    ULONG dos_base);
+    ULONG dos_base,
+    int *out_suffix_start);
+
+/* BSD patching block: suffix-relative offset of the table address placeholder */
+#define BSD_TABLE_SUFFIX_REL  58
+
+/* Helper: patch a 32-bit address into stub code (same as stub_gen.c) */
+static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
+{
+    stub[byte_offset / 2]     = (UWORD)(addr >> 16);
+    stub[byte_offset / 2 + 1] = (UWORD)(addr);
+}
 
 /* --- Output Tier Tables ---
  *
@@ -394,6 +405,8 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
     patches_installed = 0;
     {
     ULONG saved_dos_base = 0;
+    int openlib_patch_idx = -1;   /* patch index for exec.OpenLibrary */
+    int openlib_suffix_start = 0; /* suffix byte offset for OpenLibrary stub */
     for (li = 0; li < atrace_lib_count; li++) {
         struct lib_info *lib = &atrace_libs[li];
         struct Library *libbase;
@@ -416,6 +429,7 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             struct func_info *func = &lib->funcs[fi];
             struct atrace_patch *p = &patches[patch_idx];
             int ri;
+            int stub_suffix_start = 0;
 
             /* Fill patch descriptor */
             p->lib_id = lib->lib_id;
@@ -431,7 +445,8 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
             p->skip_null_arg = func->skip_null_arg;
 
             if (stub_generate_and_install(anchor, p, libbase, entries,
-                                          saved_dos_base) < 0) {
+                                          saved_dos_base,
+                                          &stub_suffix_start) < 0) {
                 printf("Failed to install patch for %s/%s\n",
                        lib->name, func->name);
                 /* Continue with remaining patches */
@@ -439,9 +454,75 @@ static int do_install(ULONG capacity, int start_disabled, STRPTR *funcs)
                 printf("Patched %s/%s (LVO %d)\n",
                        lib->name, func->name, (int)func->lvo_offset);
                 patches_installed++;
+
+                /* Remember OpenLibrary patch for bsd_table late-patching */
+                if (lib->lib_id == LIB_EXEC && func->lvo_offset == -552) {
+                    openlib_patch_idx = patch_idx;
+                    openlib_suffix_start = stub_suffix_start;
+                }
             }
 
             patch_idx++;
+        }
+    }
+
+    /* 5b. Build bsdsocket patch table for stub-side per-opener patching.
+     * This must happen AFTER all stubs are generated because stub_code
+     * addresses are filled during installation. */
+    {
+        int bsd_count = 0;
+        int idx;
+
+        /* Count bsdsocket patches with non-NULL stub_code */
+        for (idx = 0; idx < total_patches; idx++) {
+            if (patches[idx].lib_id == LIB_BSDSOCKET &&
+                patches[idx].stub_code != NULL)
+                bsd_count++;
+        }
+
+        if (bsd_count > 0) {
+            struct bsd_patch_entry *bsd_table;
+            bsd_table = (struct bsd_patch_entry *)AllocMem(
+                (ULONG)bsd_count * sizeof(struct bsd_patch_entry),
+                MEMF_PUBLIC);
+            if (bsd_table) {
+                int ti = 0;
+                for (idx = 0; idx < total_patches; idx++) {
+                    if (patches[idx].lib_id == LIB_BSDSOCKET &&
+                        patches[idx].stub_code != NULL) {
+                        bsd_table[ti].lvo_offset = patches[idx].lvo_offset;
+                        bsd_table[ti].padding = 0;
+                        bsd_table[ti].stub_code = patches[idx].stub_code;
+                        ti++;
+                    }
+                }
+                anchor->bsd_table = bsd_table;
+                anchor->bsd_table_count = (UWORD)bsd_count;
+                printf("BSD patch table: %d entries (%ld bytes)\n",
+                       bsd_count,
+                       (long)((ULONG)bsd_count *
+                              sizeof(struct bsd_patch_entry)));
+
+                /* Late-patch the OpenLibrary stub's suffix with the
+                 * bsd_table address.  The suffix contains a placeholder
+                 * 0x00000000 at BSD_TABLE_SUFFIX_REL that must be filled
+                 * now that the table is allocated. */
+                if (openlib_patch_idx >= 0) {
+                    UWORD *openlib_stub = (UWORD *)
+                        patches[openlib_patch_idx].stub_code;
+                    patch_addr(openlib_stub,
+                               openlib_suffix_start + BSD_TABLE_SUFFIX_REL,
+                               (ULONG)bsd_table);
+                    CacheClearU();
+                }
+            } else {
+                printf("Warning: failed to allocate BSD patch table\n");
+                anchor->bsd_table = NULL;
+                anchor->bsd_table_count = 0;
+            }
+        } else {
+            anchor->bsd_table = NULL;
+            anchor->bsd_table_count = 0;
         }
     }
     }  /* end saved_dos_base scope */

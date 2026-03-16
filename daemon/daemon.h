@@ -61,6 +61,15 @@ struct tail_state {
 #define TRACE_MODE_START  0  /* normal TRACE START */
 #define TRACE_MODE_RUN    1  /* TRACE RUN (auto-terminate on process exit) */
 
+/* Per-client trace output buffer for non-blocking send */
+#define TRACE_SENDBUF_SIZE  16384  /* 16KB per client */
+
+struct trace_sendbuf {
+    char buf[TRACE_SENDBUF_SIZE];
+    int len;              /* bytes currently in buf (0 = empty) */
+    ULONG events_dropped; /* events dropped due to buffer full */
+};
+
 /* Extended filter support for FILTER command */
 #define MAX_FILTER_NAMES 32
 
@@ -98,6 +107,9 @@ struct trace_state {
 
     /* (noise_saved fields removed -- noise functions are no longer
      * auto-enabled/restored during TRACE RUN) */
+
+    /* Non-blocking send buffer for trace event delivery */
+    struct trace_sendbuf sendbuf;
 };
 
 /* Per-client state */

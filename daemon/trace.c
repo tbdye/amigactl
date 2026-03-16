@@ -18,9 +18,12 @@
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <proto/bsdsocket.h>
 #include <exec/execbase.h>
 #include <dos/dostags.h>
 #include <dos/dosextens.h>
+#include <sys/socket.h>
+#include <sys/errno.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -289,6 +292,15 @@ static LONG  g_start_us = 0;        /* wall-clock microseconds */
 /* Precomputed constants for 48-bit EClock conversion */
 static ULONG g_secs_per_hi = 0;     /* (2^32 - 1) / freq */
 static ULONG g_rem_per_hi = 0;      /* (2^32 - 1) % freq */
+
+/* ---- bsdsocket.library per-opener tracking ---- */
+
+/* bsdsocket.library uses per-opener bases -- each OpenLibrary returns
+ * a unique base with its own jump table.  Track patched bases to avoid
+ * redundant SetFunction calls. */
+#define MAX_BSD_BASES 16
+static APTR g_patched_bsd_bases[MAX_BSD_BASES];
+static int g_patched_bsd_count = 0;
 
 /* Drain stale events from ring buffer and clear valid flags.
  * Must be called under Forbid(). */
@@ -585,6 +597,11 @@ static int emit_trace_header(LONG fd, struct trace_state *ts,
 static void eclock_capture_epoch(void);
 static int eclock_format_time(struct atrace_event *ev,
                                char *buf, int bufsz);
+static void patch_bsdsocket_base(struct daemon_state *d, APTR base);
+static void sendbuf_init(struct trace_sendbuf *sb);
+static int sendbuf_append_data_chunk(struct trace_sendbuf *sb,
+                                      const char *line);
+static int sendbuf_drain(struct trace_sendbuf *sb, LONG fd);
 
 /* ---- Initialization / cleanup ---- */
 
@@ -608,11 +625,21 @@ int trace_init(void)
         }
     }
 
+    /* Register daemon task for stub-level self-event filtering */
+    if (g_anchor && g_anchor->version >= 6) {
+        g_anchor->daemon_task = FindTask(NULL);
+    }
+
     return 0;  /* always succeeds */
 }
 
 void trace_cleanup(void)
 {
+    /* Clear daemon task filter before releasing anchor reference */
+    if (g_anchor && g_anchor->version >= 6) {
+        g_anchor->daemon_task = NULL;
+    }
+
     /* Nothing to free -- atrace owns all shared memory */
     g_anchor = NULL;
     g_ring_entries = NULL;
@@ -625,6 +652,8 @@ void trace_cleanup(void)
     g_inflight_stall_count = 0;
     g_eclock_valid = 0;
     g_eclock_freq = 0;
+    g_patched_bsd_count = 0;
+    memset(g_patched_bsd_bases, 0, sizeof(g_patched_bsd_bases));
 }
 
 /* ---- Lazy discovery helper ---- */
@@ -656,6 +685,11 @@ static int trace_discover(void)
             ((UBYTE *)g_anchor->ring + sizeof(struct atrace_ringbuf));
     } else {
         g_ring_entries = NULL;
+    }
+
+    /* Register daemon task for stub-level self-event filtering */
+    if (g_anchor->version >= 6) {
+        g_anchor->daemon_task = FindTask(NULL);
     }
 
     /* Validate noise function names against the loaded patch table.
@@ -3793,6 +3827,215 @@ static int send_trace_data_chunk(LONG fd, const char *line)
     return send_data_chunk(fd, line, strlen(line));
 }
 
+/* ---- bsdsocket.library per-opener patching ---- */
+
+/* Patch a newly opened bsdsocket.library base with all bsdsocket stubs.
+ *
+ * bsdsocket.library uses per-opener bases -- each OpenLibrary returns a
+ * unique base with its own jump table.  The atrace loader only patches the
+ * single base it opens during installation.  This function patches additional
+ * bases discovered at runtime via OpenLibrary event detection.
+ *
+ * All bsdsocket patches are installed regardless of the per-function enabled
+ * flag.  Disabled stubs are transparent pass-throughs with negligible
+ * overhead, and the user may enable them later via tier switching. */
+static void patch_bsdsocket_base(struct daemon_state *d, APTR base)
+{
+    int i, j, count, scan_limit;
+    struct atrace_patch *p;
+    APTR old;
+    char msg[80];
+    struct client *c;
+
+    if (!g_anchor || !g_anchor->patches || !base)
+        return;
+
+    /* Check if already tracked */
+    scan_limit = g_patched_bsd_count < MAX_BSD_BASES
+                 ? g_patched_bsd_count : MAX_BSD_BASES;
+    for (i = 0; i < scan_limit; i++) {
+        if (g_patched_bsd_bases[i] == base)
+            return;
+    }
+
+    /* Patch all bsdsocket LVOs */
+    count = 0;
+    for (i = 0; i < g_anchor->patch_count; i++) {
+        p = &g_anchor->patches[i];
+
+        if (p->lib_id != LIB_BSDSOCKET)
+            continue;
+        if (!p->stub_code)
+            continue;
+
+        Disable();
+        old = SetFunction((struct Library *)base, p->lvo_offset,
+                          (APTR)((ULONG)p->stub_code));
+        Enable();
+
+        if (old == p->stub_code) {
+            /* Already patched (stubs persist across trace sessions) */
+            count++;
+            continue;
+        }
+
+        if (old != p->original) {
+            /* Unexpected original -- log warning but proceed.
+             * The stub's embedded ORIG_ADDR is the shared implementation
+             * address, which is correct for all per-opener bases. */
+            snprintf(msg, sizeof(msg),
+                     "# WARNING: bsdsocket LVO %d old=%lx expected=%lx",
+                     (int)p->lvo_offset,
+                     (unsigned long)old,
+                     (unsigned long)p->original);
+            for (j = 0; j < MAX_CLIENTS; j++) {
+                c = &d->clients[j];
+                if (c->fd >= 0 && c->trace.active)
+                    sendbuf_append_data_chunk(&c->trace.sendbuf, msg);
+            }
+            printf("%s\n", msg);
+            fflush(stdout);
+        }
+
+        count++;
+    }
+
+    /* Defensive cache flush after all SetFunction calls */
+    CacheClearU();
+
+    /* Track the patched base (circular overwrite when full) */
+    g_patched_bsd_bases[g_patched_bsd_count % MAX_BSD_BASES] = base;
+    g_patched_bsd_count++;
+
+    /* Diagnostic: send trace comment to all active subscribers */
+    snprintf(msg, sizeof(msg),
+             "# Patched bsdsocket base 0x%08lx (%d LVOs)",
+             (unsigned long)base, count);
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        c = &d->clients[i];
+        if (c->fd >= 0 && c->trace.active)
+            sendbuf_append_data_chunk(&c->trace.sendbuf, msg);
+    }
+
+    /* Also log to daemon console */
+    printf("Patched bsdsocket base 0x%08lx (%d LVOs)\n",
+           (unsigned long)base, count);
+    fflush(stdout);
+}
+
+/* ---- Non-blocking send buffer helpers ---- */
+
+/* Initialize a send buffer (called when trace session starts). */
+static void sendbuf_init(struct trace_sendbuf *sb)
+{
+    sb->len = 0;
+    sb->events_dropped = 0;
+}
+
+/* Append a formatted DATA chunk ("DATA <len>\n<payload>") to the buffer.
+ * Handles drop notification: if events_dropped > 0 and there is room,
+ * injects a "# DROPPED N events" comment first, then resets the counter.
+ * Returns 0 on success, -1 if buffer full (event should be dropped). */
+static int sendbuf_append_data_chunk(struct trace_sendbuf *sb,
+                                      const char *line)
+{
+    char hdr[20];
+    int hdr_len;
+    int line_len;
+    int total;
+
+    /* Drop notification: inject before the new event */
+    if (sb->events_dropped > 0) {
+        char drop_msg[64];
+        char drop_hdr[20];
+        int drop_msg_len;
+        int drop_hdr_len;
+        int drop_total;
+
+        drop_msg_len = snprintf(drop_msg, sizeof(drop_msg),
+                                "# DROPPED %lu events",
+                                (unsigned long)sb->events_dropped);
+        drop_hdr_len = sprintf(drop_hdr, "DATA %d\n", drop_msg_len);
+        drop_total = drop_hdr_len + drop_msg_len;
+
+        /* Only inject if there is room; otherwise defer to next append */
+        if (sb->len + drop_total <= TRACE_SENDBUF_SIZE) {
+            memcpy(sb->buf + sb->len, drop_hdr, drop_hdr_len);
+            sb->len += drop_hdr_len;
+            memcpy(sb->buf + sb->len, drop_msg, drop_msg_len);
+            sb->len += drop_msg_len;
+            sb->events_dropped = 0;
+        }
+    }
+
+    line_len = strlen(line);
+    hdr_len = sprintf(hdr, "DATA %d\n", line_len);
+    total = hdr_len + line_len;
+
+    if (sb->len + total > TRACE_SENDBUF_SIZE)
+        return -1;
+
+    memcpy(sb->buf + sb->len, hdr, hdr_len);
+    sb->len += hdr_len;
+    memcpy(sb->buf + sb->len, line, line_len);
+    sb->len += line_len;
+    return 0;
+}
+
+/* Attempt to drain the buffer via non-blocking send().
+ * Returns:  0 = buffer empty (fully drained)
+ *           1 = partial drain (data remains, EWOULDBLOCK)
+ *          -1 = send error (client should be disconnected) */
+static int sendbuf_drain(struct trace_sendbuf *sb, LONG fd)
+{
+    LONG n;
+
+    if (sb->len == 0)
+        return 0;
+
+    n = send(fd, (STRPTR)sb->buf, sb->len, 0);
+    if (n > 0) {
+        if (n >= sb->len) {
+            sb->len = 0;
+            return 0;
+        }
+        /* Partial send: shift remaining data */
+        memmove(sb->buf, sb->buf + n, sb->len - n);
+        sb->len -= (int)n;
+        return 1;
+    }
+
+    /* n <= 0: check for EWOULDBLOCK */
+    if (n < 0 && net_get_errno() == EWOULDBLOCK)
+        return 1;
+
+    /* Real error or connection closed */
+    return -1;
+}
+
+/* Public wrapper: drain buffered trace data for a client.
+ * Returns 0 if buffer empty, 1 if data remains, -1 on error. */
+int trace_drain_client(struct daemon_state *d, int idx)
+{
+    struct client *c = &d->clients[idx];
+    if (c->fd < 0 || !c->trace.active)
+        return 0;
+    return sendbuf_drain(&c->trace.sendbuf, c->fd);
+}
+
+/* Returns 1 if any trace client has buffered send data. */
+int trace_any_buffered(struct daemon_state *d)
+{
+    int i;
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        if (d->clients[i].fd >= 0 &&
+            d->clients[i].trace.active &&
+            d->clients[i].trace.sendbuf.len > 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* ---- Ring buffer polling ---- */
 
 void trace_poll_events(struct daemon_state *d)
@@ -3823,15 +4066,46 @@ void trace_poll_events(struct daemon_state *d)
         if (g_anchor->global_enable == 0) {
             /* Shutdown detected -- stop all trace sessions */
             for (i = 0; i < MAX_CLIENTS; i++) {
+                struct timeval sndtv;
                 c = &d->clients[i];
-                if (c->fd >= 0 && c->trace.active) {
-                    send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
-                    send_end(c->fd);
-                    send_sentinel(c->fd);
-                    /* Clear filter_task before clearing state.
-                     * g_anchor is still valid at this point. */
-                    trace_run_cleanup(c);
+                if (c->fd < 0 || !c->trace.active)
+                    continue;
+
+                /* Set 2-second send timeout before blocking flush */
+                sndtv.tv_secs = 2;
+                sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+                setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                           &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+                net_set_blocking(c->fd);
+
+                /* Flush remaining buffered data */
+                if (c->trace.sendbuf.len > 0) {
+                    if (send_all(c->fd, c->trace.sendbuf.buf,
+                                 c->trace.sendbuf.len) < 0) {
+                        trace_run_cleanup(c);
+                        continue;
+                    }
+                    c->trace.sendbuf.len = 0;
                 }
+                send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
+                send_end(c->fd);
+                send_sentinel(c->fd);
+
+                /* Clear SO_SNDTIMEO (set to 0 for normal blocking) */
+                sndtv.tv_secs = 0;
+                sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+                setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                           &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+
+                /* Clear filter_task before clearing state.
+                 * g_anchor is still valid at this point. */
+                trace_run_cleanup(c);
             }
             g_anchor = NULL;
             g_ring_entries = NULL;
@@ -3852,15 +4126,46 @@ void trace_poll_events(struct daemon_state *d)
         /* Ring freed -- atrace was QUIT'd */
         if (g_anchor->global_enable == 0) {
             for (i = 0; i < MAX_CLIENTS; i++) {
+                struct timeval sndtv;
                 c = &d->clients[i];
-                if (c->fd >= 0 && c->trace.active) {
-                    send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
-                    send_end(c->fd);
-                    send_sentinel(c->fd);
-                    /* Clear filter_task before clearing state.
-                     * g_anchor is still valid at this point. */
-                    trace_run_cleanup(c);
+                if (c->fd < 0 || !c->trace.active)
+                    continue;
+
+                /* Set 2-second send timeout before blocking flush */
+                sndtv.tv_secs = 2;
+                sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+                setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                           &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+                net_set_blocking(c->fd);
+
+                /* Flush remaining buffered data */
+                if (c->trace.sendbuf.len > 0) {
+                    if (send_all(c->fd, c->trace.sendbuf.buf,
+                                 c->trace.sendbuf.len) < 0) {
+                        trace_run_cleanup(c);
+                        continue;
+                    }
+                    c->trace.sendbuf.len = 0;
                 }
+                send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
+                send_end(c->fd);
+                send_sentinel(c->fd);
+
+                /* Clear SO_SNDTIMEO (set to 0 for normal blocking) */
+                sndtv.tv_secs = 0;
+                sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+                setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                           &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+
+                /* Clear filter_task before clearing state.
+                 * g_anchor is still valid at this point. */
+                trace_run_cleanup(c);
             }
             g_anchor = NULL;
             g_ring_entries = NULL;
@@ -3938,6 +4243,19 @@ void trace_poll_events(struct daemon_state *d)
             total_consumed++;
             g_self_filtered++;
             continue;
+        }
+
+        /* bsdsocket.library per-opener dynamic patching.
+         * Detect successful OpenLibrary("bsdsocket.library") events
+         * and patch the newly returned base with all bsdsocket stubs.
+         * Must run BEFORE v0 suppression -- patching is a side-effect
+         * that must fire regardless of whether the event is displayed. */
+        if (ev->caller_task != (APTR)g_daemon_task &&
+            ev->lib_id == LIB_EXEC &&
+            ev->lvo_offset == -552 &&            /* OpenLibrary */
+            ev->retval != 0 &&                   /* success */
+            stricmp(ev->string_data, "bsdsocket.library") == 0) {
+            patch_bsdsocket_base(d, (APTR)ev->retval);
         }
 
         /* OpenLibrary v0 success suppression at Basic tier.
@@ -4027,13 +4345,10 @@ void trace_poll_events(struct daemon_state *d)
             if (!trace_filter_match(&c->trace, ev, filter_name))
                 continue;
             sent_any = 1;
-            if (send_trace_data_chunk(c->fd, trace_line_buf) < 0) {
-                /* Clear filter_task, then disconnect immediately
-                 * so stale data can't arrive on the next
-                 * event loop iteration. */
-                trace_run_cleanup(c);
-                net_close(c->fd);
-                c->fd = -1;
+            if (sendbuf_append_data_chunk(&c->trace.sendbuf,
+                                           trace_line_buf) < 0) {
+                /* Buffer full -- drop this event for this client */
+                c->trace.sendbuf.events_dropped++;
             }
         }
 
@@ -4074,11 +4389,29 @@ void trace_poll_events(struct daemon_state *d)
         for (i = 0; i < MAX_CLIENTS; i++) {
             c = &d->clients[i];
             if (c->fd >= 0 && c->trace.active)
-                send_trace_data_chunk(c->fd, trace_line_buf);
+                sendbuf_append_data_chunk(&c->trace.sendbuf,
+                                          trace_line_buf);
         }
     }
 
     ReleaseSemaphore(&g_anchor->sem);
+
+    /* Opportunistic drain -- push buffered data toward the network.
+     * Runs after ReleaseSemaphore() to minimize semaphore hold time.
+     * The drain only needs c->trace.sendbuf and c->fd, not the ring. */
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        c = &d->clients[i];
+        if (c->fd >= 0 && c->trace.active && c->trace.sendbuf.len > 0) {
+            if (sendbuf_drain(&c->trace.sendbuf, c->fd) < 0) {
+                /* Socket broken -- do NOT send END/sentinel, just close */
+                c->trace.sendbuf.len = 0;
+                c->trace.sendbuf.events_dropped = 0;
+                trace_run_cleanup(c);
+                net_close(c->fd);
+                c->fd = -1;
+            }
+        }
+    }
 }
 
 /* ---- Command handler ---- */
@@ -4259,6 +4592,13 @@ static int trace_cmd_status(struct client *c)
         send_payload_line(c->fd, "ioerr_capture=1");
     }
 
+    /* Daemon task filter status */
+    if (g_anchor->version >= 6) {
+        snprintf(line, sizeof(line), "daemon_task_filter=%s",
+                 g_anchor->daemon_task ? "active" : "inactive");
+        send_payload_line(c->fd, line);
+    }
+
     /* Count noise-disabled functions */
     {
         int noise_disabled = 0;
@@ -4347,6 +4687,9 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Enter streaming mode */
     c->trace.active = 1;
 
+    /* Initialize send buffer for non-blocking delivery */
+    sendbuf_init(&c->trace.sendbuf);
+
     /* Drain stale buffer content and clear valid flags.
      * Without a subscriber, background activity fills the ring buffer.
      * A user starting TRACE START wants new activity, not history. */
@@ -4357,12 +4700,16 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
     /* Capture EClock epoch for per-event timestamps (v3+) */
     eclock_capture_epoch();
 
-    /* Send OK -- no sentinel (streaming response) */
+    /* Send OK and header using blocking sends (before non-blocking switch) */
     send_ok(c->fd, NULL);
     if (emit_trace_header(c->fd, &c->trace, NULL) < 0) {
         c->trace.active = 0;
         return 0;
     }
+
+    /* Switch to non-blocking mode for streaming event delivery */
+    net_set_nonblocking(c->fd);
+
     return 0;
 }
 
@@ -4679,12 +5026,19 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
     c->trace.run_task_ptr = (APTR)g_daemon_state->procs[slot].task;
     c->trace.active = 1;
 
+    /* Initialize send buffer for non-blocking delivery */
+    sendbuf_init(&c->trace.sendbuf);
+
     sprintf(info, "%d", g_daemon_state->procs[slot].id);
     send_ok(c->fd, info);
     if (emit_trace_header(c->fd, &c->trace, command) < 0) {
         trace_run_cleanup(c);
         return 0;
     }
+
+    /* Switch to non-blocking mode for streaming event delivery */
+    net_set_nonblocking(c->fd);
+
     return 0;
 }
 
@@ -4730,6 +5084,7 @@ void trace_check_run_completed(struct daemon_state *d)
 
     for (i = 0; i < MAX_CLIENTS; i++) {
         int run_client_ok = 1;  /* Track send status during drain */
+        struct timeval sndtv;
         c = &d->clients[i];
         if (c->fd < 0 || !c->trace.active)
             continue;
@@ -4743,14 +5098,36 @@ void trace_check_run_completed(struct daemon_state *d)
         if (tp->status != PROC_EXITED)
             continue;
 
+        /* Switch the TRACE RUN client to blocking mode with SO_SNDTIMEO
+         * for the final drain.  This ensures all remaining events are
+         * delivered to a responsive client rather than being dropped. */
+        sndtv.tv_secs = 2;
+        sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+        setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                   &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+        net_set_blocking(c->fd);
+
+        /* Flush any existing buffered data before the final drain */
+        if (c->trace.sendbuf.len > 0) {
+            if (send_all(c->fd, c->trace.sendbuf.buf,
+                         c->trace.sendbuf.len) < 0) {
+                run_client_ok = 0;
+            } else {
+                c->trace.sendbuf.len = 0;
+            }
+        }
+
         /* Final drain: read remaining target events from the ring
          * buffer BEFORE cleanup clears filter_task.  The stubs may
          * have written events that trace_poll_events() hasn't
          * consumed yet (the process exited between poll cycles).
          *
          * Non-target events are broadcast to other active TRACE START
-         * clients, matching the pattern in trace_poll_events(). */
-        if (g_anchor && g_anchor->ring && g_ring_entries) {
+         * clients using their respective send buffers (non-blocking). */
+        if (run_client_ok && g_anchor && g_anchor->ring && g_ring_entries) {
             struct atrace_ringbuf *ring = g_anchor->ring;
             struct atrace_event *ev;
             ULONG pos;
@@ -4782,7 +5159,6 @@ void trace_check_run_completed(struct daemon_state *d)
                 }
 
                 batch = 0;
-                run_client_ok = 1;  /* Track send status for TRACE RUN client */
 
                 /* Drain remaining events, bounded by ring capacity
                  * (can't have more valid entries than capacity). */
@@ -4813,18 +5189,31 @@ void trace_check_run_completed(struct daemon_state *d)
                                        trace_line_buf,
                                        sizeof(trace_line_buf));
 
-                    /* Send target-task events to the TRACE RUN client */
+                    /* Buffer target-task events for the TRACE RUN client.
+                     * Use sendbuf to batch events, flushing synchronously
+                     * when the buffer fills. */
                     if (run_client_ok &&
                         ev->caller_task == c->trace.run_task_ptr &&
                         ev->sequence >= c->trace.run_start_seq) {
                         if (trace_filter_match(&c->trace, ev, filter_name)) {
-                            if (send_trace_data_chunk(c->fd, trace_line_buf) < 0)
-                                run_client_ok = 0;  /* Client disconnected */
+                            if (sendbuf_append_data_chunk(&c->trace.sendbuf,
+                                                          trace_line_buf) < 0) {
+                                /* Buffer full -- flush synchronously */
+                                if (send_all(c->fd, c->trace.sendbuf.buf,
+                                             c->trace.sendbuf.len) < 0) {
+                                    run_client_ok = 0;
+                                } else {
+                                    c->trace.sendbuf.len = 0;
+                                    /* Retry the append after flush */
+                                    sendbuf_append_data_chunk(
+                                        &c->trace.sendbuf, trace_line_buf);
+                                }
+                            }
                         }
                     }
 
-                    /* Broadcast to other active TRACE START/RUN clients,
-                     * matching trace_poll_events() broadcast pattern. */
+                    /* Broadcast to other active TRACE START/RUN clients
+                     * using their respective send buffers (non-blocking). */
                     for (j = 0; j < MAX_CLIENTS; j++) {
                         oc = &d->clients[j];
                         if (j == i)
@@ -4839,10 +5228,9 @@ void trace_check_run_completed(struct daemon_state *d)
                         }
                         if (!trace_filter_match(&oc->trace, ev, filter_name))
                             continue;
-                        if (send_trace_data_chunk(oc->fd, trace_line_buf) < 0) {
-                            trace_run_cleanup(oc);
-                            net_close(oc->fd);
-                            oc->fd = -1;
+                        if (sendbuf_append_data_chunk(&oc->trace.sendbuf,
+                                                      trace_line_buf) < 0) {
+                            oc->trace.sendbuf.events_dropped++;
                         }
                     }
 
@@ -4861,9 +5249,29 @@ void trace_check_run_completed(struct daemon_state *d)
         /* Send exit notification */
         sprintf(comment, "# PROCESS EXITED rc=%d", tp->rc);
         if (run_client_ok) {
+            /* Flush remaining buffered data */
+            if (c->trace.sendbuf.len > 0) {
+                if (send_all(c->fd, c->trace.sendbuf.buf,
+                             c->trace.sendbuf.len) < 0) {
+                    run_client_ok = 0;
+                } else {
+                    c->trace.sendbuf.len = 0;
+                }
+            }
+        }
+        if (run_client_ok) {
             send_trace_data_chunk(c->fd, comment);
             send_end(c->fd);
             send_sentinel(c->fd);
+
+            /* Clear SO_SNDTIMEO (set to 0 for normal blocking) */
+            sndtv.tv_secs = 0;
+            sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+            setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                       &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
         } else {
             /* Client disconnected during drain; close and clean up */
             net_close(c->fd);
@@ -5094,6 +5502,11 @@ int trace_handle_input(struct daemon_state *d, int idx)
 
     n = recv_into_buf(c);
     if (n <= 0) {
+        /* Non-blocking socket: EWOULDBLOCK means no data available, not
+         * disconnect.  Only treat as disconnect if recv returned 0 (EOF)
+         * or a real error. */
+        if (n < 0 && net_get_errno() == EWOULDBLOCK)
+            return 0;  /* No data available -- not a disconnect */
         c->trace.active = 0;
         c->trace.mode = TRACE_MODE_START;
         c->trace.run_proc_slot = -1;
@@ -5110,9 +5523,39 @@ int trace_handle_input(struct daemon_state *d, int idx)
             continue;
 
         if (stricmp(p, "STOP") == 0) {
-            /* Send END + sentinel, return to normal mode */
+            /* Set 2-second send timeout before blocking flush */
+            struct timeval sndtv;
+            sndtv.tv_secs = 2;
+            sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+            setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                       &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+
+            net_set_blocking(c->fd);
+            /* Flush remaining buffered data */
+            if (c->trace.sendbuf.len > 0) {
+                if (send_all(c->fd, c->trace.sendbuf.buf,
+                             c->trace.sendbuf.len) < 0) {
+                    /* Socket broken -- skip terminal framing */
+                    trace_run_cleanup(c);
+                    return 0;
+                }
+                c->trace.sendbuf.len = 0;
+            }
             send_end(c->fd);
             send_sentinel(c->fd);
+
+            /* Clear SO_SNDTIMEO (set to 0 for normal blocking) */
+            sndtv.tv_secs = 0;
+            sndtv.tv_micro = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+            setsockopt(c->fd, SOL_SOCKET, SO_SNDTIMEO,
+                       &sndtv, sizeof(sndtv));
+#pragma GCC diagnostic pop
+
             /* Clear filter_task, clear trace state */
             trace_run_cleanup(c);
             return 0;
@@ -5147,7 +5590,7 @@ int trace_handle_input(struct daemon_state *d, int idx)
                              "# filter: tier=%s",
                              tier_name(g_current_tier));
                 }
-                send_trace_data_chunk(c->fd, fline);
+                sendbuf_append_data_chunk(&c->trace.sendbuf, fline);
             }
             continue;
         }
@@ -5171,7 +5614,7 @@ int trace_handle_input(struct daemon_state *d, int idx)
                     snprintf(tline, sizeof(tline),
                              "# tier changed: %s",
                              tier_name(g_current_tier));
-                    send_trace_data_chunk(c->fd, tline);
+                    sendbuf_append_data_chunk(&c->trace.sendbuf, tline);
                 }
             }
             /* Invalid values silently ignored. */

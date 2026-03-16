@@ -521,6 +521,12 @@ function. Returns VOID. Detail tier.
 
 ## bsdsocket.library (15 functions)
 
+**Per-opener patching:** bsdsocket.library uses per-opener library
+bases. The daemon automatically patches each new base as it is opened,
+enabling tracing for any process that opens bsdsocket.library while a
+trace session is active. See [limitations.md](limitations.md) for
+details.
+
 All bsdsocket.library functions use ERR_CHECK_NEG1 (error when return
 == -1) and RET_IO_LEN (signed decimal display). None use string capture
 or dereference types.
