@@ -459,7 +459,7 @@ static struct func_info bsdsocket_funcs[] = {
     {
         "bind", -36, 3,
         { REG_D0, REG_A0, REG_D1, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_SOCKADDR, 0, 0
     },
     /* 2: listen(d0=fd, d1=backlog) -> d0=result */
     {
@@ -477,14 +477,15 @@ static struct func_info bsdsocket_funcs[] = {
     {
         "connect", -54, 3,
         { REG_D0, REG_A0, REG_D1, 0, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        REG_D0, 0x00, DEREF_SOCKADDR, 0, 0
     },
-    /* 5: sendto(d0=fd, a0=buf, d1=len, d2=flags, ...) -> d0=sent
-     * 6 args total, only first 4 captured: fd, buf, len, flags */
+    /* 5: sendto(d0=fd, a0=buf, d1=len, d2=flags, a1=to, d3=tolen) -> d0=sent
+     * 6 args total, capture 4: fd, len, flags, to_addr.
+     * Drops buf (a0, not useful). Adds sockaddr pointer (a1). */
     {
         "sendto", -60, 6,
-        { REG_D0, REG_A0, REG_D1, REG_D2, 0, 0, 0, 0 },
-        REG_D0, 0x00, DEREF_NONE, 0, 0
+        { REG_D0, REG_D1, REG_D2, REG_A1, 0, 0, 0, 0 },
+        REG_D0, 0x00, DEREF_SOCKADDR_3, 0, 0
     },
     /* 6: send(d0=fd, a0=buf, d1=len, d2=flags) -> d0=sent */
     {

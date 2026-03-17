@@ -13,10 +13,12 @@
  *      event header fields.
  *   2. Variable region: per-function argument copy, arg_count immediate,
  *      flags write, and optional string capture. Size varies by function.
- *   3. Suffix (126 bytes, 196 for OpenLibrary): MOVEM restore, trampoline,
- *      post-call handler with IoErr capture, disabled path, overflow path.
- *      OpenLibrary suffix includes a 70-byte bsdsocket per-opener
- *      patching block.  Byte offsets shift based on variable region size.
+ *   3. Suffix (126 bytes, 196 for OpenLibrary, 152 for accept):
+ *      MOVEM restore, trampoline, post-call handler with IoErr capture,
+ *      disabled path, overflow path.  OpenLibrary suffix includes a
+ *      70-byte bsdsocket per-opener patching block.  Accept suffix
+ *      includes a 26-byte sockaddr capture block.  Byte offsets shift
+ *      based on variable region size.
  */
 
 #include "atrace.h"
@@ -206,6 +208,9 @@ static const UWORD stub_suffix[] = {
 #define BSD_PATCH_BLOCK_BYTES       70   /* 35 words */
 #define BSD_TABLE_SUFFIX_REL        58   /* suffix-relative offset of bsd_table addr */
 
+/* Accept sockaddr capture block inserted into accept suffix (Phase 3) */
+#define ACCEPT_BLOCK_BYTES          26   /* 13 words */
+
 /* ---- Prefix address byte offsets (high word of each 32-bit address) ---- */
 
 /* PATCH_ADDR -- 3 occurrences in prefix */
@@ -267,8 +272,8 @@ static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)
  *   1. Fixed prefix (216 bytes) - task filter, daemon check, register save, ring buffer,
  *      EClock capture, event header
  *   2. Variable region - argument copy, flags, string capture, built from metadata
- *   3. Fixed suffix (126 bytes) - post-call handler with IoErr capture,
- *      disabled path, overflow path
+ *   3. Fixed suffix (126 bytes, 196 for OpenLibrary, 152 for accept) -
+ *      post-call handler with IoErr capture, disabled path, overflow path
  *
  * Parameters:
  *   anchor    -- pointer to the atrace_anchor (already allocated)
@@ -634,6 +639,35 @@ int stub_generate_and_install(
             var_buf[var_words++] = 0x422D;      /* clr.b d16(a5)         */
             var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
             break;
+
+        case DEREF_SOCKADDR:
+        case DEREF_SOCKADDR_3:
+            /* sockaddr_in dereference: copy 8 bytes to string_data[0..7]
+             * 28 bytes, 14 words.
+             * DEREF_SOCKADDR dereferences arg_regs[1] (bind, connect).
+             * DEREF_SOCKADDR_3 dereferences arg_regs[3] (sendto). */
+        {
+            int sa_arg_idx = (patch->name_deref_type == DEREF_SOCKADDR) ? 1 : 3;
+            WORD sa_frame_ofs = reg_to_frame_offset(patch->arg_regs[sa_arg_idx]);
+
+            var_buf[var_words++] = 0x206F;      /* movea.l d16(sp), a0       */
+            var_buf[var_words++] = (UWORD)sa_frame_ofs;
+            var_buf[var_words++] = 0x4A88;      /* tst.l a0                  */
+            var_buf[var_words++] = 0x6710;      /* beq.s +16 (.skip_sa)      */
+            var_buf[var_words++] = 0x2010;      /* move.l (a0), d0           */
+            var_buf[var_words++] = 0x2B40;      /* move.l d0, 34(a5)         */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            var_buf[var_words++] = 0x2028;      /* move.l 4(a0), d0          */
+            var_buf[var_words++] = 0x0004;
+            var_buf[var_words++] = 0x2B40;      /* move.l d0, 38(a5)         */
+            var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, string_data) + 4);
+            var_buf[var_words++] = 0x6004;      /* bra.s +4 (.done)          */
+            /* .skip_sa: */
+            var_buf[var_words++] = 0x422D;      /* clr.b 34(a5)              */
+            var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+            /* .done: */
+            break;
+        }
         }
     } else if (patch->string_args != 0) {
         /* Count string arguments */
@@ -753,6 +787,16 @@ int stub_generate_and_install(
         var_buf[var_words++] = 0x00FF;
         var_buf[var_words++] = 0x0063;  /* offset 99 = bsd_flag                 */
         /* .skip_flag: */
+    }
+
+    /* Accept: pre-clear string_data[0..7] to eliminate stale sockaddr
+     * from ring buffer slot reuse.  The post-call suffix handler only
+     * writes here on success; failed accepts must see zeros. */
+    if (patch->lib_id == LIB_BSDSOCKET && patch->lvo_offset == -48) {
+        var_buf[var_words++] = 0x42AD;      /* clr.l 34(a5)          */
+        var_buf[var_words++] = (UWORD)offsetof(struct atrace_event, string_data);
+        var_buf[var_words++] = 0x42AD;      /* clr.l 38(a5)          */
+        var_buf[var_words++] = (UWORD)(offsetof(struct atrace_event, string_data) + 4);
     }
 
     /* Task name capture: cli_CommandName resolution with fallback.
@@ -876,13 +920,16 @@ int stub_generate_and_install(
 
     /* ---- 2. Calculate total size and allocate ---- */
 
-    /* OpenLibrary suffix includes 70-byte BSD patching block */
+    /* Post-retval suffix insertion: 70-byte BSD patching block for
+     * OpenLibrary, or 26-byte accept sockaddr capture block. */
     {
-    int bsd_insert = 0;
+    int post_retval_insert = 0;
     if (patch->lib_id == LIB_EXEC && patch->lvo_offset == -552)
-        bsd_insert = BSD_PATCH_BLOCK_BYTES;
+        post_retval_insert = BSD_PATCH_BLOCK_BYTES;
+    else if (patch->lib_id == LIB_BSDSOCKET && patch->lvo_offset == -48)
+        post_retval_insert = ACCEPT_BLOCK_BYTES;
 
-    total_bytes = prefix_bytes + (var_words * 2) + STUB_SUFFIX_BYTES + bsd_insert;
+    total_bytes = prefix_bytes + (var_words * 2) + STUB_SUFFIX_BYTES + post_retval_insert;
     alloc_size = (total_bytes + 3) & ~3;  /* ULONG-align */
 
     stub_mem = (UBYTE *)AllocMem(alloc_size, MEMF_PUBLIC | MEMF_CLEAR);
@@ -983,20 +1030,21 @@ int stub_generate_and_install(
 
     suffix_start = prefix_bytes + (var_words * 2);
 
-    if (bsd_insert > 0) {
-        /* OpenLibrary: insert BSD patching block between suffix bytes 30 and 34.
-         * Copy suffix bytes 0-33 (17 words), emit 70-byte BSD block,
+    if (post_retval_insert > 0) {
+        /* Insert a post-retval block between suffix bytes 30 and 34.
+         * Copy suffix bytes 0-33 (17 words), emit the block,
          * then copy suffix bytes 34-125 (46 words). */
-#define BSD_INSERT_POINT 34  /* suffix byte offset of insertion point */
+#define POST_RETVAL_INSERT_POINT 34  /* suffix byte offset of insertion point */
 
         /* Copy suffix bytes 0-33 */
         CopyMem((APTR)stub_suffix,
                 (APTR)(stub_mem + suffix_start),
-                BSD_INSERT_POINT);
+                POST_RETVAL_INSERT_POINT);
 
-        /* Emit 70-byte BSD patching block (35 words) */
+        if (patch->lib_id == LIB_EXEC && patch->lvo_offset == -552) {
+        /* Emit 70-byte BSD patching block (35 words) for OpenLibrary */
         {
-            UWORD *bsd = (UWORD *)(stub_mem + suffix_start + BSD_INSERT_POINT);
+            UWORD *bsd = (UWORD *)(stub_mem + suffix_start + POST_RETVAL_INSERT_POINT);
 
             /* === BSD patching check (14 bytes) === */
             bsd[0]  = 0x4A28;  /*  +0: tst.b 99(a0)              */
@@ -1050,13 +1098,37 @@ int stub_generate_and_install(
             bsd[34] = 0x2017;  /* +68: move.l (sp), d0            */
             /* .no_bsd_patch: (byte 70, continues to IoErr check) */
         }
+        } else if (patch->lib_id == LIB_BSDSOCKET && patch->lvo_offset == -48) {
+        /* Emit 26-byte accept sockaddr capture block (13 words).
+         * Dereferences the sockaddr pointer (saved in args[1] during
+         * variable region) and copies 8 bytes to string_data[0..7].
+         * Only fires when accept succeeded (d0 != -1). */
+        {
+            UWORD *acc = (UWORD *)(stub_mem + suffix_start + POST_RETVAL_INSERT_POINT);
 
-        /* Copy suffix bytes 34-125 (shifted past BSD block) */
-        CopyMem((APTR)((UBYTE *)stub_suffix + BSD_INSERT_POINT),
-                (APTR)(stub_mem + suffix_start + BSD_INSERT_POINT + bsd_insert),
-                STUB_SUFFIX_BYTES - BSD_INSERT_POINT);
+            acc[0]  = 0x0C80;  /*  +0: cmpi.l #-1, d0             */
+            acc[1]  = 0xFFFF;  /*       high word of -1            */
+            acc[2]  = 0xFFFF;  /*       low word of -1             */
+            acc[3]  = 0x6712;  /*  +6: beq.s +18 (.skip_accept)   */
+            acc[4]  = 0x2268;  /*  +8: movea.l 16(a0), a1         */
+            acc[5]  = 0x0010;  /*       offset 16 = args[1]        */
+            acc[6]  = 0x2209;  /* +12: move.l a1, d1 (NULL check) */
+            acc[7]  = 0x670A;  /* +14: beq.s +10 (.skip_accept)   */
+            acc[8]  = 0x2151;  /* +16: move.l (a1), 34(a0)        */
+            acc[9]  = 0x0022;  /*       string_data offset         */
+            acc[10] = 0x2169;  /* +20: move.l 4(a1), 38(a0)       */
+            acc[11] = 0x0004;  /*       source offset 4            */
+            acc[12] = 0x0026;  /*       dest offset 38             */
+            /* .skip_accept: byte 26 */
+        }
+        }
+
+        /* Copy suffix bytes 34-125 (shifted past post-retval block) */
+        CopyMem((APTR)((UBYTE *)stub_suffix + POST_RETVAL_INSERT_POINT),
+                (APTR)(stub_mem + suffix_start + POST_RETVAL_INSERT_POINT + post_retval_insert),
+                STUB_SUFFIX_BYTES - POST_RETVAL_INSERT_POINT);
     } else {
-        /* Non-OpenLibrary: copy full suffix template */
+        /* Standard suffix: copy full suffix template */
         CopyMem((APTR)stub_suffix, (APTR)(stub_mem + suffix_start),
                 STUB_SUFFIX_BYTES);
     }
@@ -1084,8 +1156,8 @@ int stub_generate_and_install(
             patch_addr(p, PATCH_OFF_2 + ns, pa);     /* prefix byte 122: use_count inc (>= 76, shift) */
             patch_addr(p, PATCH_OFF_3 + ns, pa);     /* prefix byte 190: lib_id/lvo copy (>= 76, shift) */
             /* occurrence 4 is in suffix at suffix-relative offset PATCH_SUFFIX_REL
-             * (shifted by bsd_insert for OpenLibrary because it's after byte 34) */
-            patch_addr(p, suffix_start + PATCH_SUFFIX_REL + bsd_insert, pa);
+             * (shifted by post_retval_insert because it's after byte 34) */
+            patch_addr(p, suffix_start + PATCH_SUFFIX_REL + post_retval_insert, pa);
         }
 
         /* ANCHOR_ADDR -- 1 occurrence (prefix byte 18, < 76, no shift) */
@@ -1099,7 +1171,7 @@ int stub_generate_and_install(
 
         /* DOS_BASE_ADDR -- 1 occurrence (suffix, IoErr block -- after byte 34, shifted) */
         if (dos_base != 0) {
-            patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL + bsd_insert, dos_base);
+            patch_addr(p, suffix_start + DOS_BASE_SUFFIX_REL + post_retval_insert, dos_base);
         }
 
         /* Struct field displacements (prefix -- patched from offsetof).
@@ -1119,13 +1191,13 @@ int stub_generate_and_install(
         p[(DISP_READ_POS + ns) / 2]    = (UWORD)offsetof(struct atrace_ringbuf, read_pos);     /* byte 110, shift */
         p[(DISP_WRITE_POS_WR + ns) / 2] = (UWORD)offsetof(struct atrace_ringbuf, write_pos);  /* byte 118, shift */
 
-        /* Suffix displacement patches (suffix-relative offsets, shifted by bsd_insert
+        /* Suffix displacement patches (suffix-relative offsets, shifted by post_retval_insert
          * for offsets after the BSD insertion point at suffix byte 34) */
         {
             int s = suffix_start;
-            p[(s + SUFFIX_DISP_USE_COUNT_DEC + bsd_insert) / 2] =
+            p[(s + SUFFIX_DISP_USE_COUNT_DEC + post_retval_insert) / 2] =
                 (UWORD)offsetof(struct atrace_patch, use_count);
-            p[(s + SUFFIX_DISP_OVERFLOW + bsd_insert) / 2] =
+            p[(s + SUFFIX_DISP_OVERFLOW + post_retval_insert) / 2] =
                 (UWORD)offsetof(struct atrace_ringbuf, overflow);
         }
 
@@ -1135,8 +1207,8 @@ int stub_generate_and_install(
          * moved further away.  The beq.w .overflow at byte 112 shifts
          * to byte 112+ns. */
         {
-            int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED + bsd_insert;
-            int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW + bsd_insert;
+            int disabled_byte = suffix_start + SUFFIX_LABEL_DISABLED + post_retval_insert;
+            int overflow_byte = suffix_start + SUFFIX_LABEL_OVERFLOW + post_retval_insert;
 
             /* beq.w .disabled at byte 12: displacement word at byte 14 (< 76, no pos shift) */
             p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
@@ -1168,17 +1240,17 @@ int stub_generate_and_install(
 
     /* Patch ORIG_ADDR (3 occurrences, all in suffix).
      * ORIG_SUFFIX_REL_1 is before the BSD insertion point (byte 18).
-     * ORIG_SUFFIX_REL_2 and _3 are after it, so add bsd_insert. */
+     * ORIG_SUFFIX_REL_2 and _3 are after it, so add post_retval_insert. */
     {
         ULONG oa = (ULONG)old_addr;
         patch_addr(p, suffix_start + ORIG_SUFFIX_REL_1, oa);
-        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_2 + bsd_insert, oa);
-        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_3 + bsd_insert, oa);
+        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_2 + post_retval_insert, oa);
+        patch_addr(p, suffix_start + ORIG_SUFFIX_REL_3 + post_retval_insert, oa);
     }
     CacheClearU();
     Enable();
 
-    }  /* end bsd_insert scope */
+    }  /* end post_retval_insert scope */
 
     /* 6. Fill patch descriptor */
     patch->original = old_addr;

@@ -572,6 +572,10 @@ static const char *format_socktype(LONG type);
 static const char *format_shutdown_how(LONG how);
 static const char *format_seek_offset(LONG offset);
 static int format_signal_set(ULONG sigs, char *buf, int bufsz);
+static int format_sockopt(LONG level, LONG optname, char *buf, int bufsz);
+static const char *format_ioctl_request(ULONG request);
+static int format_msg_flags(ULONG flags, char *buf, int bufsz);
+static int format_sockaddr_from_string_data(const char *sd, char *buf, int bufsz);
 static void format_args(struct atrace_event *ev,
                         const struct trace_func_entry *fe,
                         char *buf, int bufsz);
@@ -2358,8 +2362,173 @@ static const char *format_socktype(LONG type)
     case 1: return "SOCK_STREAM";
     case 2: return "SOCK_DGRAM";
     case 3: return "SOCK_RAW";
+    case 4: return "SOCK_RDM";
+    case 5: return "SOCK_SEQPACKET";
     default: return NULL;
     }
+}
+
+/* Socket option level names */
+static const char *format_sockopt_level(LONG level)
+{
+    switch (level) {
+    case 0xFFFF: return "SOL_SOCKET";
+    case 6:      return "IPPROTO_TCP";
+    case 0:      return "IPPROTO_IP";
+    default:     return NULL;
+    }
+}
+
+/* SOL_SOCKET option names (level == 0xFFFF) */
+static const char *format_sol_socket_opt(LONG optname)
+{
+    switch (optname) {
+    case 0x0001: return "SO_DEBUG";
+    case 0x0002: return "SO_ACCEPTCONN";
+    case 0x0004: return "SO_REUSEADDR";
+    case 0x0008: return "SO_KEEPALIVE";
+    case 0x0010: return "SO_DONTROUTE";
+    case 0x0020: return "SO_BROADCAST";
+    case 0x0040: return "SO_USELOOPBACK";
+    case 0x0080: return "SO_LINGER";
+    case 0x0100: return "SO_OOBINLINE";
+    case 0x0200: return "SO_REUSEPORT";
+    case 0x1001: return "SO_SNDBUF";
+    case 0x1002: return "SO_RCVBUF";
+    case 0x1003: return "SO_SNDLOWAT";
+    case 0x1004: return "SO_RCVLOWAT";
+    case 0x1005: return "SO_SNDTIMEO";
+    case 0x1006: return "SO_RCVTIMEO";
+    case 0x1007: return "SO_ERROR";
+    case 0x1008: return "SO_TYPE";
+    case 0x2001: return "SO_EVENTMASK";
+    default:     return NULL;
+    }
+}
+
+/* IPPROTO_TCP option names (level == 6) */
+static const char *format_tcp_opt(LONG optname)
+{
+    switch (optname) {
+    case 0x01: return "TCP_NODELAY";
+    case 0x02: return "TCP_MAXSEG";
+    default:   return NULL;
+    }
+}
+
+/* IPPROTO_IP option names (level == 0) */
+static const char *format_ip_opt(LONG optname)
+{
+    switch (optname) {
+    case  1: return "IP_OPTIONS";
+    case  2: return "IP_HDRINCL";
+    case  3: return "IP_TOS";
+    case  4: return "IP_TTL";
+    case  9: return "IP_MULTICAST_IF";
+    case 10: return "IP_MULTICAST_TTL";
+    case 11: return "IP_MULTICAST_LOOP";
+    case 12: return "IP_ADD_MEMBERSHIP";
+    case 13: return "IP_DROP_MEMBERSHIP";
+    default: return NULL;
+    }
+}
+
+/* Combined sockopt decoder: returns human-readable "level,optname" */
+static int format_sockopt(LONG level, LONG optname, char *buf, int bufsz)
+{
+    const char *lname = format_sockopt_level(level);
+    const char *oname = NULL;
+
+    if (level == (LONG)0xFFFF)  oname = format_sol_socket_opt(optname);
+    else if (level == 6)        oname = format_tcp_opt(optname);
+    else if (level == 0)        oname = format_ip_opt(optname);
+
+    if (lname && oname)
+        return snprintf(buf, bufsz, "%s,%s", lname, oname);
+    else if (lname)
+        return snprintf(buf, bufsz, "%s,opt=%ld", lname, (long)optname);
+    else
+        return snprintf(buf, bufsz, "level=%ld,opt=%ld",
+                        (long)level, (long)optname);
+}
+
+/* Ioctl request constant names */
+static const char *format_ioctl_request(ULONG request)
+{
+    switch (request) {
+    case 0x4004667FUL: return "FIONREAD";
+    case 0x8004667EUL: return "FIONBIO";
+    case 0x8004667DUL: return "FIOASYNC";
+    default:           return NULL;
+    }
+}
+
+/* MSG_ flag bitmask decoder.
+ * Returns number of chars written. Empty string if flags==0. */
+static int format_msg_flags(ULONG flags, char *buf, int bufsz)
+{
+    static const struct { ULONG bit; const char *name; } known[] = {
+        { 0x01, "MSG_OOB" },
+        { 0x02, "MSG_PEEK" },
+        { 0x04, "MSG_DONTROUTE" },
+        { 0x40, "MSG_WAITALL" },
+        { 0x80, "MSG_DONTWAIT" },
+    };
+    int n = 0, first = 1, ki;
+    ULONG remaining_bits;
+
+    if (flags == 0) {
+        buf[0] = '\0';
+        return 0;
+    }
+
+    remaining_bits = flags;
+    for (ki = 0; ki < 5; ki++) {
+        if (flags & known[ki].bit) {
+            int m;
+            if (first) first = 0;
+            else { if (n < bufsz - 1) buf[n++] = '|'; }
+            m = snprintf(buf + n, bufsz - n, "%s", known[ki].name);
+            if (m > 0) n += m;
+            remaining_bits &= ~known[ki].bit;
+        }
+    }
+    /* Append any unknown bits as hex */
+    if (remaining_bits) {
+        int m;
+        if (!first && n < bufsz - 1) buf[n++] = '|';
+        m = snprintf(buf + n, bufsz - n, "0x%lx",
+                     (unsigned long)remaining_bits);
+        if (m > 0) n += m;
+    }
+    return n;
+}
+
+/* Format sockaddr_in from string_data[0..7] into "ip:port" string.
+ * Returns number of chars written, or 0 if data is invalid/absent.
+ * string_data layout (big-endian, matching sockaddr_in memory):
+ *   [0]=sin_len, [1]=sin_family, [2..3]=sin_port, [4..7]=sin_addr */
+static int format_sockaddr_from_string_data(
+    const char *sd, char *buf, int bufsz)
+{
+    unsigned char *d = (unsigned char *)sd;
+    unsigned int port, a, b, c, e;
+
+    /* Check for valid data: sin_family should be AF_INET (2) */
+    if (d[0] == 0 && d[1] == 0)
+        return 0;  /* NULL pointer or uninitialized */
+
+    if (d[1] != 2)
+        return 0;  /* Not AF_INET: stale pointer or unsupported family */
+
+    port = ((unsigned int)d[2] << 8) | d[3];
+    a = d[4]; b = d[5]; c = d[6]; e = d[7];
+
+    /* Special case: INADDR_ANY */
+    if (a == 0 && b == 0 && c == 0 && e == 0)
+        return snprintf(buf, bufsz, "*:%u", port);
+
+    return snprintf(buf, bufsz, "%u.%u.%u.%u:%u", a, b, c, e, port);
 }
 
 /* Shutdown how names */
@@ -3151,11 +3320,19 @@ static void format_args(struct atrace_event *ev,
         }
 
         case -36:   /* bind(fd, name, namelen) */
-            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx,len=%lu",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2]);
+        {
+            char addr_buf[32];
+            int an = format_sockaddr_from_string_data(
+                         ev->string_data, addr_buf, sizeof(addr_buf));
+            if (an > 0)
+                p += snprintf(p, remaining, "fd=%ld,%s",
+                              (long)(LONG)ev->args[0], addr_buf);
+            else
+                p += snprintf(p, remaining, "fd=%ld,addr=0x%lx",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[1]);
             return;
+        }
 
         case -42:   /* listen(fd, backlog) */
             p += snprintf(p, remaining, "fd=%ld,backlog=%lu",
@@ -3164,45 +3341,95 @@ static void format_args(struct atrace_event *ev,
             return;
 
         case -48:   /* accept(fd, addr, addrlen) */
-            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[1]);
+            p += snprintf(p, remaining, "fd=%ld",
+                          (long)(LONG)ev->args[0]);
             return;
 
         case -54:   /* connect(fd, name, namelen) */
-            p += snprintf(p, remaining, "fd=%ld,addr=0x%lx,len=%lu",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[1],
-                          (unsigned long)ev->args[2]);
+        {
+            char addr_buf[32];
+            int an = format_sockaddr_from_string_data(
+                         ev->string_data, addr_buf, sizeof(addr_buf));
+            if (an > 0)
+                p += snprintf(p, remaining, "fd=%ld,%s",
+                              (long)(LONG)ev->args[0], addr_buf);
+            else
+                p += snprintf(p, remaining, "fd=%ld,addr=0x%lx",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[1]);
             return;
+        }
 
-        case -60:   /* sendto(fd, buf, len, flags) -- first 4 of 6 */
-            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[2],
-                          (unsigned long)ev->args[3]);
+        case -60:   /* sendto(fd, len, flags, to_addr) */
+        {
+            char addr_buf[32];
+            char flags_buf[128];
+            int an = format_sockaddr_from_string_data(
+                         ev->string_data, addr_buf, sizeof(addr_buf));
+            int fn = format_msg_flags(ev->args[2], flags_buf, sizeof(flags_buf));
+
+            p += snprintf(p, remaining, "fd=%ld", (long)(LONG)ev->args[0]);
+            remaining = bufsz - (int)(p - buf);
+            if (an > 0) {
+                p += snprintf(p, remaining, ",%s", addr_buf);
+                remaining = bufsz - (int)(p - buf);
+            }
+            p += snprintf(p, remaining, ",len=%lu",
+                          (unsigned long)ev->args[1]);
+            remaining = bufsz - (int)(p - buf);
+            if (fn > 0) {
+                p += snprintf(p, remaining, ",%s", flags_buf);
+            }
             return;
+        }
 
         case -66:   /* send(fd, buf, len, flags) */
-            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[2],
-                          (unsigned long)ev->args[3]);
+        {
+            char flags_buf[128];
+            int fn = format_msg_flags(ev->args[3], flags_buf, sizeof(flags_buf));
+            if (fn > 0)
+                p += snprintf(p, remaining, "fd=%ld,len=%lu,%s",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2],
+                              flags_buf);
+            else
+                p += snprintf(p, remaining, "fd=%ld,len=%lu",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2]);
             return;
+        }
 
         case -72:   /* recvfrom(fd, buf, len, flags) -- first 4 of 6 */
-            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[2],
-                          (unsigned long)ev->args[3]);
+        {
+            char flags_buf[128];
+            int fn = format_msg_flags(ev->args[3], flags_buf, sizeof(flags_buf));
+            if (fn > 0)
+                p += snprintf(p, remaining, "fd=%ld,len=%lu,%s",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2],
+                              flags_buf);
+            else
+                p += snprintf(p, remaining, "fd=%ld,len=%lu",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2]);
             return;
+        }
 
         case -78:   /* recv(fd, buf, len, flags) */
-            p += snprintf(p, remaining, "fd=%ld,len=%lu,flags=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[2],
-                          (unsigned long)ev->args[3]);
+        {
+            char flags_buf[128];
+            int fn = format_msg_flags(ev->args[3], flags_buf, sizeof(flags_buf));
+            if (fn > 0)
+                p += snprintf(p, remaining, "fd=%ld,len=%lu,%s",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2],
+                              flags_buf);
+            else
+                p += snprintf(p, remaining, "fd=%ld,len=%lu",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[2]);
             return;
+        }
 
         case -84:   /* shutdown(fd, how) */
         {
@@ -3217,25 +3444,38 @@ static void format_args(struct atrace_event *ev,
             return;
         }
 
-        case -90:   /* setsockopt(fd, level, optname, optval) -- first 4 of 5 */
-            p += snprintf(p, remaining, "fd=%ld,level=%ld,opt=%ld",
-                          (long)(LONG)ev->args[0],
-                          (long)(LONG)ev->args[1],
-                          (long)(LONG)ev->args[2]);
+        case -90:   /* setsockopt(fd, level, optname, optval) */
+        {
+            char opt_buf[64];
+            format_sockopt((LONG)ev->args[1], (LONG)ev->args[2],
+                           opt_buf, sizeof(opt_buf));
+            p += snprintf(p, remaining, "fd=%ld,%s",
+                          (long)(LONG)ev->args[0], opt_buf);
             return;
+        }
 
-        case -96:   /* getsockopt(fd, level, optname, optval) -- first 4 of 5 */
-            p += snprintf(p, remaining, "fd=%ld,level=%ld,opt=%ld",
-                          (long)(LONG)ev->args[0],
-                          (long)(LONG)ev->args[1],
-                          (long)(LONG)ev->args[2]);
+        case -96:   /* getsockopt(fd, level, optname, optval) */
+        {
+            char opt_buf[64];
+            format_sockopt((LONG)ev->args[1], (LONG)ev->args[2],
+                           opt_buf, sizeof(opt_buf));
+            p += snprintf(p, remaining, "fd=%ld,%s",
+                          (long)(LONG)ev->args[0], opt_buf);
             return;
+        }
 
         case -114:  /* IoctlSocket(fd, request, argp) */
-            p += snprintf(p, remaining, "fd=%ld,req=0x%lx",
-                          (long)(LONG)ev->args[0],
-                          (unsigned long)ev->args[1]);
+        {
+            const char *req_name = format_ioctl_request(ev->args[1]);
+            if (req_name)
+                p += snprintf(p, remaining, "fd=%ld,%s",
+                              (long)(LONG)ev->args[0], req_name);
+            else
+                p += snprintf(p, remaining, "fd=%ld,req=0x%lx",
+                              (long)(LONG)ev->args[0],
+                              (unsigned long)ev->args[1]);
             return;
+        }
 
         case -120:  /* CloseSocket(fd) */
             p += snprintf(p, remaining, "fd=%ld",
@@ -3563,6 +3803,22 @@ static char format_retval(struct atrace_event *ev,
             snprintf(buf, bufsz, "0x%08lx", (unsigned long)rv);
         status = '-';
         break;
+    }
+
+    /* Append accept peer address when sockaddr data is available.
+     * The post-call suffix block writes sockaddr_in to string_data[0..7]
+     * on success. The pre-call variable region clears string_data[0..7]
+     * to zero, so failed accepts always have zeros here. */
+    if (fe && fe->lib_id == LIB_BSDSOCKET && fe->lvo_offset == -48 &&
+        srv >= 0) {
+        char addr_buf[32];
+        int an = format_sockaddr_from_string_data(
+                     ev->string_data, addr_buf, sizeof(addr_buf));
+        if (an > 0) {
+            int cur_len = (int)strlen(buf);
+            snprintf(buf + cur_len, bufsz - cur_len,
+                     " [from %s]", addr_buf);
+        }
     }
 
     /* Append IoErr info for dos.library failures.
@@ -4347,8 +4603,22 @@ void trace_poll_events(struct daemon_state *d)
             sent_any = 1;
             if (sendbuf_append_data_chunk(&c->trace.sendbuf,
                                            trace_line_buf) < 0) {
-                /* Buffer full -- drop this event for this client */
-                c->trace.sendbuf.events_dropped++;
+                /* Buffer full -- drain to TCP and retry.
+                 * sendbuf_drain touches only the client socket and buffer,
+                 * not the ring buffer, so this is safe under the semaphore. */
+                int drc = sendbuf_drain(&c->trace.sendbuf, c->fd);
+                if (drc < 0) {
+                    /* Socket broken -- mark for cleanup */
+                    c->trace.sendbuf.len = 0;
+                    c->trace.sendbuf.events_dropped = 0;
+                    trace_run_cleanup(c);
+                    net_close(c->fd);
+                    c->fd = -1;
+                } else if (sendbuf_append_data_chunk(&c->trace.sendbuf,
+                                                      trace_line_buf) < 0) {
+                    /* Still full after drain -- network can't keep up */
+                    c->trace.sendbuf.events_dropped++;
+                }
             }
         }
 

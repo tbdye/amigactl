@@ -43,6 +43,8 @@
 #define DEREF_WIN_TITLE    6   /* Window.Title at offset 32 */
 #define DEREF_NS_TITLE     7   /* NewScreen.DefaultTitle at offset 20 */
 #define DEREF_SCR_TITLE    8   /* Screen.Title at offset 22 */
+#define DEREF_SOCKADDR     9   /* sockaddr_in: 8 bytes into string_data[0..7] (arg_regs[1]) */
+#define DEREF_SOCKADDR_3  10   /* sockaddr_in: 8 bytes into string_data[0..7] (arg_regs[3]) */
 
 /* ---- struct bsd_patch_entry ----
  *

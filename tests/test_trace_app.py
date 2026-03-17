@@ -3051,33 +3051,36 @@ class TestBsdSocket:
         assert "SHUT_RDWR" in evts[0].get("args", "")
 
     def test_setsockopt_event(self, trace_events):
-        """setsockopt() produces event with fd, level, opt args."""
+        """setsockopt() produces event with fd and symbolic level/opt names."""
         evts = [e for e in trace_events
                 if e.get("func") == "setsockopt"]
         if not evts:
             pytest.skip("no bsdsocket events")
-        assert "fd=" in evts[0].get("args", "")
-        assert "level=" in evts[0].get("args", "")
-        assert "opt=" in evts[0].get("args", "")
+        args = evts[0].get("args", "")
+        assert "fd=" in args
+        assert "SOL_SOCKET" in args
+        assert "SO_REUSEADDR" in args
 
     def test_getsockopt_event(self, trace_events):
-        """getsockopt() produces event with fd, level, opt args."""
+        """getsockopt() produces event with fd and symbolic level/opt names."""
         evts = [e for e in trace_events
                 if e.get("func") == "getsockopt"]
         if not evts:
             pytest.skip("no bsdsocket events")
-        assert "fd=" in evts[0].get("args", "")
-        assert "level=" in evts[0].get("args", "")
-        assert "opt=" in evts[0].get("args", "")
+        args = evts[0].get("args", "")
+        assert "fd=" in args
+        assert "SOL_SOCKET" in args
+        assert "SO_REUSEADDR" in args
 
     def test_ioctlsocket_event(self, trace_events):
-        """IoctlSocket() produces event with fd and request args."""
+        """IoctlSocket() produces event with fd and symbolic request name."""
         evts = [e for e in trace_events
                 if e.get("func") == "IoctlSocket"]
         if not evts:
             pytest.skip("no bsdsocket events")
-        assert "fd=" in evts[0].get("args", "")
-        assert "req=" in evts[0].get("args", "")
+        args = evts[0].get("args", "")
+        assert "fd=" in args
+        assert "FIONBIO" in args
 
     def test_sendto_not_at_basic_tier(self, trace_events):
         """sendto (Detail tier) must not appear in Basic-tier capture."""
