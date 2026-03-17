@@ -29,7 +29,7 @@ Forbid/Permit. If the semaphore exists, it validates the magic field
 (`anchor->magic == 0x41545243`, the ASCII bytes `'ATRC'`). On success it
 caches two pointers in module globals:
 
-- `g_anchor` -- the anchor structure itself (92 bytes).
+- `g_anchor` -- the anchor structure itself (104 bytes).
 - `g_ring_entries` -- a pointer to the first event slot in the ring
   buffer, computed as `(UBYTE *)g_anchor->ring + sizeof(struct
   atrace_ringbuf)` (the 16-byte header is skipped).
@@ -213,7 +213,7 @@ The daemon uses a patience mechanism controlled by the
   event is not consumed yet.
 - **Subsequent encounters at the same position:** Increments the stall
   count. If it reaches `INFLIGHT_PATIENCE` (3 polls, approximately
-  200-300ms at the typical 100ms poll interval), the event is consumed
+  ~60ms at the 20ms poll interval), the event is consumed
   as-is. The `retval`, `ioerr`, and `flags` fields may not have been
   filled by the post-call handler, but the `ev->valid == 1` guard in
   `format_retval()` prevents display of stale IoErr data.
@@ -279,7 +279,7 @@ struct task_cache_entry {
 ```
 
 The cache is rebuilt from scratch every 20 poll cycles (approximately
-2 seconds at the typical 100ms poll interval). Rebuilding walks
+400ms at the 20ms poll interval). Rebuilding walks
 `ExecBase->TaskReady` and `ExecBase->TaskWait` linked lists under
 Forbid, plus the current task (the daemon itself). For each task:
 

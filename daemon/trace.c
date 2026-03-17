@@ -274,7 +274,7 @@ static char trace_line_buf[512];
  * This prevents ring buffer stalls from blocking functions while
  * giving non-blocking functions time to complete and fill in retval,
  * ioerr, and FLAG_HAS_IOERR. */
-#define INFLIGHT_PATIENCE 3  /* 3 encounters = ~200ms at 100ms poll rate */
+#define INFLIGHT_PATIENCE 3  /* 3 encounters = ~60ms at 20ms poll rate */
 static ULONG g_inflight_stall_pos = 0xFFFFFFFF;
 static int g_inflight_stall_count = 0;
 

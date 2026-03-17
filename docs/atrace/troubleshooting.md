@@ -247,8 +247,8 @@ these suppression rules.
 ### In-flight event patience
 
 Events with `valid=2` (the function has been entered but has not yet
-returned) are given up to 3 consecutive encounters (~200ms at the default
-100ms poll rate) before being consumed as-is. If a function blocks for
+returned) are given up to 3 consecutive encounters (~60ms at the default
+20ms poll rate) before being consumed as-is. If a function blocks for
 exactly this duration, the event may appear with incomplete return
 value information (retval=0, no IoErr). This is by design -- it
 prevents blocking functions (e.g., `WaitSelect`) from stalling the
@@ -453,7 +453,7 @@ at daemon startup; there is no way to reinitialize it at runtime.
 
 When running `atrace_loader` manually, common errors include:
 
-**"Failed to allocate anchor (92 bytes)"** -- System memory is critically
+**"Failed to allocate anchor (104 bytes)"** -- System memory is critically
 low. Free memory before retrying.
 
 **"Failed to allocate ring buffer (N entries, M bytes)"** -- Insufficient

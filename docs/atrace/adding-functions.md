@@ -167,6 +167,8 @@ follows a pointer chain from an argument to extract a meaningful string
 | `DEREF_WIN_TITLE` | 6 | `Window.Title` at byte offset 32. Used for CloseWindow, ActivateWindow, etc. |
 | `DEREF_NS_TITLE` | 7 | `NewScreen.DefaultTitle` at byte offset 20. Used for OpenScreen. |
 | `DEREF_SCR_TITLE` | 8 | `Screen.Title` at byte offset 22. Used for CloseScreen. |
+| `DEREF_SOCKADDR` | 9 | `sockaddr_in`: 8 bytes into `string_data[0..7]` using `arg_regs[1]`. Used for bind, connect. |
+| `DEREF_SOCKADDR_3` | 10 | `sockaddr_in`: 8 bytes into `string_data[0..7]` using `arg_regs[3]`. Used for sendto. |
 
 When `name_deref_type` is non-zero, the stub generates additional code
 to dereference the pointer chain and copy the resulting string into

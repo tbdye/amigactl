@@ -28,8 +28,8 @@ A stub consists of three contiguous regions:
 
 ```
 +----------------------------+
-|  Prefix                    |   196 bytes (standard)
-|  (fast-path checks,        |   204 bytes (with NULL-argument filter)
+|  Prefix                    |   216 bytes (standard)
+|  (fast-path checks,        |   224 bytes (with NULL-argument filter)
 |   register save,           |
 |   ring buffer reservation, |
 |   EClock capture,          |
@@ -41,9 +41,9 @@ A stub consists of three contiguous regions:
 |   task name capture,       |
 |   valid=2 marker)          |
 +----------------------------+
-|  Suffix                    |   126 bytes (fixed)
-|  (MOVEM restore,           |
-|   trampoline,              |
+|  Suffix                    |   126 bytes (standard)
+|  (MOVEM restore,           |   196 bytes (OpenLibrary, +70 BSD patching)
+|   trampoline,              |   152 bytes (accept, +26 sockaddr capture)
 |   post-call handler,       |
 |   disabled path,           |
 |   overflow path)           |
@@ -62,7 +62,7 @@ assembly, placeholder addresses and struct field displacements in the
 templates are patched with actual runtime values.
 
 Source: `stub_gen.c`, lines 1--19 (file header), `STUB_PREFIX_BYTES`
-(196), `STUB_SUFFIX_BYTES` (126).
+(216), `STUB_SUFFIX_BYTES` (126).
 
 
 ## Register Conventions
@@ -88,7 +88,8 @@ to various data structures.
 ### MOVEM Frame Layout
 
 The MOVEM frame, pushed by `movem.l d0-d7/a0-a4/a6, -(sp)` at prefix
-byte 56, has this layout on the stack (offsets from sp after the push):
+byte 76 (template byte 56, shifted +20 by the daemon task check), has
+this layout on the stack (offsets from sp after the push):
 
 | Offset | Register |
 |--------|----------|
@@ -130,16 +131,18 @@ use this encoding:
 | 7 | d7 | 15 | a7 |
 
 
-## Prefix Region (196/204 bytes)
+## Prefix Region (216/224 bytes)
 
 The prefix is identical for all patched functions. It performs fast-path
 checks to determine whether tracing is active, saves all volatile
 registers, reserves a ring buffer slot under interrupt inhibition,
 captures the EClock timestamp, and fills the event header fields.
 
-The prefix template is defined in `stub_prefix[]` (98 UWORDs = 196
-bytes). All struct field displacement and address slots contain
-placeholder `0x0000` values that are patched after assembly.
+The prefix is assembled from the `stub_prefix[]` template (98 UWORDs =
+196 bytes) with a 20-byte daemon task exclusion check always inserted
+at byte 56, bringing the standard size to 216 bytes. All struct field
+displacement and address slots contain placeholder `0x0000` values that
+are patched after assembly.
 
 ### Instruction-by-Instruction Breakdown
 
@@ -193,27 +196,63 @@ Note that a6 is temporarily saved and restored within this block because
 it is used to access SysBase. The caller's a6 (which holds the target
 library base for the intercepted call) must not be disturbed.
 
+#### Daemon Task Exclusion Check (bytes 56--75)
+
+This 20-byte block is always inserted at byte 56 (between the task
+filter and the MOVEM save). It prevents the daemon's own calls to
+library functions from generating trace events, which would create
+feedback loops when the daemon calls functions it is tracing.
+
+```
+Byte   Encoding              Instruction                     Purpose
+----   --------              -----------                     -------
+ 56    2F0E                  move.l a6, -(sp)                Save a6 temporarily
+ 58    2C78 0004             movea.l $4.w, a6                Load SysBase (abs short)
+ 62    2C6E 0114             movea.l 276(a6), a6             a6 = SysBase->ThisTask
+ 66    BDED 0000             cmpa.l daemon_task(a5), a6      Compare to daemon task
+ 70    2C5F                  movea.l (sp)+, a6               Restore a6
+ 72    6700 0000             beq.w .disabled                 Daemon -> skip event
+       ; .no_daemon_check:
+```
+
+The check compares `SysBase->ThisTask` against `anchor->daemon_task`
+(offset 100 in the anchor struct). When they match, the current task is
+the daemon itself, and execution branches to `.disabled` to skip event
+recording. When `daemon_task` is NULL (no daemon connected), the
+comparison never matches because `ThisTask` is always a valid non-zero
+pointer.
+
+Like the task filter check, a6 is temporarily saved and restored
+because it is needed to access SysBase. This block is not conditional
+-- it is emitted for every stub, even when no daemon is connected.
+The `daemon_task` field is set by the daemon at startup and cleared on
+disconnect.
+
+This block shifts all subsequent prefix bytes by +20. The register
+save (MOVEM) starts at byte 76 instead of the template's byte 56.
+
 #### NULL-Argument Filter (8 bytes, optional)
 
 For functions with `skip_null_arg != 0`, an 8-byte NULL check is
-inserted at byte 56, between the task filter and the MOVEM save. This
-shifts all subsequent prefix bytes by +8, making the total prefix size
-204 bytes.
+inserted at byte 76 (after the daemon task check), between the daemon
+check and the MOVEM save. This shifts all subsequent prefix bytes by an
+additional +8, making the total prefix size 224 bytes.
 
 The insertion point is chosen so that the branch-to-`.disabled` path
 only needs to pop saved a5 -- if the NULL check were placed after the
 MOVEM save, the disabled path would also need to pop the 56-byte MOVEM
-frame.
+frame. The `beq.w .disabled` displacement at byte 82 is calculated at
+install time, like all other prefix-to-suffix branches.
 
 ```
 ; For address registers (e.g. skip_null_arg = a0):
- 56    B0FC 0000             cmpa.w #0, a0                   Full-width test (sign-ext)
- 60    6700 0000             beq.w .disabled                 NULL -> skip event
+ 76    B0FC 0000             cmpa.w #0, a0                   Full-width test (sign-ext)
+ 80    6700 0000             beq.w .disabled                 NULL -> skip event
 
 ; For data registers (e.g. skip_null_arg = d1):
- 56    4A81                  tst.l d1                        Full 32-bit test
- 58    4E71                  nop                             Pad to 4 bytes
- 60    6700 0000             beq.w .disabled                 NULL/zero -> skip event
+ 76    4A81                  tst.l d1                        Full 32-bit test
+ 78    4E71                  nop                             Pad to 4 bytes
+ 80    6700 0000             beq.w .disabled                 NULL/zero -> skip event
 ```
 
 Address registers use `cmpa.w #0, An` (opcode `0xB0FC | ((reg-8) << 9)`,
@@ -228,12 +267,12 @@ Functions using this filter include `FindTask` (skip when a1=NULL, as
 `UnLock` (skip when d1=0, since `UnLock(0)` is a no-op), and
 `LockPubScreen` / `UnlockPubScreen` (skip when a0=NULL).
 
-#### Register Save (bytes 56--57, or 64--65 with NULL filter)
+#### Register Save (bytes 76--79, or 84--87 with NULL filter)
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 56    48E7 FFFA             movem.l d0-d7/a0-a4/a6, -(sp)  Save 14 registers (56 bytes)
+ 76    48E7 FFFA             movem.l d0-d7/a0-a4/a6, -(sp)  Save 14 registers (56 bytes)
 ```
 
 This saves all registers that the stub might use as scratch, preserving
@@ -241,7 +280,7 @@ the caller's complete register state. After this point, the caller's
 argument values are accessible via stack-relative addressing into the
 MOVEM frame.
 
-#### Ring Buffer Slot Reservation (bytes 60--125, or +8 with NULL filter)
+#### Ring Buffer Slot Reservation (bytes 80--145, or +8 with NULL filter)
 
 This section runs under `Disable()`/`Enable()` interrupt inhibition to
 ensure atomicity of the ring buffer position update. No other code (on
@@ -250,26 +289,26 @@ a single-CPU Amiga) can execute between `Disable()` and `Enable()`.
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 60    2C78 0004             movea.l $4.w, a6                SysBase
- 64    4EAE FF88             jsr _LVODisable(a6)             Inhibit interrupts (-120)
- 68    206D 0000             movea.l ring(a5), a0            a0 = ring buffer header
- 72    2028 0000             move.l write_pos(a0), d0        d0 = current write_pos
- 76    2200                  move.l d0, d1                   d1 = copy
- 78    5281                  addq.l #1, d1                   d1 = write_pos + 1
- 80    B2A8 0000             cmp.l capacity(a0), d1          d1 >= capacity?
- 84    6502                  bcs.s .nowrap (+2)              No wrap needed
- 86    7200                  moveq #0, d1                    Wrap to 0
+ 80    2C78 0004             movea.l $4.w, a6                SysBase
+ 84    4EAE FF88             jsr _LVODisable(a6)             Inhibit interrupts (-120)
+ 88    206D 0000             movea.l ring(a5), a0            a0 = ring buffer header
+ 92    2028 0000             move.l write_pos(a0), d0        d0 = current write_pos
+ 96    2200                  move.l d0, d1                   d1 = copy
+ 98    5281                  addq.l #1, d1                   d1 = write_pos + 1
+100    B2A8 0000             cmp.l capacity(a0), d1          d1 >= capacity?
+104    6502                  bcs.s .nowrap (+2)              No wrap needed
+106    7200                  moveq #0, d1                    Wrap to 0
        ; .nowrap:
- 88    B2A8 0000             cmp.l read_pos(a0), d1          d1 == read_pos? (full)
- 92    6700 0000             beq.w .overflow                 Buffer full -> overflow
- 96    2141 0000             move.l d1, write_pos(a0)        Commit new write_pos
-100    207C 0000 0000        movea.l #PATCH_ADDR, a0         Reload patch descriptor [2]
-106    52A8 0000             addq.l #1, use_count(a0)        Increment use_count
-110    222D 0000             move.l event_sequence(a5), d1   d1 = current sequence
-114    52AD 0000             addq.l #1, event_sequence(a5)   Increment sequence
-118    2400                  move.l d0, d2                   d2 = slot index (old write_pos)
-120    2601                  move.l d1, d3                   d3 = sequence number
-122    4EAE FF82             jsr _LVOEnable(a6)              Re-enable interrupts (-126)
+108    B2A8 0000             cmp.l read_pos(a0), d1          d1 == read_pos? (full)
+112    6700 0000             beq.w .overflow                 Buffer full -> overflow
+116    2141 0000             move.l d1, write_pos(a0)        Commit new write_pos
+120    207C 0000 0000        movea.l #PATCH_ADDR, a0         Reload patch descriptor [2]
+126    52A8 0000             addq.l #1, use_count(a0)        Increment use_count
+130    222D 0000             move.l event_sequence(a5), d1   d1 = current sequence
+134    52AD 0000             addq.l #1, event_sequence(a5)   Increment sequence
+138    2400                  move.l d0, d2                   d2 = slot index (old write_pos)
+140    2601                  move.l d1, d3                   d3 = sequence number
+142    4EAE FF82             jsr _LVOEnable(a6)              Re-enable interrupts (-126)
 ```
 
 After `Enable()`, d2 holds the ring buffer slot index and d3 holds the
@@ -282,14 +321,14 @@ The capacity check uses `bcs.s` (branch if carry set, i.e., unsigned
 less-than) rather than subtraction, avoiding a modulo operation. If
 `d1 >= capacity`, it wraps to 0.
 
-#### Entry Pointer Calculation (bytes 126--135, or +8 with NULL filter)
+#### Entry Pointer Calculation (bytes 146--155, or +8 with NULL filter)
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
-126    EF82                  asl.l #7, d2                    d2 = slot_index * 128
-128    2A7C 0000 0000        movea.l #RING_ENTRIES_ADDR, a5  a5 = entries base
-134    DBC2                  adda.l d2, a5                   a5 = &entries[slot_index]
+146    EF82                  asl.l #7, d2                    d2 = slot_index * 128
+148    2A7C 0000 0000        movea.l #RING_ENTRIES_ADDR, a5  a5 = entries base
+154    DBC2                  adda.l d2, a5                   a5 = &entries[slot_index]
 ```
 
 The `asl.l #7` multiplies the slot index by 128 (the event size is
@@ -297,18 +336,18 @@ exactly 2^7 bytes). After `adda.l`, a5 points to the start of the
 allocated event entry. For the remainder of the prefix and the entire
 variable region, a5 is the event pointer used for all field writes.
 
-#### EClock Capture (bytes 136--163, or +8 with NULL filter)
+#### EClock Capture (bytes 156--183, or +8 with NULL filter)
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
-136    2C7C 0000 0000        movea.l #TIMER_BASE, a6         a6 = timer.device base
-142    518F                  subq.l #8, sp                   Allocate 8-byte EClockVal
-144    204F                  movea.l a7, a0                  a0 = &EClockVal (on stack)
-146    4EAE FFC4             jsr -60(a6)                     ReadEClock(a0) = LVO -60
-150    2B6F 0004 0064        move.l 4(sp), 100(a5)           ev_lo -> entry->eclock_lo
-156    3B6F 0002 0068        move.w 2(sp), 104(a5)           ev_hi low word -> eclock_hi
-162    508F                  addq.l #8, sp                   Deallocate EClockVal
+156    2C7C 0000 0000        movea.l #TIMER_BASE, a6         a6 = timer.device base
+162    518F                  subq.l #8, sp                   Allocate 8-byte EClockVal
+164    204F                  movea.l a7, a0                  a0 = &EClockVal (on stack)
+166    4EAE FFC4             jsr -60(a6)                     ReadEClock(a0) = LVO -60
+170    2B6F 0004 0064        move.l 4(sp), 100(a5)           ev_lo -> entry->eclock_lo
+176    3B6F 0002 0068        move.w 2(sp), 104(a5)           ev_hi low word -> eclock_hi
+182    508F                  addq.l #8, sp                   Deallocate EClockVal
 ```
 
 The `EClockVal` structure is 8 bytes (two ULONGs: ev_hi and ev_lo).
@@ -320,24 +359,25 @@ into `entry->eclock_hi` (event offset 104). See
 [event-format.md](event-format.md) for how the daemon reconstructs
 timestamps from these fields.
 
-#### Event Header Fill (bytes 164--195, or +8 with NULL filter)
+#### Event Header Fill (bytes 184--215, or +8 with NULL filter)
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
-164    2B43 0004             move.l d3, 4(a5)                entry->sequence = d3
-168    207C 0000 0000        movea.l #PATCH_ADDR, a0         Reload patch descriptor [3]
-174    1B68 0000 0001        move.b 0(a0), 1(a5)             entry->lib_id = patch->lib_id
-180    3B68 0002 0002        move.w 2(a0), 2(a5)             entry->lvo_offset = patch->lvo_offset
-186    2C78 0004             movea.l $4.w, a6                SysBase (also used by variable region)
-190    2B6E 0114 0008        move.l 276(a6), 8(a5)           entry->caller_task = ThisTask
+184    2B43 0004             move.l d3, 4(a5)                entry->sequence = d3
+188    207C 0000 0000        movea.l #PATCH_ADDR, a0         Reload patch descriptor [3]
+194    1B68 0000 0001        move.b 0(a0), 1(a5)             entry->lib_id = patch->lib_id
+200    3B68 0002 0002        move.w 2(a0), 2(a5)             entry->lvo_offset = patch->lvo_offset
+206    2C78 0004             movea.l $4.w, a6                SysBase (also used by variable region)
+210    2B6E 0114 0008        move.l 276(a6), 8(a5)           entry->caller_task = ThisTask
 ```
 
 After this block, the event header fields (sequence, lib_id, lvo_offset,
 caller_task) are populated. The patch descriptor is reloaded into a0
 (third occurrence of PATCH_ADDR) to copy `lib_id` and `lvo_offset`.
-SysBase is loaded into a6 for `ThisTask` and remains there for use by
-the task name capture code in the variable region.
+SysBase is loaded into a6 for `ThisTask` (at prefix byte 206) and
+remains there for use by the task name capture code in the variable
+region.
 
 ### Prefix Placeholder Summary
 
@@ -346,14 +386,15 @@ assembly:
 
 | Placeholder | Occurrences | Byte offsets (high word) | Patched with |
 |---|---|---|---|
-| PATCH_ADDR | 3 | 4, 102+ns, 170+ns | `(ULONG)patch` |
+| PATCH_ADDR | 3 | 4, 122+ns, 190+ns | `(ULONG)patch` |
 | ANCHOR_ADDR | 1 | 18 | `(ULONG)anchor` |
-| RING_ENTRIES_ADDR | 1 | 130+ns | `(ULONG)entries` |
-| TIMER_BASE_ADDR | 1 | 138+ns | `(ULONG)anchor->timer_base` |
+| RING_ENTRIES_ADDR | 1 | 150+ns | `(ULONG)entries` |
+| TIMER_BASE_ADDR | 1 | 158+ns | `(ULONG)anchor->timer_base` |
 
 Where `ns` is the null shift: 0 for standard stubs, 8 for stubs with
-the NULL-argument filter. Offsets before byte 56 are never shifted
-because the NULL check is inserted at byte 56.
+the NULL-argument filter. Offsets before byte 76 are never shifted
+because the NULL check is inserted at byte 76 (after the daemon task
+check).
 
 
 ## Variable Region
@@ -654,7 +695,7 @@ observed to cause UAE JIT freezes when high-frequency functions are
 traced. The task name is the same before and after the call since the
 same task is executing.
 
-At entry, a6 = SysBase (set by prefix byte 186) and a5 = event pointer.
+At entry, a6 = SysBase (set by prefix byte 206) and a5 = event pointer.
 
 ```
 ; --- Try CLI path first ---
@@ -744,14 +785,25 @@ See [event-format.md](event-format.md) for the full semantics of the
 `valid` field.
 
 
-## Suffix Region (126 bytes)
+## Suffix Region (126/152/196 bytes)
 
 The suffix template is defined in `stub_suffix[]` (63 UWORDs = 126
-bytes). It is identical for all functions except that the absolute byte
-offsets within the assembled stub shift based on the variable region
-size.
+bytes). The absolute byte offsets within the assembled stub shift based
+on the variable region size.
 
-The suffix contains four functional blocks:
+Two function-specific variants insert additional code between the
+return value capture (suffix byte 30) and the IoErr check (suffix byte
+34), expanding the suffix:
+
+- **OpenLibrary** stubs insert a 70-byte bsdsocket per-opener patching
+  block, bringing the suffix to 196 bytes.
+- **accept()** stubs insert a 26-byte sockaddr capture block, bringing
+  the suffix to 152 bytes.
+
+All suffix-relative offsets after byte 34 shift by the insertion size
+(70 or 26 bytes) when these blocks are present.
+
+The suffix contains four functional blocks (standard suffix):
 
 1. MOVEM restore and trampoline (bytes 0--23)
 2. Post-call handler (bytes 24--93)
@@ -818,11 +870,13 @@ displacement 10 (0x000A) is calculated from the address of the extension
 word (byte 14 in suffix) to `.post_call` (byte 24 in suffix):
 24 - 14 = 10.
 
-### Post-Call Handler (suffix bytes 24--93)
+### Post-Call Handler (suffix bytes 24--93, or extended with variant blocks)
 
 This block executes after the original function returns. It captures the
-return value, optionally captures `IoErr()` for dos.library functions,
-marks the event as complete, and returns to the original caller.
+return value, optionally runs a function-specific post-call block
+(OpenLibrary BSD patching or accept() sockaddr capture), optionally
+captures `IoErr()` for dos.library functions, marks the event as
+complete, and returns to the original caller.
 
 ```
 Byte   Encoding              Instruction                     Purpose
@@ -865,6 +919,95 @@ without disturbing `FLAG_HAS_ECLOCK` (0x01) that was set earlier.
 Note that a0 is reloaded from the stack after the `IoErr()` call at
 suffix byte 60 because the call may have clobbered a0.
 
+#### OpenLibrary BSD Patching Block (70 bytes, suffix bytes 34--103)
+
+For the OpenLibrary stub (exec.library, LVO -552), a 70-byte block is
+inserted at suffix byte 34, between the return value capture and the
+IoErr check. This implements stub-side bsdsocket per-opener patching,
+which eliminates the race window that existed with daemon-side patching.
+
+When a program calls `OpenLibrary("bsdsocket.library", ...)`, the
+variable region's BSD flag check (30 bytes) compares the captured
+library name against `"bsdsocke"` and sets `entry->bsd_flag` (offset
+99) to 0xFF on match. The suffix block reads this flag to decide
+whether to patch the returned library base.
+
+```
+Byte   Encoding              Instruction                     Purpose
+----   --------              -----------                     -------
+ 34    4A28 0063             tst.b 99(a0)                    bsd_flag set?
+ 38    6700 0040             beq.w .no_bsd_patch (+64)       No flag -> skip
+ 42    4A80                  tst.l d0                        OpenLibrary returned NULL?
+ 44    6700 003A             beq.w .no_bsd_patch (+58)       NULL base -> skip
+ 48    48E7 6072             movem.l d1-d2/a1-a3/a6, -(sp)  Save scratch registers
+ 52    2C78 0004             movea.l $4.w, a6                SysBase
+ 56    247C 0000 0000        movea.l #BSD_TABLE, a2          Patch table address [patched]
+ 62    240A                  move.l a2, d2                   NULL check
+ 64    6700 001C             beq.w .bsd_done (+28)           No table -> skip
+ 68    2640                  movea.l d0, a3                  a3 = new bsdsocket base
+ 70    740E                  moveq #14, d2                   Loop counter (15 entries)
+       ; .bsd_loop:
+ 72    224B                  movea.l a3, a1                  a1 = library base
+ 74    3052                  movea.w (a2), a0                a0.w = LVO offset
+ 76    202A 0004             move.l 4(a2), d0                d0 = stub code address
+ 80    4EAE FE5C             jsr -420(a6)                    SetFunction(a1, a0, d0)
+ 84    504A                  addq.l #8, a2                   Next table entry
+ 86    51CA FFF0             dbf d2, .bsd_loop (-16)         Iterate
+ 90    4EAE FD84             jsr -636(a6)                    CacheClearU()
+       ; .bsd_done:
+ 94    4CDF 4E06             movem.l (sp)+, d1-d2/a1-a3/a6  Restore registers
+ 98    206F 0004             movea.l 4(sp), a0               Reload entry pointer
+102    2017                  move.l (sp), d0                 Reload retval
+       ; .no_bsd_patch: (byte 104, continues to IoErr check)
+```
+
+The `bsd_table` is a 15-entry array of `struct bsd_patch_entry` (8
+bytes each: 2-byte LVO offset, 2 bytes padding, 4-byte stub address).
+The loop calls `SetFunction()` for each bsdsocket LVO on the
+newly-opened library base, redirecting the caller's bsdsocket function
+table entries to atrace stubs. This ensures that bsdsocket calls are
+traced from the moment the library is opened, with no window for
+untraced calls.
+
+After the loop, `CacheClearU()` flushes instruction caches because
+`SetFunction()` modifies the library's jump table (executable code).
+Registers d1-d2/a1-a3/a6 are saved and restored around the block to
+avoid clobbering values needed by the rest of the post-call handler.
+After restore, a0 and d0 are reloaded from the stack since they were
+used as scratch.
+
+#### Accept Sockaddr Capture Block (26 bytes, suffix bytes 34--59)
+
+For the accept() stub (bsdsocket.library, LVO -48), a 26-byte block is
+inserted at suffix byte 34 to capture the sockaddr_in of the accepted
+connection. The variable region pre-clears `string_data[0..7]` so that
+failed accepts show zero bytes.
+
+```
+Byte   Encoding              Instruction                     Purpose
+----   --------              -----------                     -------
+ 34    0C80 FFFF FFFF        cmpi.l #-1, d0                  accept() failed?
+ 40    6712                  beq.s +18                       Error -> .skip_accept
+ 42    2268 0010             movea.l 16(a0), a1              a1 = args[1] (sockaddr ptr)
+ 46    2209                  move.l a1, d1                   NULL check
+ 48    670A                  beq.s +10                       NULL -> .skip_accept
+ 50    2151 0022             move.l (a1), 34(a0)             string_data[0..3] = sa_family + port
+ 54    2169 0004 0026        move.l 4(a1), 38(a0)            string_data[4..7] = sin_addr
+       ; .skip_accept: (byte 60)
+```
+
+The sockaddr pointer was saved in `args[1]` (event offset 16) during
+the variable region's argument copy. The block reads it from the event
+entry (via a0, the entry pointer) rather than from registers, since
+all registers were restored by the MOVEM and trampoline before the
+original accept() was called.
+
+The capture only fires when accept() succeeds (d0 != -1). On success,
+8 bytes of the sockaddr_in structure are copied into `string_data`:
+bytes 0--3 contain `sin_family` (2 bytes) and `sin_port` (2 bytes,
+network byte order), and bytes 4--7 contain `sin_addr` (4 bytes,
+network byte order). The daemon decodes these fields for display.
+
 #### Event Completion and Return (suffix bytes 74--93)
 
 ```
@@ -891,9 +1034,9 @@ first entered.
 ### Disabled Fast Path (suffix bytes 94--103)
 
 This is the target of all `.disabled` branches in the prefix (and the
-optional NULL-argument filter). It executes when tracing is disabled for
-this function, globally, or when the task filter rejects the current
-task.
+daemon task check and optional NULL-argument filter). It executes when
+tracing is disabled for this function, globally, when the task filter
+rejects the current task, or when the calling task is the daemon itself.
 
 ```
 Byte   Encoding              Instruction                     Purpose
@@ -928,7 +1071,7 @@ Byte   Encoding              Instruction                     Purpose
 ```
 
 Note that a6 still holds SysBase at this point (loaded at prefix byte
-60 for the `Disable()` call), so the `Enable()` call at byte 108 is
+80 for the `Disable()` call), so the `Enable()` call at byte 108 is
 valid. After `Enable()`, the full MOVEM restore and a5 restore undo all
 stub-side stack changes, and the tail-call to the original function
 proceeds with the caller's original register and stack state.
@@ -937,11 +1080,16 @@ proceeds with the caller's original register and stack state.
 
 | Placeholder | Occurrences | Suffix-relative offsets (high word) | Patched with |
 |---|---|---|---|
-| ORIG_ADDR | 3 | 18, 98, 120 | Return value of `SetFunction()` |
-| PATCH_ADDR | 1 | 80 | `(ULONG)patch` |
-| DOS_BASE_ADDR | 1 | 50 | dos.library base address |
-| use_count displacement | 1 | 86 | `offsetof(atrace_patch, use_count)` |
-| overflow displacement | 1 | 106 | `offsetof(atrace_ringbuf, overflow)` |
+| ORIG_ADDR | 3 | 18, 98+pri, 120+pri | Return value of `SetFunction()` |
+| PATCH_ADDR | 1 | 80+pri | `(ULONG)patch` |
+| DOS_BASE_ADDR | 1 | 50+pri | dos.library base address |
+| BSD_TABLE | 1 | 58 (OpenLibrary only) | `(ULONG)anchor->bsd_table` |
+| use_count displacement | 1 | 86+pri | `offsetof(atrace_patch, use_count)` |
+| overflow displacement | 1 | 106+pri | `offsetof(atrace_ringbuf, overflow)` |
+
+Where `pri` is the post-retval insertion size: 0 for standard stubs,
+70 for OpenLibrary, 26 for accept(). Offsets at or after suffix byte 34
+(the insertion point) shift by `pri`; offsets before 34 are unaffected.
 
 
 ## Address and Displacement Patching
@@ -976,15 +1124,18 @@ All address patches, showing which runtime value is written and where:
 
 | Address | Source | Occurrences | Byte offsets |
 |---|---|---|---|
-| PATCH_ADDR | `(ULONG)patch` | 4 | Prefix: 4, 102+ns, 170+ns; Suffix: start+80 |
+| PATCH_ADDR | `(ULONG)patch` | 4 | Prefix: 4, 122+ns, 190+ns; Suffix: start+80+pri |
 | ANCHOR_ADDR | `(ULONG)anchor` | 1 | Prefix: 18 |
-| RING_ENTRIES_ADDR | `(ULONG)entries` | 1 | Prefix: 130+ns |
-| TIMER_BASE_ADDR | `(ULONG)anchor->timer_base` | 1 | Prefix: 138+ns |
-| DOS_BASE_ADDR | `dos_base` (dos.library) | 1 | Suffix: start+50 |
-| ORIG_ADDR | `SetFunction()` return | 3 | Suffix: start+18, start+98, start+120 |
+| RING_ENTRIES_ADDR | `(ULONG)entries` | 1 | Prefix: 150+ns |
+| TIMER_BASE_ADDR | `(ULONG)anchor->timer_base` | 1 | Prefix: 158+ns |
+| DOS_BASE_ADDR | `dos_base` (dos.library) | 1 | Suffix: start+50+pri |
+| BSD_TABLE | `anchor->bsd_table` | 1 | Suffix: start+58 (OpenLibrary only) |
+| ORIG_ADDR | `SetFunction()` return | 3 | Suffix: start+18, start+98+pri, start+120+pri |
 
-Where `ns` is the null shift (0 or 8) and `start` is `suffix_start`
-(prefix_bytes + variable region bytes).
+Where `ns` is the null shift (0 or 8), `start` is `suffix_start`
+(prefix_bytes + variable region bytes), and `pri` is the post-retval
+insertion size (0, 70, or 26). ORIG_ADDR occurrence 1 (at start+18) is
+before the insertion point and is not shifted.
 
 ### Struct Field Displacement Patches
 
@@ -997,7 +1148,7 @@ from `offsetof()`:
 | Byte offset | Instruction | Patched with |
 |---|---|---|
 | 10 | `tst.l enabled(a5)` | `offsetof(atrace_patch, enabled)` = 8 |
-| 108+ns | `addq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
+| 128+ns | `addq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
 
 **Prefix patches (atrace_anchor fields):**
 
@@ -1006,25 +1157,26 @@ from `offsetof()`:
 | 24 | `tst.l global_enable(a5)` | `offsetof(atrace_anchor, global_enable)` = 56 |
 | 32 | `tst.l filter_task(a5)` | `offsetof(atrace_anchor, filter_task)` = 80 |
 | 48 | `cmpa.l filter_task(a5), a6` | `offsetof(atrace_anchor, filter_task)` = 80 |
-| 70+ns | `movea.l ring(a5), a0` | `offsetof(atrace_anchor, ring)` = 60 |
-| 112+ns | `move.l event_sequence(a5), d1` | `offsetof(atrace_anchor, event_sequence)` = 72 |
-| 116+ns | `addq.l #1, event_sequence(a5)` | `offsetof(atrace_anchor, event_sequence)` = 72 |
+| 68 | `cmpa.l daemon_task(a5), a6` | `offsetof(atrace_anchor, daemon_task)` = 100 |
+| 90+ns | `movea.l ring(a5), a0` | `offsetof(atrace_anchor, ring)` = 60 |
+| 132+ns | `move.l event_sequence(a5), d1` | `offsetof(atrace_anchor, event_sequence)` = 72 |
+| 136+ns | `addq.l #1, event_sequence(a5)` | `offsetof(atrace_anchor, event_sequence)` = 72 |
 
 **Prefix patches (atrace_ringbuf fields):**
 
 | Byte offset | Instruction | Patched with |
 |---|---|---|
-| 74+ns | `move.l write_pos(a0), d0` | `offsetof(atrace_ringbuf, write_pos)` = 4 |
-| 82+ns | `cmp.l capacity(a0), d1` | `offsetof(atrace_ringbuf, capacity)` = 0 |
-| 90+ns | `cmp.l read_pos(a0), d1` | `offsetof(atrace_ringbuf, read_pos)` = 8 |
-| 98+ns | `move.l d1, write_pos(a0)` | `offsetof(atrace_ringbuf, write_pos)` = 4 |
+| 94+ns | `move.l write_pos(a0), d0` | `offsetof(atrace_ringbuf, write_pos)` = 4 |
+| 102+ns | `cmp.l capacity(a0), d1` | `offsetof(atrace_ringbuf, capacity)` = 0 |
+| 110+ns | `cmp.l read_pos(a0), d1` | `offsetof(atrace_ringbuf, read_pos)` = 8 |
+| 118+ns | `move.l d1, write_pos(a0)` | `offsetof(atrace_ringbuf, write_pos)` = 4 |
 
-**Suffix patches:**
+**Suffix patches** (offsets shift by `pri` for variant stubs):
 
 | Suffix-relative offset | Instruction | Patched with |
 |---|---|---|
-| 86 | `subq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
-| 106 | `addq.l #1, overflow(a0)` | `offsetof(atrace_ringbuf, overflow)` = 12 |
+| 86+pri | `subq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
+| 106+pri | `addq.l #1, overflow(a0)` | `offsetof(atrace_ringbuf, overflow)` = 12 |
 
 ### Branch Displacement Calculation
 
@@ -1048,16 +1200,22 @@ displacement word immediately follows it.
 
 | Branch | Opcode byte | Displacement byte | Target |
 |---|---|---|---|
-| `beq.w .disabled` | 12 | 14 | suffix_start + 94 |
-| `beq.w .disabled` | 26 | 28 | suffix_start + 94 |
-| `bne.w .disabled` | 52 | 54 | suffix_start + 94 |
-| `beq.w .overflow` | 92+ns | 94+ns | suffix_start + 104 |
+| `beq.w .disabled` | 12 | 14 | suffix_start + 94 + pri |
+| `beq.w .disabled` | 26 | 28 | suffix_start + 94 + pri |
+| `bne.w .disabled` | 52 | 54 | suffix_start + 94 + pri |
+| `beq.w .disabled` (daemon) | 72 | 74 | suffix_start + 94 + pri |
+| `beq.w .overflow` | 112+ns | 114+ns | suffix_start + 104 + pri |
+
+Where `pri` is the post-retval insertion size: 0 for standard stubs,
+70 for OpenLibrary, 26 for accept(). The `.disabled` and `.overflow`
+labels in the suffix shift by the insertion size because they are
+located after the insertion point (suffix byte 34).
 
 **NULL-argument filter branch** (when present):
 
 | Branch | Opcode byte | Displacement byte | Target |
 |---|---|---|---|
-| `beq.w .disabled` | 60 | 62 | suffix_start + 94 |
+| `beq.w .disabled` | 80 | 82 | suffix_start + 94 + pri |
 
 Displacement calculations from the source code:
 
@@ -1065,11 +1223,12 @@ Displacement calculations from the source code:
 p[BEQ_DISABLED_1 / 2] = (UWORD)(disabled_byte - (12 + 2));
 p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
 p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
-p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (92 + ns + 2));
+p[BEQ_DISABLED_4 / 2] = (UWORD)(disabled_byte - (72 + 2));
+p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (112 + ns + 2));
 ```
 
-Note that branches at byte offsets below 56 are NOT shifted in position
-(the NULL check is inserted at byte 56), but their displacements are
+Note that branches at byte offsets below 76 are NOT shifted in position
+(the NULL check is inserted at byte 76), but their displacements are
 larger when the NULL filter is present because the target moved further
 away.
 

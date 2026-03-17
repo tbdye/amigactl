@@ -150,7 +150,7 @@ allocations are:
 
 | Structure      | Size              | Notes                            |
 |----------------|-------------------|----------------------------------|
-| Anchor         | 92 bytes          | `struct atrace_anchor`, one only |
+| Anchor         | 104 bytes         | `struct atrace_anchor`, one only |
 | Semaphore name | 15 bytes          | "atrace_patches" + NUL           |
 | Patch array    | 40 x 99 = 3,960  | `struct atrace_patch` per function |
 
@@ -159,7 +159,7 @@ allocations are:
 Each function gets a generated stub allocated from MEMF_PUBLIC. Stub
 size is the sum of three regions:
 
-- **Prefix**: 196 bytes (standard) or 204 bytes (functions with
+- **Prefix**: 216 bytes (standard) or 224 bytes (functions with
   NULL-argument filter: FindTask, UnLock, LockPubScreen,
   UnlockPubScreen)
 - **Variable region**: depends on argument count, string capture mode,
@@ -170,16 +170,16 @@ Representative stub sizes (prefix + variable + suffix):
 
 | Function type                        | Variable region | Total stub |
 |--------------------------------------|-----------------|------------|
-| 0-arg, no string (CreateMsgPort)     | 110 bytes       | 432 bytes  |
-| 1-arg, single string (OpenLibrary)   | 138 bytes       | 460 bytes  |
-| 1-arg, indirect deref (ObtainSem.)   | 152 bytes       | 474 bytes  |
-| 2-arg, no string (AllocMem)          | 122 bytes       | 444 bytes  |
-| 2-arg, dual string (Rename)          | 178 bytes       | 500 bytes  |
-| 1-arg, IORequest deref (DoIO)        | 170 bytes       | 492 bytes  |
-| 1-arg, Lock volume deref (CurrentDir)| 186 bytes       | 508 bytes  |
-| 1-arg, NULL-arg filter (FindTask)    | 138 bytes       | 468 bytes  |
+| 0-arg, no string (CreateMsgPort)     | 110 bytes       | 452 bytes  |
+| 1-arg, single string (OpenLibrary)   | 138 bytes       | 480 bytes  |
+| 1-arg, indirect deref (ObtainSem.)   | 152 bytes       | 494 bytes  |
+| 2-arg, no string (AllocMem)          | 122 bytes       | 464 bytes  |
+| 2-arg, dual string (Rename)          | 178 bytes       | 520 bytes  |
+| 1-arg, IORequest deref (DoIO)        | 170 bytes       | 512 bytes  |
+| 1-arg, Lock volume deref (CurrentDir)| 186 bytes       | 528 bytes  |
+| 1-arg, NULL-arg filter (FindTask)    | 138 bytes       | 488 bytes  |
 
-All 99 stubs together consume approximately 44-48 KB of Amiga memory.
+All 99 stubs together consume approximately 46-50 KB of Amiga memory.
 Every stub includes the 94-byte task name capture sequence (47 words)
 in its variable region.
 
@@ -193,7 +193,7 @@ Total = 16 + (128 * capacity) bytes
 
 | Capacity (events) | Ring buffer size | Total with fixed structures |
 |--------------------|------------------|-----------------------------|
-| 16 (minimum)       | 2,064 bytes      | ~52 KB                     |
+| 16 (minimum)       | 2,064 bytes      | ~54 KB                     |
 | 1,024              | 131,088 bytes    | ~180 KB                    |
 | 4,096              | 524,304 bytes    | ~570 KB                    |
 | 8,192 (default)    | 1,048,592 bytes  | ~1.1 MB                    |

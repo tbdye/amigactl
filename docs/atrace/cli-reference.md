@@ -60,14 +60,13 @@ trace event:
 
 ```
 SEQ                 TIME  FUNCTION                     TASK                 ARGS                                     RESULT
-1            23.456789  dos.Open                     myapp                "SYS:Libs/test.library",1005             0x1e3c8a00 [O]
-2            23.457102  dos.Close                    myapp                0x1e3c8a00                               -1 [O]
-3            23.458200  exec.OpenLibrary             myapp                "utility.library",0                      0x1e200000 [O]
+1            23.456789  dos.Open                     myapp                "SYS:Libs/test.library",1005             0x1e3c8a00
+2            23.457102  dos.Close                    myapp                0x1e3c8a00                               -1
+3            23.458200  exec.OpenLibrary             myapp                "utility.library",0                      0x1e200000
 ```
 
-Columns are fixed-width. `RESULT` is followed by a status indicator:
-`[O]` for success, `[E]` for error, or `[-]` for unchecked. Comment
-lines (such as system messages) are prefixed with `#`.
+Columns are fixed-width. Comment lines (such as system messages)
+are prefixed with `#`.
 
 When the terminal supports color, error results are highlighted in
 red and successful results in green.

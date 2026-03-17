@@ -449,13 +449,13 @@ bits of tick resolution.
 At a typical Amiga EClock frequency of ~709,379 Hz, the 48-bit counter
 wraps after approximately:
 
-    2^48 / 709379 = ~396,749 seconds = ~4.6 days
+    2^48 / 709379 = ~396,790,681 seconds = ~4,593 days (~12.6 years)
 
 **Why:** The full EClock is 64 bits (returned by `ReadEClock()` as two
 32-bit values). Storing only 48 bits saves 2 bytes in the 128-byte event
 structure. The high 16 bits of the upper 32-bit word are discarded.
 
-**Impact:** Trace sessions lasting longer than ~4.6 days (at standard
+**Impact:** Trace sessions lasting longer than ~12.6 years (at standard
 NTSC EClock rates) would experience timestamp wrap-around and produce
 incorrect elapsed-time calculations. PAL systems with ~715,909 Hz have a
 slightly shorter range. In practice, this is not a meaningful constraint.
@@ -580,7 +580,7 @@ never patched, preventing feedback loops. The daemon tracks up to
 All atrace memory allocations use `MEMF_PUBLIC` and are never freed
 (except the ring buffer on QUIT):
 
-- **Anchor structure** (92 bytes): persists always.
+- **Anchor structure** (104 bytes): persists always.
 - **Patch descriptors** (40 bytes x 99 = 3,960 bytes): persists always.
 - **Stub code** (~300-500 bytes per patch, ~30-50 KB total): persists
   always.
@@ -618,7 +618,7 @@ Stubs set `valid=2` before calling the original function and `valid=1`
 after the function returns. The daemon's consumer may encounter events
 with `valid=2` for blocking functions (e.g., `WaitSelect`, `Execute`,
 `RunCommand`). After `INFLIGHT_PATIENCE` consecutive encounters (3
-encounters, approximately 200 ms of waiting), the daemon consumes the event as-is with
+encounters, approximately 60 ms of waiting), the daemon consumes the event as-is with
 a potentially stale return value of 0.
 
 **Impact:** For long-blocking functions, the event may appear in the

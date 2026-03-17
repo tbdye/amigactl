@@ -26,9 +26,9 @@ amigactl> trace start
 Optional arguments are the same as the CLI form:
 
 ```
-amigactl> trace start --lib dos
+amigactl> trace start LIB=dos
 amigactl> trace start --detail
-amigactl> trace start --errors --lib exec
+amigactl> trace start ERRORS LIB=exec
 ```
 
 The viewer takes over the terminal until you press `q` to quit or the

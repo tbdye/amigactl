@@ -37,7 +37,7 @@ instruction rather than a multiply.
 | flags | 33 | 1 | UBYTE | Bitfield: FLAG_HAS_ECLOCK, FLAG_HAS_IOERR |
 | string_data | 34 | 64 | char[64] | String argument or indirect name capture |
 | ioerr | 98 | 1 | UBYTE | DOS IoErr() value captured post-call |
-| reserved1 | 99 | 1 | UBYTE | Alignment padding (unused) |
+| bsd_flag | 99 | 1 | UBYTE | bsdsocket detection flag (set by OpenLibrary stub) |
 | eclock_lo | 100 | 4 | ULONG | EClock timestamp, low 32 bits |
 | eclock_hi | 104 | 2 | UWORD | EClock timestamp, high 16 bits |
 | task_name | 106 | 22 | char[22] | Calling task/process name (21 chars + NUL) |
@@ -71,8 +71,8 @@ return value into `retval`, optionally captures IoErr, and then sets
 
 The daemon handles `valid=2` events with patience: it waits up to
 `INFLIGHT_PATIENCE` (3) consecutive polls at the same ring position
-before consuming the event as-is. At the default 100ms poll interval,
-this gives non-blocking functions approximately 200ms to complete. For
+before consuming the event as-is. At the default 20ms poll interval,
+this gives non-blocking functions approximately 60ms to complete. For
 truly blocking functions that exceed this patience, the event is consumed
 with incomplete post-call fields. The daemon suppresses IoErr display
 for such events by checking `ev->valid == 1` before formatting the IoErr
@@ -299,6 +299,8 @@ dereference strategy:
 | 6 | DEREF_WIN_TITLE | `Window->Title` (offset 32) | CloseWindow, ActivateWindow, WindowToFront, WindowToBack |
 | 7 | DEREF_NS_TITLE | `NewScreen->DefaultTitle` (offset 20) | OpenScreen, OpenScreenTagList |
 | 8 | DEREF_SCR_TITLE | `Screen->Title` (offset 22) | CloseScreen |
+| 9 | DEREF_SOCKADDR | `sockaddr_in`: 8 bytes into `string_data[0..7]` (from `arg_regs[1]`) | bind, connect |
+| 10 | DEREF_SOCKADDR_3 | `sockaddr_in`: 8 bytes into `string_data[0..7]` (from `arg_regs[3]`) | sendto |
 
 Direct string capture and indirect name capture are mutually exclusive.
 A function uses one or the other, never both. The stub generator rejects
@@ -346,10 +348,18 @@ Written by the stub post-call handler (suffix byte 64): `move.b d0,
 `or.b #2, 33(a0)`.
 
 
-### reserved1 (offset 99, 1 byte)
+### bsd_flag (offset 99, 1 byte)
 
-Alignment padding between `ioerr` and `eclock_lo`. Not used. Allocated
-with `MEMF_CLEAR` (zero).
+bsdsocket detection flag, written by the OpenLibrary stub's variable
+region. After string capture fills `string_data` with the library name,
+the stub compares the first 8 bytes against `"bsdsocke"` (the first 8
+characters of `bsdsocket.library`). If matched, `bsd_flag` is set to
+0xFF; otherwise it remains 0 (cleared by `clr.b` before the comparison).
+
+The post-call suffix handler reads this byte to decide whether to apply
+per-opener bsdsocket patching to the newly-opened library base. This
+flag exists only in OpenLibrary events; all other function stubs leave
+the byte at its `MEMF_CLEAR` default of zero.
 
 
 ### eclock_lo (offset 100, 4 bytes)

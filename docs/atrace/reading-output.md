@@ -181,7 +181,7 @@ library call. The format depends on the calling context:
 ### Name Resolution Mechanism
 
 The daemon maintains a task name cache of 64 entries, refreshed every
-~2 seconds (20 poll cycles) by walking the system task lists under
+~400ms (20 poll cycles) by walking the system task lists under
 `Forbid()`. For CLI processes, `resolve_cli_name()` reads the command
 name from `pr_CLI->cli_CommandName` and extracts the basename.
 
@@ -359,10 +359,12 @@ and others. Multiple flags are separated by `|`.
 | Function | Format | Example |
 |----------|--------|---------|
 | socket | `domain,type,proto=N` | `AF_INET,SOCK_STREAM,proto=0` |
-| bind / connect | `fd=N,addr=0xaddr,len=N` | `fd=0,addr=0x07c42a00,len=16` |
+| bind / connect | `fd=N,IP:port` or `fd=N,addr=0xaddr` | `fd=0,192.168.1.5:8080` |
 | listen | `fd=N,backlog=N` | `fd=0,backlog=5` |
-| accept | `fd=N,addr=0xaddr` | `fd=0,addr=0x07c42a00` |
-| send / sendto / recv / recvfrom | `fd=N,len=N,flags=0xN` | `fd=0,len=1024,flags=0x0` |
+| accept | `fd=N` | `fd=0` |
+| send / recv | `fd=N,len=N[,flags]` | `fd=0,len=1024,MSG_OOB` |
+| sendto | `fd=N[,IP:port],len=N[,flags]` | `fd=0,192.168.1.5:9000,len=512` |
+| recvfrom | `fd=N,len=N[,flags]` | `fd=0,len=1024` |
 | shutdown | `fd=N,how` | `fd=0,SHUT_RDWR` |
 | setsockopt / getsockopt | `fd=N,level=N,opt=N` | `fd=0,level=65535,opt=4` |
 | IoctlSocket | `fd=N,req=0xN` | `fd=0,req=0x8004667e` |
@@ -376,6 +378,27 @@ Socket types: `SOCK_STREAM` (1), `SOCK_DGRAM` (2), `SOCK_RAW` (3).
 Unknown types show as `type=N`.
 
 Shutdown modes: `SHUT_RD` (0), `SHUT_WR` (1), `SHUT_RDWR` (2).
+
+For `bind` and `connect`, the stub captures the `sockaddr_in` contents
+from the caller's address argument. When the capture succeeds and the
+address family is `AF_INET`, the IP and port are shown inline
+(e.g., `fd=0,192.168.1.5:8080`). `INADDR_ANY` is displayed as `*`
+(e.g., `fd=0,*:8080`). If the capture fails (non-AF_INET family or
+NULL pointer), the raw address pointer is shown as a fallback.
+
+For `accept`, the arguments show only the file descriptor. On success,
+the daemon appends the accepted peer's address to the return value:
+`N [from 192.168.1.5:4321]`. The peer address is captured by the
+post-call suffix block from the `sockaddr_in` output parameter.
+
+For `sendto`, the destination `sockaddr_in` is captured and shown
+before the length when available (e.g., `fd=0,192.168.1.5:9000,len=512`).
+
+Message flags for `send`, `sendto`, `recv`, and `recvfrom` are decoded
+symbolically when non-zero: `MSG_OOB` (0x01), `MSG_PEEK` (0x02),
+`MSG_DONTROUTE` (0x04), `MSG_WAITALL` (0x40), `MSG_DONTWAIT` (0x80).
+Multiple flags are separated by `|`. When flags are zero, no flags
+field is shown.
 
 #### graphics.library
 
@@ -686,7 +709,7 @@ before calling the original function, allowing the consumer to advance
 past slots that may block indefinitely.
 
 When the daemon encounters a `valid=2` event, it waits up to 3
-consecutive polls (approximately 200ms at the default 100ms poll
+consecutive polls (approximately 60ms at the default 20ms poll
 interval) for the post-call handler to complete and set `valid=1`.
 If the function is still executing after this patience interval, the
 event is consumed as-is.

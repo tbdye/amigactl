@@ -48,7 +48,7 @@ and does not use `AddResident()`. All memory it allocates uses
 
 The loader:
 
-1. Allocates the anchor structure (92 bytes).
+1. Allocates the anchor structure (104 bytes).
 2. Allocates the ring buffer (16-byte header + 128 bytes per entry).
 3. Allocates the patch descriptor array (40 bytes per patch).
 4. Opens `timer.device` and reads the EClock frequency.
@@ -112,7 +112,7 @@ All shared state between the installer program and the daemon resides in
 `MEMF_PUBLIC` memory on the Amiga. The structures are defined in
 `atrace/atrace.h`.
 
-### Anchor Structure (`struct atrace_anchor`, 92 bytes)
+### Anchor Structure (`struct atrace_anchor`, 104 bytes)
 
 The anchor is the top-level structure, discoverable via
 `FindSemaphore("atrace_patches")`. It embeds a `SignalSemaphore` as its
@@ -135,9 +135,13 @@ first member, so it can be cast directly from the semaphore pointer.
 | `filter_task` | 80 | 4 | Task pointer for TRACE RUN filtering (`NULL` = all tasks) |
 | `eclock_freq` | 84 | 4 | EClock frequency in Hz (from `ReadEClock`) |
 | `timer_base` | 88 | 4 | `timer.device` base pointer (for stub EClock calls) |
+| `bsd_table` | 92 | 4 | Pointer to BSD per-opener patching table (`NULL` if no bsdsocket patches) |
+| `bsd_table_count`| 96 | 2 | Number of entries in BSD patching table |
+| `padding2` | 98 | 2 | Alignment |
+| `daemon_task` | 100 | 4 | Daemon task pointer for stub-level self-filtering (`NULL` = no exclusion) |
 
-The `global_enable` and `filter_task` fields are declared `volatile` and
-are read by stub code running in interrupt-like contexts (under
+The `global_enable`, `filter_task`, and `daemon_task` fields are declared
+`volatile` and are read by stub code running in interrupt-like contexts (under
 `Disable()`/`Enable()` in the stub fast path).
 
 ### Ring Buffer (`struct atrace_ringbuf`, 16-byte header)
@@ -182,7 +186,7 @@ Each event occupies exactly 128 bytes, enabling shift-based indexing
 | `flags` | 33 | 1 | `FLAG_HAS_ECLOCK` (0x01), `FLAG_HAS_IOERR` (0x02) |
 | `string_data`| 34 | 64 | Captured string argument or indirect name |
 | `ioerr` | 98 | 1 | Low byte of DOS `IoErr()` result (if `FLAG_HAS_IOERR` set) |
-| `reserved1` | 99 | 1 | Alignment padding |
+| `bsd_flag` | 99 | 1 | bsdsocket detection flag (set by OpenLibrary stub suffix) |
 | `eclock_lo` | 100 | 4 | Low 32 bits of EClock timestamp |
 | `eclock_hi` | 104 | 2 | Low 16 bits of EClock high word |
 | `task_name` | 106 | 22 | Calling task's `tc_Node.ln_Name` (21 chars + NUL) |
@@ -247,9 +251,10 @@ replace the original library vector entry.
 
 A stub has three regions:
 
-1. **Prefix** (196 bytes standard, 204 bytes with NULL-argument filter):
-   Fast-path checks (`enabled`, `global_enable`, `filter_task`), optional
-   NULL-argument short-circuit, register save (`MOVEM d0-d7/a0-a4/a6`),
+1. **Prefix** (216 bytes standard, 224 bytes with NULL-argument filter):
+   Fast-path checks (`enabled`, `global_enable`, `filter_task`,
+   `daemon_task`), optional NULL-argument short-circuit, register save
+   (`MOVEM d0-d7/a0-a4/a6`),
    ring buffer slot reservation under `Disable()`/`Enable()`, EClock
    timestamp capture via `ReadEClock()`, and event header population
    (`lib_id`, `lvo_offset`, `sequence`, `caller_task`, `eclock_lo`,
@@ -259,20 +264,25 @@ A stub has three regions:
    instructions (reading from the MOVEM frame on the stack into the event
    entry), `arg_count` immediate, `flags` write, and optional string
    capture code. String capture handles direct C string arguments
-   (`string_args` bitmask), indirect name dereference (8 types including
+   (`string_args` bitmask), indirect name dereference (11 types including
    `ln_Name`, IORequest device names, TextAttr font names, Lock volume
-   names, and Window/Screen titles), and CLI command name extraction
+   names, Window/Screen titles, and `sockaddr_in` capture for bsdsocket
+   calls), and CLI command name extraction
    (which also writes the resolved name into `task_name`). Ends by
    setting `valid` to 2 (in-progress).
 
-3. **Suffix** (126 bytes): MOVEM restore, trampoline to the original
-   function (pushes original address and executes `RTS`), post-call
-   handler that writes `retval` and optionally calls `IoErr()` for
-   `dos.library` functions with zero return values, sets `valid` to 1,
-   decrements `use_count`, and returns to the original caller. Also
-   contains the disabled fast path (transparent tail-call to the
-   original) and the overflow path (increments the overflow counter and
-   tail-calls the original).
+3. **Suffix** (126 bytes standard, 196 bytes for OpenLibrary, 152 bytes
+   for accept): MOVEM restore, trampoline to the original function
+   (pushes original address and executes `RTS`), post-call handler that
+   writes `retval` and optionally calls `IoErr()` for `dos.library`
+   functions with zero return values, sets `valid` to 1, decrements
+   `use_count`, and returns to the original caller. Also contains the
+   disabled fast path (transparent tail-call to the original) and the
+   overflow path (increments the overflow counter and tail-calls the
+   original). The OpenLibrary suffix includes a 70-byte bsdsocket
+   per-opener patching block that calls `SetFunction` for each
+   bsdsocket LVO on a newly opened `bsdsocket.library` base. The
+   accept suffix includes a 26-byte `sockaddr_in` capture block.
 
 Total stub size = prefix + variable region + suffix, rounded up to a
 4-byte (ULONG) boundary.

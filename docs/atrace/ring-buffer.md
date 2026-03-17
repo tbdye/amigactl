@@ -318,9 +318,7 @@ The consumer tracks the position and count of consecutive stalls:
   it checks `ev->valid == 1` before displaying IoErr data.
 
 With the daemon's 20ms WaitSelect timeout, 3 stalls represent
-approximately 60ms of waiting (though the source comments estimate
-~200ms based on a 100ms effective poll rate that accounts for processing
-overhead). This is enough time for virtually all non-blocking functions
+approximately 60ms of waiting. This is enough time for virtually all non-blocking functions
 to complete, while keeping blocking functions from indefinitely stalling
 the consumer.
 

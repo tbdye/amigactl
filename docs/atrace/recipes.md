@@ -14,11 +14,10 @@ output, and tips for interpreting the results.
 - All CLI examples assume `--host` is configured via config file or
   environment variable. Add `--host <ip>` if needed.
 
-**Important:** The CLI `--func` flag accepts only a single function
-name. Comma-separated values are treated as a literal name and will
-not match anything. For multi-function filtering from the command line,
-use the interactive shell's wire protocol syntax (e.g.,
-`FUNC=Open,Lock,Close`) or the Python API presets. See
+**Note:** Both the CLI `--func` flag and the shell `FUNC=` token
+accept comma-separated function names (e.g., `--func Open,Close,Lock`
+or `FUNC=Open,Close,Lock`). The value is passed through to the daemon,
+which parses the comma-separated list. See
 [filtering.md](filtering.md) for details.
 
 
@@ -126,11 +125,10 @@ them, and you should almost always combine them with task filtering
 
 ```
 $ amigactl trace enable AllocMem FreeMem AllocVec FreeVec
-$ amigactl trace run --func AllocMem -- MyProgram
+$ amigactl trace run --func AllocMem,FreeMem,AllocVec,FreeVec -- MyProgram
 ```
 
-The `--func` flag on the CLI accepts only a single function name. To
-see all four memory functions for a specific program, use the shell:
+Or equivalently in the shell:
 
 ```
 amigactl> trace enable AllocMem FreeMem AllocVec FreeVec
@@ -782,10 +780,10 @@ See [python-api.md](python-api.md) for the full API reference.
 | Use Case | CLI Command | Shell Equivalent |
 |----------|------------|------------------|
 | All file I/O | `trace start --lib dos` | `trace start LIB=dos` |
-| Specific file ops | (single function only) | `trace start FUNC=Open,Close,Lock` |
+| Specific file ops | `trace start --func Open,Close,Lock` | `trace start FUNC=Open,Close,Lock` |
 | Failed file access | `trace start --errors --lib dos` | `trace start LIB=dos ERRORS` |
-| Memory tracking | `trace enable AllocMem FreeMem AllocVec FreeVec` then `trace run --func AllocMem -- prog` | `trace run FUNC=AllocMem,FreeMem,AllocVec,FreeVec -- prog` |
-| IPC analysis | (enable, then single func) | `trace start FUNC=FindPort,GetMsg,PutMsg` |
+| Memory tracking | `trace enable AllocMem FreeMem AllocVec FreeVec` then `trace run --func AllocMem,FreeMem,AllocVec,FreeVec -- prog` | `trace run FUNC=AllocMem,FreeMem,AllocVec,FreeVec -- prog` |
+| IPC analysis | (enable, then `--func FindPort,GetMsg,PutMsg`) | `trace start FUNC=FindPort,GetMsg,PutMsg` |
 | Network calls | `trace start --lib bsdsocket` | `trace start LIB=bsdsocket` |
 | Program startup | `trace run -- MyProgram` | `trace run -- MyProgram` |
 | Library deps | `trace run --func OpenLibrary -- prog` | `trace run FUNC=OpenLibrary,CloseLibrary -- prog` |
@@ -794,8 +792,8 @@ See [python-api.md](python-api.md) for the full API reference.
 | Window activity | `trace start --lib intuition` | `trace start LIB=intuition` |
 | Icon access | `trace start --lib icon` | `trace start LIB=icon` |
 
-Note: The CLI `--func` flag accepts only a single function name. For
-multi-function filtering, use the shell syntax or the Python API.
+Note: Both CLI `--func` and shell `FUNC=` accept comma-separated
+function names. The daemon parses the comma-separated list.
 
 ---
 
