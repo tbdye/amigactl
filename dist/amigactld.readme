@@ -2,7 +2,7 @@ Short:    Remote access toolkit for AmigaOS
 Uploader: thomas@tfenet.com (Thomas Dye)
 Author:   thomas@tfenet.com (Thomas Dye)
 Type:     comm/tcp
-Version:  0.7.0
+Version:  0.8.0
 Requires: AmigaOS 2.0+, 68020+, bsdsocket.library
 Architecture: m68k-amigaos
 
@@ -11,9 +11,10 @@ over TCP. It consists of a lightweight C daemon (amigactld) running
 on the Amiga and a Python client library and CLI tool on the client
 side. Together they expose file operations (copy, checksum, append,
 streaming), CLI command execution, ARexx dispatch, environment
-variables, library version queries, and system introspection (assigns,
-volumes, ports, tasks, devices) through a simple text protocol with
-machine-parseable responses.
+variables, library version queries, system introspection (assigns,
+volumes, ports, tasks, devices), and real-time function call tracing
+(atrace) through a simple text protocol with machine-parseable
+responses.
 
 The client provides an interactive shell with tab completion,
 colorized output, remote file editing, and client-side search and
@@ -22,19 +23,24 @@ navigation commands (find, tree, grep, diff, du, watch).
 Designed for trusted LANs and emulator setups. Supports IP-based
 access control via a configuration file.
 
-CHANGES IN 0.7.0
+CHANGES IN 0.8.0
 
-New daemon commands: COPY, APPEND, CHECKSUM, SETCOMMENT, LIBVER,
-ENV, SETENV, DEVICES, CAPABILITIES. Extended READ with partial
-read support (OFFSET/LENGTH). Extended SYSINFO with largest
-contiguous memory block fields.
+New: atrace -- real-time function call tracing for AmigaOS shared
+libraries. A resident module (atrace_loader) patches library function
+vectors to capture calls with arguments, return values, and timing.
+Supports 99 functions across 7 libraries (exec, dos, intuition,
+graphics, layers, utility, bsdsocket). Three output tiers (Summary,
+Basic, Detail) control verbosity. Includes task-level filtering,
+per-opener bsdsocket patching, symbolic constant decoding, and
+sockaddr_in capture for network functions.
 
-New shell commands: find, tree, grep, diff, du, watch. New CLI
-subcommands: cp, append, checksum, setcomment, libver, env, setenv,
-devices, capabilities.
+New shell command: trace (interactive trace viewer with live grid
+display). New CLI subcommands: trace-start, trace-stop, trace-run,
+trace-status, trace-list.
 
-Bug fix: DIR RECURSIVE on volume roots (RAM:, SYS:) now correctly
-recurses into nested directories.
+Comprehensive documentation in docs/atrace/ (20 guides covering
+architecture, stub mechanism, event format, filtering, recipes,
+troubleshooting, and more).
 
 INSTALLATION
 
@@ -43,6 +49,8 @@ INSTALLATION
 3. Edit S:amigactld.conf to set ALLOW lines for your client IPs.
 4. Run from CLI: amigactld
    Or place in S:User-Startup: RUN >NIL: <path>/amigactld
+5. For function tracing, make atrace_loader resident:
+   RESIDENT <path>/atrace_loader PURE
 
 For Workbench use, double-click the amigactld icon. Configuration
 can be set via Tool Types (PORT, CONFIG) in the icon's Info window.

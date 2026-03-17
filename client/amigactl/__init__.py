@@ -11,6 +11,7 @@ Usage::
         amiga.ping()
 """
 
+import os
 import socket
 from typing import Callable, Dict, List, Optional, Tuple, Type
 
@@ -1411,11 +1412,18 @@ class AmigaConnection:
 
         old_timeout = self._sock.gettimeout()
         try:
-            # Block indefinitely waiting for DATA chunks
-            self._sock.settimeout(None)
+            # On Windows, blocking recv() cannot be interrupted by Ctrl+C.
+            # Use a short timeout so Python can process signals between reads.
+            if os.name == "nt":
+                self._sock.settimeout(0.5)
+            else:
+                self._sock.settimeout(None)
 
             while True:
-                line = read_line(self._sock)
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    continue  # Windows: yield to signal handler
                 if line.startswith("DATA "):
                     try:
                         chunk_len = int(line[5:])
@@ -1465,7 +1473,11 @@ class AmigaConnection:
         self._sock.settimeout(10)  # 10s timeout for drain
         try:
             while True:
-                line = read_line(self._sock)
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    raise ProtocolError(
+                        "Timed out draining trace events after STOP")
                 if line.startswith("DATA "):
                     try:
                         chunk_len = int(line[5:])
@@ -1593,10 +1605,18 @@ class AmigaConnection:
         rc = None
         old_timeout = self._sock.gettimeout()
         try:
-            self._sock.settimeout(None)
+            # On Windows, blocking recv() cannot be interrupted by Ctrl+C.
+            # Use a short timeout so Python can process signals between reads.
+            if os.name == "nt":
+                self._sock.settimeout(0.5)
+            else:
+                self._sock.settimeout(None)
 
             while True:
-                line = read_line(self._sock)
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    continue  # Windows: yield to signal handler
                 if line.startswith("DATA "):
                     try:
                         chunk_len = int(line[5:])

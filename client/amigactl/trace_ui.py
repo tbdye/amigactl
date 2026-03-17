@@ -18,11 +18,11 @@ import signal
 import socket
 import sys
 import time as _time
-import tty
-
 try:
+    import tty
     import termios
 except ImportError:
+    tty = None
     termios = None  # Windows -- not supported for interactive viewer
 
 from .colors import RESET, format_trace_event, get_lib_color, strip_ansi

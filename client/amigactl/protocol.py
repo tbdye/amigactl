@@ -54,7 +54,9 @@ def read_line(sock: socket.socket) -> str:
         try:
             b = sock.recv(1)
         except socket.timeout:
-            raise ProtocolError("Timed out waiting for data from server")
+            if not buf:
+                raise  # No partial data -- let caller handle
+            continue  # Mid-line data -- keep reading
         except OSError as e:
             raise ProtocolError("Socket error: {}".format(e))
 
@@ -141,8 +143,9 @@ def recv_exact(sock: socket.socket, nbytes: int) -> bytes:
         try:
             chunk = sock.recv(nbytes - len(buf))
         except socket.timeout:
-            raise ProtocolError(
-                "Timed out reading {} bytes".format(nbytes))
+            if not buf:
+                raise  # No partial data -- let caller handle
+            continue  # Partial transfer -- keep reading
         except OSError as e:
             raise ProtocolError("Socket error: {}".format(e))
         if not chunk:

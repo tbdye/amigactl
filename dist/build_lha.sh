@@ -29,6 +29,11 @@ if [ ! -f amigactld ]; then
     exit 1
 fi
 
+if [ ! -f atrace_loader ]; then
+    echo "ERROR: binary 'atrace_loader' not found after build" >&2
+    exit 1
+fi
+
 # Create staging directory
 STAGING=$(mktemp -d)
 trap 'rm -rf "$STAGING"' EXIT
@@ -36,6 +41,7 @@ trap 'rm -rf "$STAGING"' EXIT
 mkdir -p "$STAGING/amigactl"
 
 cp amigactld               "$STAGING/amigactl/"
+cp atrace_loader            "$STAGING/amigactl/"
 cp dist/amigactld.info      "$STAGING/amigactl/"
 cp dist/amigactld.conf.example "$STAGING/amigactl/"
 cp LICENSE                  "$STAGING/amigactl/"
@@ -53,6 +59,9 @@ cp client/amigactl/__main__.py  "$STAGING/amigactl/client/amigactl/"
 cp client/amigactl/protocol.py  "$STAGING/amigactl/client/amigactl/"
 cp client/amigactl/shell.py     "$STAGING/amigactl/client/amigactl/"
 cp client/amigactl/colors.py    "$STAGING/amigactl/client/amigactl/"
+cp client/amigactl/trace_grid.py  "$STAGING/amigactl/client/amigactl/"
+cp client/amigactl/trace_tiers.py "$STAGING/amigactl/client/amigactl/"
+cp client/amigactl/trace_ui.py    "$STAGING/amigactl/client/amigactl/"
 
 # Copy documentation
 mkdir -p "$STAGING/amigactl/docs"
@@ -60,6 +69,8 @@ mkdir -p "$STAGING/amigactl/docs"
 cp docs/COMMANDS.md             "$STAGING/amigactl/docs/"
 cp docs/PROTOCOL.md             "$STAGING/amigactl/docs/"
 cp docs/AGENT_GUIDE.md          "$STAGING/amigactl/docs/"
+mkdir -p "$STAGING/amigactl/docs/atrace"
+cp docs/atrace/*.md             "$STAGING/amigactl/docs/atrace/"
 cp dist/amigactld.readme        "$STAGING/amigactl/"
 cp README.md                    "$STAGING/amigactl/"
 
