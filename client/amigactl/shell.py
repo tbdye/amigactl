@@ -3373,18 +3373,18 @@ class AmigaShell(cmd.Cmd):
     # -- Destructive operations --------------------------------------------
 
     def do_shutdown(self, arg):
-        """Shut down the Amiga (requires confirmation).
+        """Shut down the amigactld daemon (requires confirmation).
 
     Usage: shutdown
 
-    Sends a shutdown command to the Amiga. The daemon must have
+    Sends a shutdown command to the amigactld daemon. The daemon must have
     ALLOW_REMOTE_SHUTDOWN enabled in its configuration. You will
     be prompted to confirm."""
         if not self._check_connected():
             return
         try:
             answer = input(
-                "Shut down the Amiga. Are you sure? [y/N] "
+                "Shut down the amigactld daemon. Are you sure? [y/N] "
             ).strip().lower()
         except EOFError:
             answer = "n"

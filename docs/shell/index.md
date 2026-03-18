@@ -1,16 +1,15 @@
 # Interactive Shell
 
-The amigactl interactive shell is a `cmd.Cmd`-based REPL that provides
-remote access to an Amiga running the amigactld daemon. It maintains a
-persistent TCP connection and tracks a current working directory on the
-remote filesystem, giving it the feel of a local shell session despite
-operating over the network. Paths are resolved client-side using Amiga
-conventions (`:` volume separators, `/` parent navigation, assigns) before
-being sent to the daemon.
+The amigactl interactive shell provides remote access to an Amiga
+running the amigactld daemon. It maintains a persistent TCP connection
+and tracks a current working directory on the remote filesystem, giving
+it the feel of a local shell session despite operating over the network.
+Paths are resolved using Amiga conventions (`:` volume separators, `/`
+parent navigation, assigns) before being sent to the daemon.
 
 The shell exposes over 50 commands spanning file management, command
 execution, process control, system administration, ARexx messaging,
-library call tracing, and client-side search utilities. It provides tab
+library call tracing, and search utilities. It provides tab
 completion for remote paths and command names with a caching layer to
 minimize round-trips, persistent command history via readline, and
 colorized output for directory listings, diffs, and trace events.
@@ -27,13 +26,13 @@ colorized output for directory listings, diffs, and trace events.
   or in the background, with process listing, signaling, and
   force-termination.
 - **ARexx integration.** Send ARexx commands to any named message port
-  on the Amiga, bridging host-side scripts into the Amiga IPC ecosystem.
+  on the Amiga, bridging client-side scripts into the Amiga IPC ecosystem.
 - **Library call tracing.** Start, stop, filter, and view atrace
   sessions from within the shell, including a full-screen interactive
   TUI viewer.
-- **Client-side search utilities.** `find`, `grep`, `tree`, `diff`,
-  `du`, `watch`, and `tail` are implemented entirely on the client by
-  combining basic protocol operations.
+- **Search utilities.** `find`, `grep`, `tree`, `diff`, `du`, `watch`,
+  and `tail` combine basic operations into powerful search and monitoring
+  tools.
 - **Tab completion and history.** Remote path completion with caching
   and persistent readline history across sessions.
 - **System introspection.** Query volumes, assigns, devices, tasks,
@@ -60,7 +59,7 @@ navigate, inspect, execute, transfer, and exit -- in 5 minutes.
 | [Command Execution](command-execution.md) | Synchronous and asynchronous command execution, process listing, signaling, and termination. |
 | [System Commands](system-commands.md) | Daemon health, system state, environment variables, assigns, shutdown, and reboot. |
 | [ARexx](arexx.md) | Sending ARexx commands to Amiga message ports for application scripting and automation. |
-| [Search Utilities](search-utilities.md) | Client-side `find`, `grep`, `diff`, `du`, and `watch` commands. |
+| [Search Utilities](search-utilities.md) | `find`, `grep`, `diff`, `du`, and `watch` commands. |
 | [Recipes](recipes.md) | Cookbook-style workflows combining commands for common tasks. |
 
 ### Technical Reference
@@ -128,7 +127,7 @@ separately and point to the same documentation as their target command.
 | `run` | Launch an AmigaOS CLI command in the background | [command-execution.md](command-execution.md) |
 | `setcomment` | Set the file comment on a remote file | [file-operations.md](file-operations.md) |
 | `setenv` | Set or delete an AmigaOS environment variable | [system-commands.md](system-commands.md) |
-| `shutdown` | Shut down the Amiga (requires confirmation) | [system-commands.md](system-commands.md) |
+| `shutdown` | Shut down the amigactld daemon (requires confirmation) | [system-commands.md](system-commands.md) |
 | `signal` | Send a break signal to a background process | [command-execution.md](command-execution.md) |
 | `stat` | Show file or directory metadata | [file-operations.md](file-operations.md) |
 | `status` | Show the status of a tracked background process | [command-execution.md](command-execution.md) |

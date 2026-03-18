@@ -19,9 +19,9 @@ structural role as the leading `/` in a Unix path, but it appears after
 the device name rather than before the first directory.
 
 ```bash
-amiga@192.168.6.228:SYS:> ls SYS:C
-amiga@192.168.6.228:SYS:> ls Work:Projects
-amiga@192.168.6.228:SYS:> cat DEVS:Monitors/VGAOnly
+amiga@192.168.6.200:SYS:> ls SYS:C
+amiga@192.168.6.200:SYS:> ls Work:Projects
+amiga@192.168.6.200:SYS:> cat DEVS:Monitors/VGAOnly
 ```
 
 `SYS:` is the boot volume. `Work:`, `RAM:`, and `DEVS:` are other
@@ -34,9 +34,9 @@ A bare volume name with just the colon refers to the root of that
 volume:
 
 ```bash
-amiga@192.168.6.228:SYS:> cd Work:
-amiga@192.168.6.228:Work:> cd RAM:
-amiga@192.168.6.228:RAM:> pwd
+amiga@192.168.6.200:SYS:> cd Work:
+amiga@192.168.6.200:Work:> cd RAM:
+amiga@192.168.6.200:RAM:> pwd
 RAM:
 ```
 
@@ -47,10 +47,10 @@ current working directory before sending it to the daemon. Subdirectory
 components are separated by `/`, just as in Unix:
 
 ```bash
-amiga@192.168.6.228:SYS:> cd S
-amiga@192.168.6.228:SYS:S> ls Startup-Sequence
-amiga@192.168.6.228:SYS:S> cd ../Devs
-amiga@192.168.6.228:SYS:Devs>
+amiga@192.168.6.200:SYS:> cd S
+amiga@192.168.6.200:SYS:S> ls Startup-Sequence
+amiga@192.168.6.200:SYS:S> cd ../Devs
+amiga@192.168.6.200:SYS:Devs>
 ```
 
 When the CWD ends with `:` (the volume root), relative paths are
@@ -76,19 +76,19 @@ path contains `.` or `..` segments, they are translated into the Amiga
 preceding directory component, and `.` segments are silently removed.
 
 ```bash
-amiga@192.168.6.228:SYS:S> cd /
-amiga@192.168.6.228:SYS:> cd S
-amiga@192.168.6.228:SYS:S> cd ..
-amiga@192.168.6.228:SYS:> cd Devs/Monitors/../DOSDrivers
-amiga@192.168.6.228:SYS:Devs/DOSDrivers>
+amiga@192.168.6.200:SYS:S> cd /
+amiga@192.168.6.200:SYS:> cd S
+amiga@192.168.6.200:SYS:S> cd ..
+amiga@192.168.6.200:SYS:> cd Devs/Monitors/../DOSDrivers
+amiga@192.168.6.200:SYS:Devs/DOSDrivers>
 ```
 
 Parent navigation stops at the volume root. Attempting to go above the
 volume root is silently clamped:
 
 ```bash
-amiga@192.168.6.228:SYS:S> cd //////////
-amiga@192.168.6.228:SYS:>
+amiga@192.168.6.200:SYS:S> cd //////////
+amiga@192.168.6.200:SYS:>
 ```
 
 
@@ -109,10 +109,10 @@ sending a `STAT` request to the daemon. If the path does not exist or
 is not a directory, an error is printed and the CWD is unchanged.
 
 ```bash
-amiga@192.168.6.228:SYS:> cd Work:Projects
-amiga@192.168.6.228:Work:Projects> cd /
-amiga@192.168.6.228:Work:> cd RAM:
-amiga@192.168.6.228:RAM:>
+amiga@192.168.6.200:SYS:> cd Work:Projects
+amiga@192.168.6.200:Work:Projects> cd /
+amiga@192.168.6.200:Work:> cd RAM:
+amiga@192.168.6.200:RAM:>
 ```
 
 **Default behavior:** Running `cd` with no arguments returns to `SYS:`
@@ -121,24 +121,24 @@ is unreachable, the CWD is cleared entirely and the prompt reverts to
 showing no directory.
 
 ```bash
-amiga@192.168.6.228:Work:Projects/foo> cd
-amiga@192.168.6.228:SYS:>
+amiga@192.168.6.200:Work:Projects/foo> cd
+amiga@192.168.6.200:SYS:>
 ```
 
 **Error handling:** If the target does not exist, the shell reports the
 fully resolved path so you can see exactly what was attempted:
 
 ```bash
-amiga@192.168.6.228:SYS:> cd NoSuchDir
+amiga@192.168.6.200:SYS:> cd NoSuchDir
 Directory not found: SYS:NoSuchDir
-amiga@192.168.6.228:SYS:> cd Work:Bogus
+amiga@192.168.6.200:SYS:> cd Work:Bogus
 Directory not found: Work:Bogus
 ```
 
 If the target exists but is a file rather than a directory:
 
 ```bash
-amiga@192.168.6.228:SYS:> cd S/Startup-Sequence
+amiga@192.168.6.200:SYS:> cd S/Startup-Sequence
 Not a directory: SYS:S/Startup-Sequence
 ```
 
@@ -162,9 +162,9 @@ startup and the user has not yet used `cd`), a message is printed
 instead.
 
 ```bash
-amiga@192.168.6.228:SYS:S> pwd
+amiga@192.168.6.200:SYS:S> pwd
 SYS:S
-amiga@192.168.6.228:SYS:> pwd
+amiga@192.168.6.200:SYS:> pwd
 SYS:
 ```
 
@@ -208,7 +208,7 @@ Here is a worked example showing each step:
 
 ```bash
 # CWD is SYS:Devs/Monitors
-amiga@192.168.6.228:SYS:Devs/Monitors> cat ../../S/Startup-Sequence
+amiga@192.168.6.200:SYS:Devs/Monitors> cat ../../S/Startup-Sequence
 ```
 
 1. All characters are in the ISO-8859-1 range, so validation passes.
@@ -235,7 +235,7 @@ non-Latin Unicode scripts -- are rejected before the command is sent to
 the daemon.
 
 ```bash
-amiga@192.168.6.228:SYS:> cd Emoji\U0001f600Dir
+amiga@192.168.6.200:SYS:> cd Emoji\U0001f600Dir
 Path contains characters not representable in ISO-8859-1: ...
 ```
 
@@ -260,7 +260,7 @@ CWD is not changed.
 - [file-operations.md](file-operations.md) -- File and directory
   management commands.
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga.
+  the client and the Amiga.
 - [tab-completion.md](tab-completion.md) -- Tab completion and readline
   integration.
 - [architecture.md](architecture.md) -- Shell architecture and path

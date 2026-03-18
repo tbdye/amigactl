@@ -26,7 +26,7 @@ completes within a single daemon event loop iteration. The shell
 displays the output followed by the return code.
 
 ```bash
-amiga@192.168.6.228:SYS:> exec list SYS:S
+amiga@192.168.6.200:SYS:> exec list SYS:S
 S/Startup-Sequence
 S/Shell-Startup
 S/User-Startup
@@ -34,12 +34,12 @@ Return code: 0
 ```
 
 ```bash
-amiga@192.168.6.228:SYS:> exec avail FLUSH
+amiga@192.168.6.200:SYS:> exec avail FLUSH
 Return code: 0
 ```
 
 ```bash
-amiga@192.168.6.228:SYS:> exec CD=NoSuchDir: list
+amiga@192.168.6.200:SYS:> exec CD=NoSuchDir: list
 Error: Directory not found
 ```
 
@@ -51,7 +51,7 @@ directory afterward. This means commands that use relative paths will
 resolve them against the shell's CWD:
 
 ```bash
-amiga@192.168.6.228:Work:Projects> exec list
+amiga@192.168.6.200:Work:Projects> exec list
 myproject
 testdata
 Return code: 0
@@ -88,9 +88,9 @@ is directed to `NIL:` and is not captured or returned to the client.
 The shell prompt returns as soon as the process is created.
 
 ```bash
-amiga@192.168.6.228:SYS:> run wait 30
+amiga@192.168.6.200:SYS:> run wait 30
 Process ID: 1
-amiga@192.168.6.228:SYS:> run execute SYS:S/MyScript
+amiga@192.168.6.200:SYS:> run execute SYS:S/MyScript
 Process ID: 2
 ```
 
@@ -138,7 +138,7 @@ Only processes started via `run` appear in this list; `exec` commands
 are not tracked.
 
 ```bash
-amiga@192.168.6.228:SYS:> ps
+amiga@192.168.6.200:SYS:> ps
 ID  COMMAND                STATUS   RC
 1   wait 30                RUNNING  -
 2   execute SYS:S/MyScript EXITED   0
@@ -174,7 +174,7 @@ status ID
 Displays key=value pairs for the specified process:
 
 ```bash
-amiga@192.168.6.228:SYS:> status 1
+amiga@192.168.6.200:SYS:> status 1
 id=1
 command=wait 30
 status=RUNNING
@@ -182,7 +182,7 @@ rc=-
 ```
 
 ```bash
-amiga@192.168.6.228:SYS:> status 2
+amiga@192.168.6.200:SYS:> status 2
 id=2
 command=execute SYS:S/MyScript
 status=EXITED
@@ -202,7 +202,7 @@ If the process ID does not exist in the daemon's tracking table, an
 error is printed:
 
 ```bash
-amiga@192.168.6.228:SYS:> status 99
+amiga@192.168.6.200:SYS:> status 99
 Error: Process not found
 ```
 
@@ -235,9 +235,9 @@ program stop or change behavior. The available signals are:
 | `CTRL_F` | Application-defined. |
 
 ```bash
-amiga@192.168.6.228:SYS:> signal 1
+amiga@192.168.6.200:SYS:> signal 1
 Signal sent.
-amiga@192.168.6.228:SYS:> signal 1 CTRL_D
+amiga@192.168.6.200:SYS:> signal 1 CTRL_D
 Signal sent.
 ```
 
@@ -253,14 +253,14 @@ may not propagate to the child shell.
 If the process ID does not exist in the daemon's tracking table:
 
 ```bash
-amiga@192.168.6.228:SYS:> signal 99
+amiga@192.168.6.200:SYS:> signal 99
 Error: Process not found
 ```
 
 If the process has already exited:
 
 ```bash
-amiga@192.168.6.228:SYS:> signal 1
+amiga@192.168.6.200:SYS:> signal 1
 Error: Process not running
 ```
 
@@ -284,7 +284,7 @@ opportunity to clean up resources (close files, free memory, release
 locks). The process's return code is set to `-1`.
 
 ```bash
-amiga@192.168.6.228:SYS:> kill 1
+amiga@192.168.6.200:SYS:> kill 1
 Process terminated.
 ```
 
@@ -293,7 +293,7 @@ Process terminated.
 If this option is not enabled, the daemon rejects the request:
 
 ```bash
-amiga@192.168.6.228:SYS:> kill 1
+amiga@192.168.6.200:SYS:> kill 1
 Error: Remote kill not permitted
 ```
 
@@ -321,15 +321,15 @@ all or that the process was forcibly killed via `kill`. Synchronous
 `exec` reports execution failures as error messages instead.
 
 ```bash
-amiga@192.168.6.228:SYS:> exec type SYS:S/Startup-Sequence
+amiga@192.168.6.200:SYS:> exec type SYS:S/Startup-Sequence
 ; Startup-Sequence
 ...
 Return code: 0
 
-amiga@192.168.6.228:SYS:> exec type SYS:NoSuchFile
+amiga@192.168.6.200:SYS:> exec type SYS:NoSuchFile
 Return code: 20
 
-amiga@192.168.6.228:SYS:> exec search SYS:S "pattern" QUIET
+amiga@192.168.6.200:SYS:> exec search SYS:S "pattern" QUIET
 Return code: 5
 ```
 
@@ -374,4 +374,4 @@ The key behavioral differences:
 - [file-operations.md](file-operations.md) -- File and directory
   management commands.
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga.
+  the client and the Amiga.

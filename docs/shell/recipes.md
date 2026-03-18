@@ -22,12 +22,12 @@ Locate `.tmp` and `.bak` files scattered across a volume, review them,
 and remove the ones you no longer need.
 
 ```bash
-amiga@192.168.6.228:SYS:> find Work: *.tmp
+amiga@192.168.6.200:SYS:> find Work: *.tmp
 Projects/build/output.tmp
 Projects/build/link.tmp
 Temp/scratch.tmp
 
-amiga@192.168.6.228:SYS:> find Work: *.bak
+amiga@192.168.6.200:SYS:> find Work: *.bak
 Documents/readme.bak
 Projects/src/main.c.bak
 ```
@@ -35,10 +35,10 @@ Projects/src/main.c.bak
 Check what a file contains before deleting it:
 
 ```bash
-amiga@192.168.6.228:SYS:> cat Work:Temp/scratch.tmp
+amiga@192.168.6.200:SYS:> cat Work:Temp/scratch.tmp
 (temporary build output)
 
-amiga@192.168.6.228:SYS:> rm Work:Temp/scratch.tmp
+amiga@192.168.6.200:SYS:> rm Work:Temp/scratch.tmp
 Deleted: Work:Temp/scratch.tmp
 ```
 
@@ -46,7 +46,7 @@ To narrow the search to just files (excluding any directories that
 happen to match the glob):
 
 ```bash
-amiga@192.168.6.228:SYS:> find Work: -type f *.tmp
+amiga@192.168.6.200:SYS:> find Work: -type f *.tmp
 ```
 
 **Tip:** `rm` only deletes one file at a time and cannot delete
@@ -59,7 +59,7 @@ files individually, then remove the empty directory.
 Check whether a startup sequence has been modified from its backup:
 
 ```bash
-amiga@192.168.6.228:SYS:> diff SYS:S/Startup-Sequence SYS:S/Startup-Sequence.bak
+amiga@192.168.6.200:SYS:> diff SYS:S/Startup-Sequence SYS:S/Startup-Sequence.bak
 --- SYS:S/Startup-Sequence
 +++ SYS:S/Startup-Sequence.bak
 @@ -12,7 +12,6 @@
@@ -80,7 +80,7 @@ reported without attempting a text diff.
 Get an overview of space usage across all mounted volumes:
 
 ```bash
-amiga@192.168.6.228:SYS:> volumes
+amiga@192.168.6.200:SYS:> volumes
 NAME     USED    FREE  CAPACITY
 System   42M     18M       60M
 Work    180M     70M      250M
@@ -91,7 +91,7 @@ For a deeper look at which directories are consuming space on a
 specific volume:
 
 ```bash
-amiga@192.168.6.228:SYS:> du -h Work:
+amiga@192.168.6.200:SYS:> du -h Work:
 12K     Documents
 145M    Projects
 145M    Projects/build
@@ -103,7 +103,7 @@ amiga@192.168.6.228:SYS:> du -h Work:
 Use `-s` for just the total without the per-directory breakdown:
 
 ```bash
-amiga@192.168.6.228:SYS:> du -sh Work:
+amiga@192.168.6.200:SYS:> du -sh Work:
 180M    Work:
 ```
 
@@ -120,7 +120,7 @@ Watch new lines appear in a log file in real time, similar to
 `tail -f` on Unix:
 
 ```bash
-amiga@192.168.6.228:SYS:> tail RAM:server.log
+amiga@192.168.6.200:SYS:> tail RAM:server.log
 [12:05:01] Connection from 192.168.6.100
 [12:05:02] Request: GET /index.html
 [12:05:03] Response: 200 OK
@@ -142,7 +142,7 @@ contents.
 List all tasks and processes on the Amiga:
 
 ```bash
-amiga@192.168.6.228:SYS:> tasks
+amiga@192.168.6.200:SYS:> tasks
 NAME              TYPE      PRI  STATE    STACK
 exec.library      TASK        0  ready     4096
 input.device      TASK       20  wait      4096
@@ -155,7 +155,7 @@ myserver          PROCESS     0  wait      8192
 To see only the processes launched through the daemon (via `run`):
 
 ```bash
-amiga@192.168.6.228:SYS:> ps
+amiga@192.168.6.200:SYS:> ps
 ID  COMMAND              STATUS    RC
 1   myserver             RUNNING   -
 2   wait 60              EXITED    0
@@ -172,17 +172,17 @@ your own background jobs.
 Launch a command in the background, monitor it, and stop it when done:
 
 ```bash
-amiga@192.168.6.228:SYS:> run execute SYS:S/MyScript
+amiga@192.168.6.200:SYS:> run execute SYS:S/MyScript
 Process ID: 3
 
-amiga@192.168.6.228:SYS:> ps
+amiga@192.168.6.200:SYS:> ps
 ID  COMMAND                STATUS    RC
 3   execute SYS:S/MyScript RUNNING   -
 
-amiga@192.168.6.228:SYS:> signal 3
+amiga@192.168.6.200:SYS:> signal 3
 Signal sent.
 
-amiga@192.168.6.228:SYS:> ps
+amiga@192.168.6.200:SYS:> ps
 ID  COMMAND                STATUS    RC
 3   execute SYS:S/MyScript EXITED    0
 ```
@@ -191,14 +191,14 @@ If the process does not respond to `signal` (which sends CTRL_C), you
 can force-terminate it:
 
 ```bash
-amiga@192.168.6.228:SYS:> kill 3
+amiga@192.168.6.200:SYS:> kill 3
 Process terminated.
 ```
 
 You can also send other break signals:
 
 ```bash
-amiga@192.168.6.228:SYS:> signal 3 CTRL_D
+amiga@192.168.6.200:SYS:> signal 3 CTRL_D
 Signal sent.
 ```
 
@@ -214,13 +214,13 @@ Stop a running daemon, start it again, and verify it came back up. This
 example restarts a hypothetical server process:
 
 ```bash
-amiga@192.168.6.228:SYS:> exec break myserver C
+amiga@192.168.6.200:SYS:> exec break myserver C
 Return code: 0
 
-amiga@192.168.6.228:SYS:> run C:myserver
+amiga@192.168.6.200:SYS:> run C:myserver
 Process ID: 4
 
-amiga@192.168.6.228:SYS:> ps
+amiga@192.168.6.200:SYS:> ps
 ID  COMMAND     STATUS    RC
 4   C:myserver  RUNNING   -
 ```
@@ -228,7 +228,7 @@ ID  COMMAND     STATUS    RC
 Confirm it is visible in the system task list:
 
 ```bash
-amiga@192.168.6.228:SYS:> tasks
+amiga@192.168.6.200:SYS:> tasks
 NAME              TYPE      PRI  STATE    STACK
 ...
 myserver          PROCESS     0  wait      8192
@@ -238,7 +238,7 @@ myserver          PROCESS     0  wait      8192
 And confirm its message port is registered:
 
 ```bash
-amiga@192.168.6.228:SYS:> ports
+amiga@192.168.6.200:SYS:> ports
 REXX
 amigactld
 myserver.port
@@ -252,7 +252,7 @@ myserver.port
 Find all files under a project directory containing a specific string:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rn TODO Work:Projects/src
+amiga@192.168.6.200:SYS:> grep -rn TODO Work:Projects/src
 main.c:42:/* TODO: handle error case */
 utils.c:17:/* TODO: optimize this loop */
 network.c:88:/* TODO: add timeout */
@@ -261,7 +261,7 @@ network.c:88:/* TODO: add timeout */
 Search case-insensitively with a regex pattern:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -Erin "error|warning" Work:Projects/src
+amiga@192.168.6.200:SYS:> grep -Erin "error|warning" Work:Projects/src
 main.c:55:    printf("Error: failed to open file\n");
 main.c:91:    printf("Warning: buffer nearly full\n");
 network.c:103:    printf("Error: connection refused\n");
@@ -271,7 +271,7 @@ List only filenames that contain matches (without showing the lines
 themselves):
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rl printf Work:Projects/src
+amiga@192.168.6.200:SYS:> grep -rl printf Work:Projects/src
 main.c
 utils.c
 network.c
@@ -280,7 +280,7 @@ network.c
 Get match counts per file:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rc TODO Work:Projects/src
+amiga@192.168.6.200:SYS:> grep -rc TODO Work:Projects/src
 main.c:1
 utils.c:1
 network.c:1
@@ -296,7 +296,7 @@ search to a specific subdirectory when possible.
 Monitor memory usage over time by running `exec avail` every 5 seconds:
 
 ```bash
-amiga@192.168.6.228:SYS:> watch -n 5 exec avail
+amiga@192.168.6.200:SYS:> watch -n 5 exec avail
 Every 5.0s: exec avail
 
 Type   Available    In-Use   Maximum   Largest
@@ -312,13 +312,13 @@ You can watch any shell command -- not just `exec`. For example,
 monitor the process list:
 
 ```bash
-amiga@192.168.6.228:SYS:> watch ps
+amiga@192.168.6.200:SYS:> watch ps
 ```
 
 Or watch a directory for new files:
 
 ```bash
-amiga@192.168.6.228:SYS:> watch -n 10 ls -l RAM:T
+amiga@192.168.6.200:SYS:> watch -n 10 ls -l RAM:T
 ```
 
 
@@ -327,7 +327,7 @@ amiga@192.168.6.228:SYS:> watch -n 10 ls -l RAM:T
 Check the version of a specific library:
 
 ```bash
-amiga@192.168.6.228:SYS:> libver exec.library
+amiga@192.168.6.200:SYS:> libver exec.library
 name=exec.library
 version=47.3
 ```
@@ -336,15 +336,15 @@ Check several libraries in sequence to understand the system's
 software baseline:
 
 ```bash
-amiga@192.168.6.228:SYS:> libver dos.library
+amiga@192.168.6.200:SYS:> libver dos.library
 name=dos.library
 version=47.1
 
-amiga@192.168.6.228:SYS:> libver intuition.library
+amiga@192.168.6.200:SYS:> libver intuition.library
 name=intuition.library
 version=47.1
 
-amiga@192.168.6.228:SYS:> libver bsdsocket.library
+amiga@192.168.6.200:SYS:> libver bsdsocket.library
 name=bsdsocket.library
 version=4.307
 ```
@@ -353,7 +353,7 @@ For a broader system overview that includes CPU, Kickstart version, and
 RAM totals:
 
 ```bash
-amiga@192.168.6.228:SYS:> sysinfo
+amiga@192.168.6.200:SYS:> sysinfo
 chip_free=1587424
 fast_free=115867648
 total_free=117455072
@@ -379,10 +379,10 @@ one-command system summary.
 Read the current value of an environment variable:
 
 ```bash
-amiga@192.168.6.228:SYS:> env Workbench
+amiga@192.168.6.200:SYS:> env Workbench
 47.1
 
-amiga@192.168.6.228:SYS:> env Language
+amiga@192.168.6.200:SYS:> env Language
 english
 ```
 
@@ -390,21 +390,21 @@ Set a persistent environment variable (written to both `ENV:` and
 `ENVARC:` so it survives reboot):
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv MyApp_Debug 1
+amiga@192.168.6.200:SYS:> setenv MyApp_Debug 1
 Set: MyApp_Debug=1
 ```
 
 Set a volatile variable (session only, not persisted to `ENVARC:`):
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv -v TempPath RAM:T
+amiga@192.168.6.200:SYS:> setenv -v TempPath RAM:T
 Set: TempPath=RAM:T
 ```
 
 Delete an environment variable:
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv MyApp_Debug
+amiga@192.168.6.200:SYS:> setenv MyApp_Debug
 Deleted: MyApp_Debug
 ```
 
@@ -418,11 +418,11 @@ temporary variables that should not survive a reboot.
 Create a quick assign pointing to a project directory:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign PROJ: Work:Projects/MyApp
+amiga@192.168.6.200:SYS:> assign PROJ: Work:Projects/MyApp
 Assigned: PROJ: -> Work:Projects/MyApp
 
-amiga@192.168.6.228:SYS:> cd PROJ:
-amiga@192.168.6.228:PROJ:> ls
+amiga@192.168.6.200:SYS:> cd PROJ:
+amiga@192.168.6.200:PROJ:> ls
 src/        docs/       Makefile
 ```
 
@@ -430,21 +430,21 @@ Create a late-binding assign (resolved on first access, not
 immediately):
 
 ```bash
-amiga@192.168.6.228:SYS:> assign late PROJ: Work:Projects/MyApp
+amiga@192.168.6.200:SYS:> assign late PROJ: Work:Projects/MyApp
 Assigned: PROJ: -> Work:Projects/MyApp
 ```
 
 Add an additional directory to an existing multi-directory assign:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign add LIBS: Work:MyLibs
+amiga@192.168.6.200:SYS:> assign add LIBS: Work:MyLibs
 Assigned: LIBS: -> Work:MyLibs
 ```
 
 View all current assigns:
 
 ```bash
-amiga@192.168.6.228:SYS:> assigns
+amiga@192.168.6.200:SYS:> assigns
 C:          SYS:C
 DEVS:       SYS:Devs
 FONTS:      SYS:Fonts
@@ -457,7 +457,7 @@ S:          SYS:S
 Remove an assign when you are done:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign PROJ:
+amiga@192.168.6.200:SYS:> assign PROJ:
 Removed: PROJ:
 ```
 
@@ -470,24 +470,24 @@ path is not validated until first access.
 
 ### Deploying a Binary
 
-Upload a cross-compiled binary from the host, set its protection bits
+Upload a cross-compiled binary from the client, set its protection bits
 to allow execution, and verify:
 
 ```bash
-amiga@192.168.6.228:SYS:> put /home/user/build/myapp C:myapp
+amiga@192.168.6.200:SYS:> put /home/user/build/myapp C:myapp
 Uploaded 28672 bytes to SYS:C/myapp
 
-amiga@192.168.6.228:SYS:> chmod C:myapp
+amiga@192.168.6.200:SYS:> chmod C:myapp
 protection=----rwed
 
-amiga@192.168.6.228:SYS:> chmod C:myapp 20
+amiga@192.168.6.200:SYS:> chmod C:myapp 20
 protection=--p-rwed
 ```
 
 Verify the upload by comparing checksums:
 
 ```bash
-amiga@192.168.6.228:SYS:> checksum C:myapp
+amiga@192.168.6.200:SYS:> checksum C:myapp
 crc32=a1b2c3d4
 size=28672
 ```
@@ -495,7 +495,7 @@ size=28672
 Test the deployed binary:
 
 ```bash
-amiga@192.168.6.228:SYS:> exec C:myapp --version
+amiga@192.168.6.200:SYS:> exec C:myapp --version
 MyApp 1.0 (2026-03-15)
 Return code: 0
 ```
@@ -512,7 +512,7 @@ Open a remote file in your local editor, make changes, and upload the
 result -- all in one command:
 
 ```bash
-amiga@192.168.6.228:SYS:> edit S/User-Startup
+amiga@192.168.6.200:SYS:> edit S/User-Startup
 ```
 
 This downloads the file, opens it in your editor (`$VISUAL`,
@@ -545,7 +545,7 @@ individual `get` calls to back up files from a directory. First,
 survey what needs backing up:
 
 ```bash
-amiga@192.168.6.228:SYS:> find SYS:S -type f *
+amiga@192.168.6.200:SYS:> find SYS:S -type f *
 Startup-Sequence
 User-Startup
 Shell-Startup
@@ -555,24 +555,24 @@ SPat
 Then download each file individually:
 
 ```bash
-amiga@192.168.6.228:SYS:> cd S
-amiga@192.168.6.228:SYS:S> get Startup-Sequence /tmp/amiga-backup/Startup-Sequence
+amiga@192.168.6.200:SYS:> cd S
+amiga@192.168.6.200:SYS:S> get Startup-Sequence /tmp/amiga-backup/Startup-Sequence
 Downloaded 1234 bytes to /tmp/amiga-backup/Startup-Sequence
 
-amiga@192.168.6.228:SYS:S> get User-Startup /tmp/amiga-backup/User-Startup
+amiga@192.168.6.200:SYS:S> get User-Startup /tmp/amiga-backup/User-Startup
 Downloaded 567 bytes to /tmp/amiga-backup/User-Startup
 ```
 
 For binary files, verify integrity with `checksum`:
 
 ```bash
-amiga@192.168.6.228:SYS:S> checksum Startup-Sequence
+amiga@192.168.6.200:SYS:S> checksum Startup-Sequence
 crc32=1a2b3c4d
 size=1234
 ```
 
 **Tip:** For automated or large-scale backups, use the Python API or
-host-side scripting rather than the interactive shell. The shell is
+client-side scripting rather than the interactive shell. The shell is
 best suited for ad-hoc transfers of individual files.
 
 
@@ -584,7 +584,7 @@ best suited for ad-hoc transfers of individual files.
   management commands (`ls`, `rm`, `mv`, `mkdir`, `cp`, `chmod`,
   `touch`, `tree`).
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga (`get`, `put`, `edit`, `append`).
+  the client and the Amiga (`get`, `put`, `edit`, `append`).
 - [search-utilities.md](search-utilities.md) -- Search and analysis
   commands (`find`, `grep`, `diff`, `du`, `watch`).
 - [command-execution.md](command-execution.md) -- Running AmigaOS

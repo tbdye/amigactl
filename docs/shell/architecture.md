@@ -171,8 +171,9 @@ prints "Disconnected."
 
 The `shutdown` and `reboot` commands also disconnect after sending their
 respective commands. They set `self.conn = None` and update the prompt,
-leaving the shell in disconnected state (the user can then `exit` or
-`reconnect` after the Amiga restarts).
+leaving the shell in disconnected state. The user can then `exit`, or
+`reconnect` once the daemon is running again (after restarting it
+manually, or after the Amiga finishes rebooting in the `reboot` case).
 
 
 ## Path Resolution
@@ -387,9 +388,9 @@ connection, or disconnection:
 
 | State | Prompt |
 |-------------------------------|-------------------------------------|
-| Connected, CWD set | `amiga@192.168.6.228:SYS:S> ` |
-| Connected, CWD at volume root| `amiga@192.168.6.228:SYS:> ` |
-| Connected, no CWD | `amiga@192.168.6.228> ` |
+| Connected, CWD set | `amiga@192.168.6.200:SYS:S> ` |
+| Connected, CWD at volume root| `amiga@192.168.6.200:SYS:> ` |
+| Connected, no CWD | `amiga@192.168.6.200> ` |
 | Disconnected | `amiga> ` |
 
 
@@ -400,7 +401,7 @@ connection, or disconnection:
 - [file-operations.md](file-operations.md) -- File and directory
   management commands.
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga.
+  the client and the Amiga.
 - [command-execution.md](command-execution.md) -- Running commands on
   the Amiga.
 - [system-commands.md](system-commands.md) -- System information and

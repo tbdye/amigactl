@@ -19,7 +19,7 @@ matches, pressing Tab twice displays all candidates.
 For example, starting from `SYS:`:
 
 ```
-amiga@192.168.6.228:SYS:> cat S/Start<Tab>
+amiga@192.168.6.200:SYS:> cat S/Start<Tab>
 ```
 
 The shell splits `S/Start` into a directory portion (`S/`) and a name
@@ -29,7 +29,7 @@ returns entries whose names begin with `Start` (case-insensitive). If
 `Startup-Sequence` is the only match, the line is completed to:
 
 ```
-amiga@192.168.6.228:SYS:> cat S/Startup-Sequence
+amiga@192.168.6.200:SYS:> cat S/Startup-Sequence
 ```
 
 If there are multiple matches (e.g., `Startup-Sequence` and
@@ -44,9 +44,9 @@ from files in the candidate list and immediately continue typing into
 a completed directory without pressing any additional keys:
 
 ```
-amiga@192.168.6.228:SYS:> ls Dev<Tab>
+amiga@192.168.6.200:SYS:> ls Dev<Tab>
 Devs/
-amiga@192.168.6.228:SYS:> ls Devs/<Tab><Tab>
+amiga@192.168.6.200:SYS:> ls Devs/<Tab><Tab>
 DOSDrivers/    DataTypes/     Monitors/      Printers/
 ```
 
@@ -58,13 +58,13 @@ Absolute paths work too. You can type a volume or assign name followed
 by a colon and then press Tab to browse that volume:
 
 ```
-amiga@192.168.6.228:SYS:> cat RAM:<Tab><Tab>
+amiga@192.168.6.200:SYS:> cat RAM:<Tab><Tab>
 Clipboards/    ENV/           T/
 ```
 
 ### Multi-Argument Commands
 
-Several commands accept both local (host-side) and remote (Amiga-side)
+Several commands accept both local (client-side) and remote (Amiga-side)
 path arguments. The shell only offers tab completion for the Amiga
 path argument, since it cannot complete local paths over the daemon
 connection.
@@ -91,10 +91,10 @@ names. This is built into Python's `cmd.Cmd` framework and requires
 no daemon communication:
 
 ```
-amiga@192.168.6.228:SYS:> ch<Tab><Tab>
+amiga@192.168.6.200:SYS:> ch<Tab><Tab>
 checksum  chmod
-amiga@192.168.6.228:SYS:> check<Tab>
-amiga@192.168.6.228:SYS:> checksum
+amiga@192.168.6.200:SYS:> check<Tab>
+amiga@192.168.6.200:SYS:> checksum
 ```
 
 

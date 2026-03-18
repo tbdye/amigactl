@@ -38,7 +38,7 @@ to the terminal width. Directories are shown with a trailing `/` to
 distinguish them from files:
 
 ```bash
-amiga@192.168.6.228:SYS:> ls
+amiga@192.168.6.200:SYS:> ls
 C/          Devs/       Expansion/  L/          Libs/       Locale/
 Prefs/      S/          Storage/    T/          Utilities/  WBStartup/
 Disk.info   System/     Tools/
@@ -49,7 +49,7 @@ for files), the entry name, protection bits in `hsparwed` notation,
 the file size (human-readable), and the datestamp:
 
 ```bash
-amiga@192.168.6.228:SYS:> ls -l S
+amiga@192.168.6.200:SYS:> ls -l S
   DIR  S                     ----rwed       2026-01-15 10:30:00
        Startup-Sequence      ----rwed  512  2026-01-10 08:00:00
        User-Startup          ----rwed  128  2026-02-01 14:22:00
@@ -63,7 +63,7 @@ Directories do not display a size.
 **Recursive** (`-r`) lists all entries in the tree with relative paths:
 
 ```bash
-amiga@192.168.6.228:SYS:> ls -r S
+amiga@192.168.6.200:SYS:> ls -r S
   DIR  S                     ----rwed             2026-01-15 10:30:00
        Startup-Sequence      ----rwed       512   2026-01-10 08:00:00
        User-Startup          ----rwed       128   2026-02-01 14:22:00
@@ -74,9 +74,9 @@ match against the basename of each entry. Glob matching is
 case-insensitive, consistent with AmigaOS filesystem behavior:
 
 ```bash
-amiga@192.168.6.228:SYS:> ls S*
+amiga@192.168.6.200:SYS:> ls S*
 S/        Storage/  System/
-amiga@192.168.6.228:SYS:> ls *.info
+amiga@192.168.6.200:SYS:> ls *.info
 Disk.info
 ```
 
@@ -88,7 +88,7 @@ When the glob matches nothing, `ls` prints "No match."
 directory, `ls` shows information for that single file:
 
 ```bash
-amiga@192.168.6.228:SYS:> ls -l S/Startup-Sequence
+amiga@192.168.6.200:SYS:> ls -l S/Startup-Sequence
        Startup-Sequence      ----rwed  512  2026-01-10 08:00:00
 ```
 
@@ -112,7 +112,7 @@ The tree is built from a recursive directory listing. Entries are sorted
 alphabetically at each level:
 
 ```bash
-amiga@192.168.6.228:SYS:> tree S
+amiga@192.168.6.200:SYS:> tree S
 SYS:S
 ├── Shell-Startup
 ├── Startup-Sequence
@@ -124,7 +124,7 @@ SYS:S
 A larger tree with subdirectories:
 
 ```bash
-amiga@192.168.6.228:SYS:> tree Devs
+amiga@192.168.6.200:SYS:> tree Devs
 SYS:Devs
 ├── DOSDrivers
 │   ├── PIPE
@@ -141,7 +141,7 @@ SYS:Devs
 With `--ascii`:
 
 ```bash
-amiga@192.168.6.228:SYS:> tree --ascii S
+amiga@192.168.6.200:SYS:> tree --ascii S
 SYS:S
 |-- Shell-Startup
 |-- Startup-Sequence
@@ -153,7 +153,7 @@ SYS:S
 With `-d` (directories only):
 
 ```bash
-amiga@192.168.6.228:SYS:> tree -d Devs
+amiga@192.168.6.200:SYS:> tree -d Devs
 SYS:Devs
 ├── DOSDrivers
 ├── Keymaps
@@ -182,7 +182,7 @@ for a single path. This is the most detailed view of a single entry --
 it includes the comment field, which `ls -l` does not show.
 
 ```bash
-amiga@192.168.6.228:SYS:> stat S/Startup-Sequence
+amiga@192.168.6.200:SYS:> stat S/Startup-Sequence
 type=FILE
 name=Startup-Sequence
 size=512
@@ -194,7 +194,7 @@ comment=Boot script
 For directories, the type is `DIR` and size is reported as zero:
 
 ```bash
-amiga@192.168.6.228:SYS:> stat Devs
+amiga@192.168.6.200:SYS:> stat Devs
 type=DIR
 name=Devs
 size=0
@@ -220,7 +220,7 @@ so no file data is transferred over the network -- useful for verifying
 file integrity after a transfer without downloading the file again.
 
 ```bash
-amiga@192.168.6.228:SYS:> checksum C/Dir
+amiga@192.168.6.200:SYS:> checksum C/Dir
 crc32=a1b2c3d4
 size=5384
 ```
@@ -229,7 +229,7 @@ The CRC32 value matches Python's `zlib.crc32()` masked with
 `0xFFFFFFFF`, so you can compare directly:
 
 ```bash
-# On the host, after downloading:
+# On the client, after downloading:
 python3 -c "import zlib; print(format(zlib.crc32(open('Dir','rb').read()) & 0xFFFFFFFF, '08x'))"
 ```
 
@@ -246,7 +246,7 @@ cat [--offset N] [--length N] PATH
 
 Reads the file and writes its raw bytes to stdout. For text files the
 content is displayed directly; for binary files you will see raw bytes
-(consider piping through `xxd` on the host side).
+(consider piping through `xxd` on the client side).
 
 | Option | Description |
 |--------|-------------|
@@ -254,7 +254,7 @@ content is displayed directly; for binary files you will see raw bytes
 | `--length N` | Read at most `N` bytes (default: entire file). |
 
 ```bash
-amiga@192.168.6.228:SYS:> cat S/Startup-Sequence
+amiga@192.168.6.200:SYS:> cat S/Startup-Sequence
 ; Startup-Sequence for Amiga
 C:SetPatch QUIET
 C:AddBuffers DH0: 50
@@ -264,7 +264,7 @@ C:AddBuffers DH0: 50
 Read a specific range of bytes:
 
 ```bash
-amiga@192.168.6.228:SYS:> cat --offset 100 --length 50 RAM:test.txt
+amiga@192.168.6.200:SYS:> cat --offset 100 --length 50 RAM:test.txt
 his is a fragment starting at byte 100 and reading
 ```
 
@@ -284,7 +284,7 @@ Unix `tail -f`. The command blocks and streams output until you press
 Ctrl-C to stop.
 
 ```bash
-amiga@192.168.6.228:SYS:> tail RAM:logfile.txt
+amiga@192.168.6.200:SYS:> tail RAM:logfile.txt
 2026-03-16 12:00:01 Connection accepted
 2026-03-16 12:00:05 Data received: 128 bytes
 ^C
@@ -309,9 +309,9 @@ Creates a single directory. Parent directories must already exist --
 there is no `-p` flag for recursive creation.
 
 ```bash
-amiga@192.168.6.228:SYS:> mkdir RAM:newdir
+amiga@192.168.6.200:SYS:> mkdir RAM:newdir
 Created: RAM:newdir
-amiga@192.168.6.228:SYS:> mkdir RAM:newdir/sub
+amiga@192.168.6.200:SYS:> mkdir RAM:newdir/sub
 Created: RAM:newdir/sub
 ```
 
@@ -336,9 +336,9 @@ When `DATE` and `TIME` are omitted, the current Amiga system time is
 used.
 
 ```bash
-amiga@192.168.6.228:SYS:> touch RAM:test.txt
+amiga@192.168.6.200:SYS:> touch RAM:test.txt
 Created RAM:test.txt
-amiga@192.168.6.228:SYS:> touch RAM:test.txt 2026-02-19 12:00:00
+amiga@192.168.6.200:SYS:> touch RAM:test.txt 2026-02-19 12:00:00
 datestamp=2026-02-19 12:00:00
 ```
 
@@ -380,9 +380,9 @@ means the operation is *denied*, the opposite of Unix permissions. A
 dash in the display means the operation is allowed.
 
 ```bash
-amiga@192.168.6.228:SYS:> chmod C/Dir
+amiga@192.168.6.200:SYS:> chmod C/Dir
 protection=----rwed
-amiga@192.168.6.228:SYS:> chmod RAM:test.txt 05
+amiga@192.168.6.200:SYS:> chmod RAM:test.txt 05
 protection=----r-e-
 ```
 
@@ -412,9 +412,9 @@ Enclose multi-word comments in quotes. An empty string (`""`) clears
 the existing comment.
 
 ```bash
-amiga@192.168.6.228:SYS:> setcomment RAM:test.txt "Important file"
+amiga@192.168.6.200:SYS:> setcomment RAM:test.txt "Important file"
 Comment set on RAM:test.txt
-amiga@192.168.6.228:SYS:> setcomment RAM:test.txt ""
+amiga@192.168.6.200:SYS:> setcomment RAM:test.txt ""
 Comment set on RAM:test.txt
 ```
 
@@ -438,9 +438,9 @@ paths must reside on the same volume -- this is an AmigaOS limitation.
 Cross-volume moves are not supported.
 
 ```bash
-amiga@192.168.6.228:SYS:> mv RAM:test.txt RAM:renamed.txt
+amiga@192.168.6.200:SYS:> mv RAM:test.txt RAM:renamed.txt
 Renamed: RAM:test.txt -> RAM:renamed.txt
-amiga@192.168.6.228:RAM:> mv oldname newname
+amiga@192.168.6.200:RAM:> mv oldname newname
 Renamed: RAM:oldname -> RAM:newname
 ```
 
@@ -464,9 +464,9 @@ destination.
 Options can be combined (e.g., `-Pn`).
 
 ```bash
-amiga@192.168.6.228:SYS:> cp RAM:file.txt RAM:backup.txt
+amiga@192.168.6.200:SYS:> cp RAM:file.txt RAM:backup.txt
 Copied: RAM:file.txt -> RAM:backup.txt
-amiga@192.168.6.228:SYS:> cp -n SYS:S/Startup-Sequence RAM:Startup-Sequence
+amiga@192.168.6.200:SYS:> cp -n SYS:S/Startup-Sequence RAM:Startup-Sequence
 Copied: SYS:S/Startup-Sequence -> RAM:Startup-Sequence
 ```
 
@@ -492,9 +492,9 @@ must be empty -- there is no recursive delete and no confirmation
 prompt.
 
 ```bash
-amiga@192.168.6.228:SYS:> rm RAM:test.txt
+amiga@192.168.6.200:SYS:> rm RAM:test.txt
 Deleted: RAM:test.txt
-amiga@192.168.6.228:SYS:> rm RAM:emptydir
+amiga@192.168.6.200:SYS:> rm RAM:emptydir
 Deleted: RAM:emptydir
 ```
 
@@ -508,7 +508,7 @@ then subdirectories from the bottom up).
 - [navigation.md](navigation.md) -- Path syntax, `cd`/`pwd`, and path
   resolution rules.
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga (`get`, `put`, `append`, `edit`).
+  the client and the Amiga (`get`, `put`, `append`, `edit`).
 - [tab-completion.md](tab-completion.md) -- Tab completion and readline
   integration.
 - [architecture.md](architecture.md) -- Shell architecture and path

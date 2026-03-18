@@ -32,15 +32,15 @@ Failed to connect to 192.168.6.200:6800: timed out
   host with `--host`:
 
   ```
-  amigactl --host 192.168.6.228 shell
+  amigactl --host 192.168.6.200 shell
   ```
 
   The host can also be configured in `client/amigactl.conf` (relative
   to the project directory), or specify a different config file with
   `--config`.
 
-- **Firewall or network issue.** Ensure the host machine can reach
-  the Amiga's IP address. Try `ping 192.168.6.228` from the host.
+- **Firewall or network issue.** Ensure the client machine can reach
+  the Amiga's IP address. Try `ping 192.168.6.200` from the client.
   If the Amiga is on a different subnet (e.g., behind a TAP interface),
   verify that routing is configured correctly.
 
@@ -50,7 +50,7 @@ Failed to connect to 192.168.6.200:6800: timed out
   established but immediately closed, which produces a protocol error:
 
   ```
-  Failed to connect to 192.168.6.228:6800: Connection closed by server
+  Failed to connect to 192.168.6.200:6800: Connection closed by server
   ```
 
   Disconnect idle sessions from other clients or restart the daemon
@@ -60,7 +60,7 @@ Failed to connect to 192.168.6.200:6800: timed out
   service, or the daemon is in a bad state, you may see:
 
   ```
-  Failed to connect to 192.168.6.228:6800: Invalid banner: ...
+  Failed to connect to 192.168.6.200:6800: Invalid banner: ...
   ```
 
   Verify that amigactld is what is actually listening on the specified
@@ -74,12 +74,12 @@ Failed to connect to 192.168.6.200:6800: timed out
 changes to show no connection:
 
 ```
-amiga@192.168.6.228:SYS:> ls
+amiga@192.168.6.200:SYS:> ls
 Connection error: [Errno 104] Connection reset by peer
 amiga>
 ```
 
-The prompt reverts from `amiga@192.168.6.228:SYS:>` to `amiga>`,
+The prompt reverts from `amiga@192.168.6.200:SYS:>` to `amiga>`,
 indicating the shell has detected a dead connection.
 
 **Likely causes:**
@@ -94,8 +94,8 @@ connection:
 
 ```
 amiga> reconnect
-Reconnected to 192.168.6.228 (amigactld 0.8.0)
-amiga@192.168.6.228:SYS:>
+Reconnected to 192.168.6.200 (amigactld 0.8.0)
+amiga@192.168.6.200:SYS:>
 ```
 
 The shell preserves the current working directory across reconnection
@@ -115,7 +115,7 @@ new shell session.
 **Symptom:** A command hangs for a long time and then fails:
 
 ```
-amiga@192.168.6.228:SYS:> cat Work:large-file.bin
+amiga@192.168.6.200:SYS:> cat Work:large-file.bin
 Connection error: timed out
 amiga>
 ```
@@ -150,12 +150,12 @@ directory listings of very large directories -- will time out.
 **Symptom:**
 
 ```
-amiga@192.168.6.228:SYS:> ls Work:MyProject
+amiga@192.168.6.200:SYS:> ls Work:MyProject
 Error: Lock failed: object not found
 ```
 
 ```
-amiga@192.168.6.228:SYS:> cd NoSuchDir
+amiga@192.168.6.200:SYS:> cd NoSuchDir
 Directory not found: SYS:NoSuchDir
 ```
 
@@ -190,12 +190,12 @@ Directory not found: SYS:NoSuchDir
 **Symptom:**
 
 ```
-amiga@192.168.6.228:SYS:> rm SYS:Devs
+amiga@192.168.6.200:SYS:> rm SYS:Devs
 Error: Delete failed: object is in use
 ```
 
 ```
-amiga@192.168.6.228:SYS:> put file.txt SYS:C/Dir
+amiga@192.168.6.200:SYS:> put file.txt SYS:C/Dir
 Error: Open failed: disk is write-protected
 ```
 
@@ -238,7 +238,7 @@ Error: Open failed: disk is write-protected
 **Symptom:**
 
 ```
-amiga@192.168.6.228:SYS:> cat /path/to/file\u2019s-name
+amiga@192.168.6.200:SYS:> cat /path/to/file\u2019s-name
 Path contains characters not representable in ISO-8859-1: ...
 ```
 
@@ -247,7 +247,7 @@ wire. File paths that contain characters outside this encoding (such
 as Unicode curly quotes, emoji, CJK characters, or other non-Latin-1
 code points) cannot be transmitted to the daemon.
 
-**Solution:** Rename the file on the host side to use only characters
+**Solution:** Rename the file on the client side to use only characters
 within the ISO-8859-1 range (ASCII plus Western European accented
 characters) before transferring or referencing it. This limitation is
 inherent to the Amiga's character set and the protocol design.
@@ -350,7 +350,7 @@ command on the Amiga finishes. More importantly, the daemon processes
 **Symptom:**
 
 ```
-amiga@192.168.6.228:SYS:> signal 1
+amiga@192.168.6.200:SYS:> signal 1
 Signal sent.
 ```
 
@@ -389,7 +389,7 @@ The signal is reported as sent, but the process does not stop.
 **Symptom:**
 
 ```
-amiga@192.168.6.228:SYS:> run mycommand
+amiga@192.168.6.200:SYS:> run mycommand
 Error: Process table full
 ```
 
@@ -426,7 +426,7 @@ that you know exist.
   function returns an empty list silently (it does not print an error
   message -- that would disrupt the line being edited). Check the
   prompt: if it shows `amiga>` instead of
-  `amiga@192.168.6.228:SYS:>`, the connection is gone. Use
+  `amiga@192.168.6.200:SYS:>`, the connection is gone. Use
   `reconnect` to restore it.
 
 - **No current working directory.** For relative paths, tab

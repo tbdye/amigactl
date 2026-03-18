@@ -162,7 +162,7 @@ built-in mechanism to download or upload an entire directory tree in one
 operation.
 
 **Workaround:** Use `find` to list files, then transfer them
-individually with scripting on the host side. For bulk transfers,
+individually with scripting on the client side. For bulk transfers,
 consider using the amigactl Python API directly.
 
 ### No Resume for Interrupted Transfers
@@ -174,7 +174,7 @@ from the beginning.
 ### No Text Encoding Conversion
 
 Files are transferred as raw bytes. The shell does not convert line
-endings (LF vs CR/LF) or character encodings between the host and the
+endings (LF vs CR/LF) or character encodings between the client and the
 Amiga. AmigaOS text files typically use LF line endings (same as Unix),
 so this is rarely an issue in practice.
 

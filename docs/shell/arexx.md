@@ -4,7 +4,7 @@ ARexx is the inter-process communication scripting language built into
 AmigaOS. Applications expose named message ports that accept ARexx
 commands, making it possible to script and automate almost any program
 on the Amiga. The amigactl shell's `arexx` command sends ARexx
-messages to these ports remotely, bridging the host machine into the
+messages to these ports remotely, bridging the client into the
 Amiga's IPC ecosystem.
 
 
@@ -49,7 +49,7 @@ Every ARexx reply carries a return code (`rc`) and an optional result
 string. The shell displays both:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx REXX return 42
+amiga@192.168.6.200:SYS:> arexx REXX return 42
 42
 Return code: 0
 ```
@@ -66,7 +66,7 @@ command had no `return` statement), only the return code line is
 printed:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx REXX nop
+amiga@192.168.6.200:SYS:> arexx REXX nop
 Return code: 0
 ```
 
@@ -79,7 +79,7 @@ The built-in `REXX` port evaluates ARexx expressions directly. This
 is the simplest way to test that ARexx is working:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx REXX return 1+2
+amiga@192.168.6.200:SYS:> arexx REXX return 1+2
 3
 Return code: 0
 ```
@@ -87,7 +87,7 @@ Return code: 0
 String results are returned verbatim:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx REXX return "hello world"
+amiga@192.168.6.200:SYS:> arexx REXX return "hello world"
 hello world
 Return code: 0
 ```
@@ -99,7 +99,7 @@ port name is typically the application's name or a variation of it.
 To find available ports:
 
 ```bash
-amiga@192.168.6.228:SYS:> ports
+amiga@192.168.6.200:SYS:> ports
 REXX
 amigactld
 ```
@@ -108,7 +108,7 @@ Then send commands to the port using whatever command vocabulary the
 application defines:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx MYEDITOR OPEN "Work:file.txt"
+amiga@192.168.6.200:SYS:> arexx MYEDITOR OPEN "Work:file.txt"
 Return code: 0
 ```
 
@@ -119,7 +119,7 @@ ARexx interpreter rejected the command. For example, a syntax error
 in an expression sent to the `REXX` port:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx REXX x = (
+amiga@192.168.6.200:SYS:> arexx REXX x = (
 Return code: 15
 ```
 
@@ -127,7 +127,7 @@ If the target port does not exist, the daemon returns an error
 immediately without waiting for a reply:
 
 ```bash
-amiga@192.168.6.228:SYS:> arexx NONEXISTENT_PORT test
+amiga@192.168.6.200:SYS:> arexx NONEXISTENT_PORT test
 Error: ARexx port not found
 ```
 

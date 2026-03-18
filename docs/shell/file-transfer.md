@@ -1,7 +1,7 @@
 # File Transfer
 
-The amigactl shell provides commands for moving files between the host
-computer and the Amiga. `get` downloads files, `put` uploads them,
+The amigactl shell provides commands for moving files between the client
+and the Amiga. `get` downloads files, `put` uploads them,
 `append` adds data to an existing remote file, and `edit` combines
 download, local editing, and upload into a single workflow with conflict
 detection. All path arguments follow the same resolution rules described
@@ -20,7 +20,7 @@ layer.
 
 ### get
 
-Download a file from the Amiga to the host.
+Download a file from the Amiga to the client.
 
 ```
 get REMOTE [LOCAL]
@@ -29,20 +29,20 @@ get REMOTE [LOCAL]
 | Argument | Description |
 |----------|-------------|
 | `REMOTE` | Amiga file path (absolute, or relative to the current directory). |
-| `LOCAL` | Destination path on the host (default: current host directory, same filename as the remote file). |
+| `LOCAL` | Destination path on the client (default: current client directory, same filename as the remote file). |
 
-When `LOCAL` is omitted, the file is saved in the host's current
+When `LOCAL` is omitted, the file is saved in the client's current
 working directory using the basename of the remote path. For example,
 downloading `SYS:S/Startup-Sequence` saves the file as
 `Startup-Sequence` in the directory where you launched the shell.
 
 When `LOCAL` is provided, it specifies the exact path (including
-filename) where the file will be saved on the host.
+filename) where the file will be saved on the client.
 
 ```bash
-amiga@192.168.6.228:SYS:> get SYS:C/WhichAmiga
+amiga@192.168.6.200:SYS:> get SYS:C/WhichAmiga
 Downloaded 5384 bytes to WhichAmiga
-amiga@192.168.6.228:SYS:> get S/Startup-Sequence /tmp/startup.txt
+amiga@192.168.6.200:SYS:> get S/Startup-Sequence /tmp/startup.txt
 Downloaded 512 bytes to /tmp/startup.txt
 ```
 
@@ -51,7 +51,7 @@ confirmation. If the remote file does not exist, an error is printed
 and no local file is created:
 
 ```bash
-amiga@192.168.6.228:SYS:> get NoSuchFile
+amiga@192.168.6.200:SYS:> get NoSuchFile
 Error: Object not found
 ```
 
@@ -59,7 +59,7 @@ If the local path is not writable (e.g., a read-only directory), the
 download succeeds but the local write fails with an error message:
 
 ```bash
-amiga@192.168.6.228:SYS:> get C/Dir /read-only/Dir
+amiga@192.168.6.200:SYS:> get C/Dir /read-only/Dir
 Local write error: [Errno 13] Permission denied: '/read-only/Dir'
 ```
 
@@ -72,7 +72,7 @@ path) does not use tab completion.
 
 ### put
 
-Upload a file from the host to the Amiga.
+Upload a file from the client to the Amiga.
 
 ```
 put LOCAL [REMOTE]
@@ -80,7 +80,7 @@ put LOCAL [REMOTE]
 
 | Argument | Description |
 |----------|-------------|
-| `LOCAL` | File on the host to upload. |
+| `LOCAL` | File on the client to upload. |
 | `REMOTE` | Destination Amiga path (default: current Amiga directory, same filename as the local file). |
 
 When `REMOTE` is omitted, the file is uploaded to the current Amiga
@@ -92,9 +92,9 @@ The file is written atomically on the Amiga side. If the remote file
 already exists, it is overwritten without confirmation.
 
 ```bash
-amiga@192.168.6.228:SYS:> put startup.txt SYS:S/Startup-Sequence
+amiga@192.168.6.200:SYS:> put startup.txt SYS:S/Startup-Sequence
 Uploaded 512 bytes to SYS:S/Startup-Sequence
-amiga@192.168.6.228:SYS:> put localfile.txt
+amiga@192.168.6.200:SYS:> put localfile.txt
 Uploaded 1024 bytes to SYS:localfile.txt
 ```
 
@@ -102,7 +102,7 @@ If the local file does not exist or is not readable, an error is
 printed and nothing is uploaded:
 
 ```bash
-amiga@192.168.6.228:SYS:> put nosuchfile.txt
+amiga@192.168.6.200:SYS:> put nosuchfile.txt
 Local read error: [Errno 2] No such file or directory: 'nosuchfile.txt'
 ```
 
@@ -111,7 +111,7 @@ read-only volume or a nonexistent parent directory), the daemon returns
 an error:
 
 ```bash
-amiga@192.168.6.228:SYS:> put data.bin NoSuchDir/data.bin
+amiga@192.168.6.200:SYS:> put data.bin NoSuchDir/data.bin
 Error: Object not found
 ```
 
@@ -132,7 +132,7 @@ append LOCAL REMOTE
 
 | Argument | Description |
 |----------|-------------|
-| `LOCAL` | File on the host whose contents will be appended. |
+| `LOCAL` | File on the client whose contents will be appended. |
 | `REMOTE` | Amiga file to append to (must already exist). |
 
 Both arguments are required. The remote file must already exist -- if
@@ -141,21 +141,21 @@ appended to the end of the remote file without modifying the existing
 data.
 
 ```bash
-amiga@192.168.6.228:SYS:> append extra-lines.txt RAM:logfile.txt
+amiga@192.168.6.200:SYS:> append extra-lines.txt RAM:logfile.txt
 Appended 256 bytes to RAM:logfile.txt
 ```
 
 If the remote file does not exist:
 
 ```bash
-amiga@192.168.6.228:SYS:> append data.txt RAM:nonexistent.txt
+amiga@192.168.6.200:SYS:> append data.txt RAM:nonexistent.txt
 Error: Object not found
 ```
 
 If the local file cannot be read:
 
 ```bash
-amiga@192.168.6.228:SYS:> append missing.txt RAM:logfile.txt
+amiga@192.168.6.200:SYS:> append missing.txt RAM:logfile.txt
 Local read error: [Errno 2] No such file or directory: 'missing.txt'
 ```
 
@@ -306,7 +306,7 @@ The temporary file path is appended as the final argument.
 Edit an existing file:
 
 ```bash
-amiga@192.168.6.228:SYS:> edit S/User-Startup
+amiga@192.168.6.200:SYS:> edit S/User-Startup
 # ... editor opens with file contents ...
 # ... make changes, save, and quit the editor ...
 File changed: 128 -> 192 bytes
@@ -316,7 +316,7 @@ Uploaded 192 bytes to SYS:S/User-Startup
 Edit a file that does not exist (creates it):
 
 ```bash
-amiga@192.168.6.228:SYS:> edit RAM:newfile.txt
+amiga@192.168.6.200:SYS:> edit RAM:newfile.txt
 File does not exist. Creating new file.
 # ... editor opens with empty buffer ...
 # ... type contents, save, and quit ...
@@ -327,7 +327,7 @@ Uploaded 45 bytes to RAM:newfile.txt
 Quit the editor without saving:
 
 ```bash
-amiga@192.168.6.228:SYS:> edit S/Startup-Sequence
+amiga@192.168.6.200:SYS:> edit S/Startup-Sequence
 # ... editor opens, you quit without saving ...
 No changes detected.
 ```
@@ -335,7 +335,7 @@ No changes detected.
 Conflict detected during upload:
 
 ```bash
-amiga@192.168.6.228:SYS:> edit RAM:shared-config.txt
+amiga@192.168.6.200:SYS:> edit RAM:shared-config.txt
 # ... while you edit, another process modifies the file ...
 File changed: 100 -> 120 bytes
 Warning: file was modified remotely while editing.
@@ -349,7 +349,7 @@ Local copy saved at: /tmp/amigactl_edit_a1b2c3/shared-config.txt
 Connection lost after editing:
 
 ```bash
-amiga@192.168.6.228:SYS:> edit S/User-Startup
+amiga@192.168.6.200:SYS:> edit S/User-Startup
 # ... daemon goes away while you edit ...
 File changed: 128 -> 160 bytes
 Connection lost: [Errno 104] Connection reset by peer

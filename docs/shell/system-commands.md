@@ -22,7 +22,7 @@ Returns the daemon name and version number. This is the same string
 shown when the shell first connects.
 
 ```bash
-amiga@192.168.6.228:SYS:> version
+amiga@192.168.6.200:SYS:> version
 amigactld 0.8.0
 ```
 
@@ -39,7 +39,7 @@ replies. Useful for verifying that the connection is still alive
 after a period of inactivity.
 
 ```bash
-amiga@192.168.6.228:SYS:> ping
+amiga@192.168.6.200:SYS:> ping
 OK
 ```
 
@@ -61,14 +61,14 @@ larger unit is present (i.e., uptime under one minute shows only
 seconds).
 
 ```bash
-amiga@192.168.6.228:SYS:> uptime
+amiga@192.168.6.200:SYS:> uptime
 2d 5h 13m 47s
 ```
 
 A freshly started daemon:
 
 ```bash
-amiga@192.168.6.228:SYS:> uptime
+amiga@192.168.6.200:SYS:> uptime
 12s
 ```
 
@@ -85,7 +85,7 @@ and the full list of wire-protocol commands the daemon supports.
 The command list is printed one command per line for readability.
 
 ```bash
-amiga@192.168.6.228:SYS:> capabilities
+amiga@192.168.6.200:SYS:> capabilities
 version=0.8.0
 protocol=1.0
 max_clients=8
@@ -122,7 +122,7 @@ contiguous free block of each type), the Exec library version, the
 Kickstart version, and the TCP/IP stack version.
 
 ```bash
-amiga@192.168.6.228:SYS:> sysinfo
+amiga@192.168.6.200:SYS:> sysinfo
 chip_free=1587424
 fast_free=115867648
 total_free=117455072
@@ -158,15 +158,15 @@ suffix.
 | `NAME`   | Full library or device name (e.g., `exec.library`, `dos.library`, `timer.device`). |
 
 ```bash
-amiga@192.168.6.228:SYS:> libver exec.library
+amiga@192.168.6.200:SYS:> libver exec.library
 name=exec.library
 version=47.3
 
-amiga@192.168.6.228:SYS:> libver dos.library
+amiga@192.168.6.200:SYS:> libver dos.library
 name=dos.library
 version=47.4
 
-amiga@192.168.6.228:SYS:> libver timer.device
+amiga@192.168.6.200:SYS:> libver timer.device
 name=timer.device
 version=50.1
 ```
@@ -189,7 +189,7 @@ capacity. Sizes are formatted in human-readable units: values under 1024 are
 shown as plain integers, and larger values use K, M, G, or T suffixes.
 
 ```bash
-amiga@192.168.6.228:SYS:> volumes
+amiga@192.168.6.200:SYS:> volumes
 NAME         USED   FREE  CAPACITY
 System:     42.3M  87.7M     130M
 Work:      285.6M  714M     1000M
@@ -213,7 +213,7 @@ are shown: task name, type (task or process), scheduling priority,
 current state, and stack size in bytes.
 
 ```bash
-amiga@192.168.6.228:SYS:> tasks
+amiga@192.168.6.200:SYS:> tasks
 NAME                TYPE      PRI  STATE    STACK
 exec.library        TASK        0  ready     4096
 Workbench           PROCESS     1  wait     16384
@@ -240,7 +240,7 @@ Prints a table of all device drivers loaded in the system, showing
 each device's name and version number.
 
 ```bash
-amiga@192.168.6.228:SYS:> devices
+amiga@192.168.6.200:SYS:> devices
 NAME               VERSION
 timer.device          50.1
 keyboard.device       40.1
@@ -268,7 +268,7 @@ AmigaOS -- applications, device drivers, and system services create
 named ports to receive messages.
 
 ```bash
-amiga@192.168.6.228:SYS:> ports
+amiga@192.168.6.200:SYS:> ports
 REXX
 AMIGACTLD
 WORKBENCH
@@ -302,9 +302,9 @@ command reads from `ENV:` (the active session copy).
 | `NAME`   | Variable name (case-sensitive). |
 
 ```bash
-amiga@192.168.6.228:SYS:> env Workbench
+amiga@192.168.6.200:SYS:> env Workbench
 3.2
-amiga@192.168.6.228:SYS:> env Language
+amiga@192.168.6.200:SYS:> env Language
 english
 ```
 
@@ -337,21 +337,21 @@ Setting a persistent variable (written to both `ENV:` and
 `ENVARC:`):
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv MyVar hello
+amiga@192.168.6.200:SYS:> setenv MyVar hello
 Set: MyVar=hello
 ```
 
 Setting a volatile variable (session only, lost on reboot):
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv -v TempVar 42
+amiga@192.168.6.200:SYS:> setenv -v TempVar 42
 Set: TempVar=42
 ```
 
 Deleting a variable:
 
 ```bash
-amiga@192.168.6.228:SYS:> setenv MyVar
+amiga@192.168.6.200:SYS:> setenv MyVar
 Deleted: MyVar
 ```
 
@@ -381,7 +381,7 @@ line shows the assign name (with trailing colon) and the path it
 resolves to.
 
 ```bash
-amiga@192.168.6.228:SYS:> assigns
+amiga@192.168.6.200:SYS:> assigns
 SYS:       DH0:
 C:         SYS:C
 S:         SYS:S
@@ -422,28 +422,28 @@ its trailing colon.
 Creating a new assign:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign TEST: RAM:
+amiga@192.168.6.200:SYS:> assign TEST: RAM:
 Assigned: TEST: -> RAM:
 ```
 
 Creating a late-binding assign:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign late MYSRC: Work:Source
+amiga@192.168.6.200:SYS:> assign late MYSRC: Work:Source
 Assigned: MYSRC: -> Work:Source
 ```
 
 Adding a second directory to an existing assign:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign add LIBS: Work:ExtraLibs
+amiga@192.168.6.200:SYS:> assign add LIBS: Work:ExtraLibs
 Assigned: LIBS: -> Work:ExtraLibs
 ```
 
 Removing an assign:
 
 ```bash
-amiga@192.168.6.228:SYS:> assign TEST:
+amiga@192.168.6.200:SYS:> assign TEST:
 Removed: TEST:
 ```
 
@@ -453,25 +453,24 @@ standard Amiga path completion.
 
 ## Administrative Commands
 
-These commands affect the entire Amiga system. Both require the
-daemon to have the corresponding permission explicitly enabled in
-its configuration file -- by default, remote shutdown and reboot
-are disabled for safety.
+These commands require the daemon to have the corresponding permission
+explicitly enabled in its configuration file -- by default, remote
+shutdown and reboot are disabled for safety.
 
 ### shutdown
 
-Shut down the Amiga.
+Shut down the amigactld daemon.
 
 ```
 shutdown
 ```
 
-Sends a shutdown command to the Amiga. Before executing, the shell
-prompts for confirmation:
+Sends a shutdown command to the amigactld daemon. Before executing, the
+shell prompts for confirmation:
 
 ```bash
-amiga@192.168.6.228:SYS:> shutdown
-Shut down the Amiga. Are you sure? [y/N] y
+amiga@192.168.6.200:SYS:> shutdown
+Shut down the amigactld daemon. Are you sure? [y/N] y
 Shutdown command sent.
 amiga>
 ```
@@ -480,8 +479,8 @@ Typing anything other than `y` (or pressing Enter for the default
 `N`) cancels the operation:
 
 ```bash
-amiga@192.168.6.228:SYS:> shutdown
-Shut down the Amiga. Are you sure? [y/N] n
+amiga@192.168.6.200:SYS:> shutdown
+Shut down the amigactld daemon. Are you sure? [y/N] n
 Cancelled.
 ```
 
@@ -493,8 +492,8 @@ configuration. If remote shutdown is not permitted, the daemon
 returns a permission denied error:
 
 ```bash
-amiga@192.168.6.228:SYS:> shutdown
-Shut down the Amiga. Are you sure? [y/N] y
+amiga@192.168.6.200:SYS:> shutdown
+Shut down the amigactld daemon. Are you sure? [y/N] y
 Error: Remote shutdown not permitted
 ```
 
@@ -511,7 +510,7 @@ Like `shutdown`, the shell prompts for confirmation before
 proceeding:
 
 ```bash
-amiga@192.168.6.228:SYS:> reboot
+amiga@192.168.6.200:SYS:> reboot
 Reboot the Amiga. Are you sure? [y/N] y
 Reboot command sent.
 amiga>
@@ -537,6 +536,6 @@ returned.
 - [file-operations.md](file-operations.md) -- File and directory
   management commands.
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga.
+  the client and the Amiga.
 - [command-execution.md](command-execution.md) -- Running AmigaDOS
   and ARexx commands.

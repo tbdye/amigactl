@@ -82,7 +82,7 @@ metadata.
 Find all `.info` files anywhere under `SYS:`:
 
 ```bash
-amiga@192.168.6.228:SYS:> find SYS: *.info
+amiga@192.168.6.200:SYS:> find SYS: *.info
 Disk.info
 Tools/Calculator.info
 Prefs/Pointer.info
@@ -91,7 +91,7 @@ Prefs/Pointer.info
 Find only directories matching a pattern:
 
 ```bash
-amiga@192.168.6.228:SYS:> find SYS: -type d S*
+amiga@192.168.6.200:SYS:> find SYS: -type d S*
 S
 Storage
 System
@@ -100,7 +100,7 @@ System
 Find only files with an explicit `-name` flag:
 
 ```bash
-amiga@192.168.6.228:SYS:> find Work: -type f -name *.c
+amiga@192.168.6.200:SYS:> find Work: -type f -name *.c
 Projects/hello/main.c
 Projects/hello/util.c
 ```
@@ -177,21 +177,21 @@ File contents are decoded as ISO-8859-1 (Latin-1) for pattern matching.
 Search for a literal string in a single file:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep SetPatch S/Startup-Sequence
+amiga@192.168.6.200:SYS:> grep SetPatch S/Startup-Sequence
 C:SetPatch QUIET
 ```
 
 Case-insensitive search with line numbers:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -ni setpatch S/Startup-Sequence
+amiga@192.168.6.200:SYS:> grep -ni setpatch S/Startup-Sequence
 3:C:SetPatch QUIET
 ```
 
 Regex search for alternatives:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -Ei "error|warning" RAM:build.log
+amiga@192.168.6.200:SYS:> grep -Ei "error|warning" RAM:build.log
 Warning: implicit declaration of printf
 Error: undefined symbol _main
 ```
@@ -199,14 +199,14 @@ Error: undefined symbol _main
 Recursive search showing matching filenames only:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rl AddBuffers SYS:S
+amiga@192.168.6.200:SYS:> grep -rl AddBuffers SYS:S
 Startup-Sequence
 ```
 
 Count matches per file in a recursive search:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rc TODO Work:src
+amiga@192.168.6.200:SYS:> grep -rc TODO Work:src
 main.c:3
 util.c:1
 ```
@@ -214,7 +214,7 @@ util.c:1
 Recursive search with line numbers:
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -rn include Work:src
+amiga@192.168.6.200:SYS:> grep -rn include Work:src
 main.c:1:#include <stdio.h>
 main.c:2:#include "util.h"
 util.c:1:#include "util.h"
@@ -223,7 +223,7 @@ util.c:1:#include "util.h"
 Count matches in a single file (prints a bare number):
 
 ```bash
-amiga@192.168.6.228:SYS:> grep -c SetPatch S/Startup-Sequence
+amiga@192.168.6.200:SYS:> grep -c SetPatch S/Startup-Sequence
 1
 ```
 
@@ -279,7 +279,7 @@ bytes (rare but possible) will produce meaningless diff output.
 Compare a startup sequence with its backup:
 
 ```bash
-amiga@192.168.6.228:SYS:> diff S/Startup-Sequence S/Startup-Sequence.bak
+amiga@192.168.6.200:SYS:> diff S/Startup-Sequence S/Startup-Sequence.bak
 --- SYS:S/Startup-Sequence
 +++ SYS:S/Startup-Sequence.bak
 @@ -3,7 +3,6 @@
@@ -292,14 +292,14 @@ amiga@192.168.6.228:SYS:> diff S/Startup-Sequence S/Startup-Sequence.bak
 When files are identical:
 
 ```bash
-amiga@192.168.6.228:SYS:> diff RAM:copy.txt RAM:copy2.txt
+amiga@192.168.6.200:SYS:> diff RAM:copy.txt RAM:copy2.txt
 Files are identical
 ```
 
 When files are binary:
 
 ```bash
-amiga@192.168.6.228:SYS:> diff C:Dir C:List
+amiga@192.168.6.200:SYS:> diff C:Dir C:List
 Binary files differ
 ```
 
@@ -343,7 +343,7 @@ root total appearing last.
 Show per-directory breakdown:
 
 ```bash
-amiga@192.168.6.228:SYS:> du S
+amiga@192.168.6.200:SYS:> du S
 640	SubDir
 1152	SYS:S
 ```
@@ -356,14 +356,14 @@ bytes.
 Summary only with human-readable sizes:
 
 ```bash
-amiga@192.168.6.228:SYS:> du -sh Work:
+amiga@192.168.6.200:SYS:> du -sh Work:
 2.5M	Work:
 ```
 
 Default (current directory, raw byte counts):
 
 ```bash
-amiga@192.168.6.228:SYS:Devs> du
+amiga@192.168.6.200:SYS:Devs> du
 1024	DOSDrivers
 4096	Keymaps
 2048	Monitors
@@ -373,7 +373,7 @@ amiga@192.168.6.228:SYS:Devs> du
 Human-readable without summary:
 
 ```bash
-amiga@192.168.6.228:SYS:> du -h Libs
+amiga@192.168.6.200:SYS:> du -h Libs
 45.2K	SYS:Libs
 ```
 
@@ -417,7 +417,7 @@ stops automatically.
 Monitor a process list, refreshing every 2 seconds (default):
 
 ```bash
-amiga@192.168.6.228:SYS:> watch ps
+amiga@192.168.6.200:SYS:> watch ps
 Every 2.0s: ps
 
 PID  TASK             STATE    PRI  SIGWAIT
@@ -430,7 +430,7 @@ PID  TASK             STATE    PRI  SIGWAIT
 Watch a directory for new files with a 5-second interval:
 
 ```bash
-amiga@192.168.6.228:SYS:> watch -n 5 ls -l RAM:T
+amiga@192.168.6.200:SYS:> watch -n 5 ls -l RAM:T
 Every 5.0s: ls -l RAM:T
 
        pipe_1            ----rwed  128  2026-03-16 14:00:00
@@ -441,7 +441,7 @@ Every 5.0s: ls -l RAM:T
 Monitor available memory with a fast refresh:
 
 ```bash
-amiga@192.168.6.228:SYS:> watch -n 0.5 exec avail
+amiga@192.168.6.200:SYS:> watch -n 0.5 exec avail
 Every 0.5s: exec avail
 
 Type   Available    In-Use   Maximum   Largest
@@ -459,6 +459,6 @@ total   15642624   1183232  16826144  15101952
 - [file-operations.md](file-operations.md) -- File and directory
   management commands (`ls`, `stat`, `cat`, `tree`).
 - [file-transfer.md](file-transfer.md) -- Transferring files between
-  host and Amiga.
+  the client and the Amiga.
 - [command-execution.md](command-execution.md) -- Running AmigaDOS and
   ARexx commands.
