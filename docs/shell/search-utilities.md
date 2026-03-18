@@ -420,10 +420,8 @@ Monitor a process list, refreshing every 2 seconds (default):
 amiga@192.168.6.200:SYS:> watch ps
 Every 2.0s: ps
 
-PID  TASK             STATE    PRI  SIGWAIT
-  1  Finder           ready      0  00000000
-  2  input.device     waiting   20  00001000
-...
+ID  COMMAND                STATUS   RC
+1   myserver               RUNNING  -
 ^C
 ```
 

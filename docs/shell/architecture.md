@@ -94,7 +94,7 @@ a callable in a try/except block that catches three exception families:
 
 | Exception | Handling |
 |-----------------|-----------------------------------------------------|
-| `AmigactlError` | Prints the server error message in red. Returns `None`. |
+| `AmigactlError` | Prints the daemon error message in red. Returns `None`. |
 | `ProtocolError` | Prints a protocol error message. Returns `None`. |
 | `OSError` | Prints a connection error. Sets `self.conn = None` and updates the prompt to reflect the disconnected state. Returns `None`. |
 
