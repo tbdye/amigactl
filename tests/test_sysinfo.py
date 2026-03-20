@@ -28,7 +28,7 @@ class TestSysinfo:
 
     def test_sysinfo_keys(self, raw_connection):
         """SYSINFO returns the expected set of key=value pairs.
-        COMMANDS.md: 'The payload consists of key=value lines in a fixed
+        protocol-commands.md: 'The payload consists of key=value lines in a fixed
         order.'  At minimum: chip_free, fast_free, total_free,
         exec_version, kickstart, bsdsocket. chip_total and fast_total
         may be present on exec v39+ systems."""
@@ -73,7 +73,7 @@ class TestSysinfo:
 
     def test_sysinfo_format(self, raw_connection):
         """SYSINFO memory values are numeric and version strings are
-        non-empty.  COMMANDS.md: 'Memory values are decimal integers
+        non-empty.  protocol-commands.md: 'Memory values are decimal integers
         (bytes). Version strings are dot-separated.'"""
         sock, _banner = raw_connection
         send_command(sock, "SYSINFO")
@@ -201,7 +201,7 @@ class TestAssigns:
 
     def test_assigns_has_sys_and_s(self, raw_connection):
         """ASSIGNS returns at least SYS: and S: assigns.
-        COMMANDS.md: ASSIGNS lists all logical assigns.  SYS: and S: are
+        protocol-commands.md: ASSIGNS lists all logical assigns.  SYS: and S: are
         standard AmigaOS assigns that always exist on a booted system."""
         sock, _banner = raw_connection
         send_command(sock, "ASSIGNS")
@@ -224,7 +224,7 @@ class TestAssigns:
 
     def test_assigns_format(self, raw_connection):
         """ASSIGNS lines are tab-separated: name (with colon) and path.
-        COMMANDS.md: 'Each payload line contains two tab-separated fields:
+        protocol-commands.md: 'Each payload line contains two tab-separated fields:
         name: (including trailing colon) and path.'"""
         sock, _banner = raw_connection
         send_command(sock, "ASSIGNS")
@@ -256,7 +256,7 @@ class TestPorts:
 
     def test_ports_returns_ports(self, raw_connection):
         """PORTS returns at least one port name.
-        COMMANDS.md: PORTS lists all active Exec message ports.  A running
+        protocol-commands.md: PORTS lists all active Exec message ports.  A running
         AmigaOS system always has at least one port (e.g., REXX)."""
         sock, _banner = raw_connection
         send_command(sock, "PORTS")
@@ -266,7 +266,7 @@ class TestPorts:
 
     def test_ports_one_per_line(self, raw_connection):
         """Each PORTS payload line is a single port name (no tabs).
-        COMMANDS.md: 'Each payload line contains a single port name.'"""
+        protocol-commands.md: 'Each payload line contains a single port name.'"""
         sock, _banner = raw_connection
         send_command(sock, "PORTS")
         status, payload = read_response(sock)
@@ -288,7 +288,7 @@ class TestVolumes:
 
     def test_volumes_has_boot(self, raw_connection):
         """VOLUMES returns at least one volume (the boot volume).
-        COMMANDS.md: 'Only mounted volumes are listed.'  A booted AmigaOS
+        protocol-commands.md: 'Only mounted volumes are listed.'  A booted AmigaOS
         system always has at least the boot volume."""
         sock, _banner = raw_connection
         send_command(sock, "VOLUMES")
@@ -298,7 +298,7 @@ class TestVolumes:
 
     def test_volumes_format(self, raw_connection):
         """VOLUMES lines are tab-separated with numeric fields.
-        COMMANDS.md: 'Each payload line contains five tab-separated fields:
+        protocol-commands.md: 'Each payload line contains five tab-separated fields:
         name, used, free, capacity, blocksize.'  Used, free, capacity,
         and blocksize must be numeric."""
         sock, _banner = raw_connection
@@ -342,7 +342,7 @@ class TestTasks:
 
     def test_tasks_has_daemon(self, raw_connection):
         """TASKS returns at least one task entry.
-        COMMANDS.md: 'The currently executing task (the daemon itself) is
+        protocol-commands.md: 'The currently executing task (the daemon itself) is
         listed with state run.'  A running system always has tasks."""
         sock, _banner = raw_connection
         send_command(sock, "TASKS")
@@ -352,7 +352,7 @@ class TestTasks:
 
     def test_tasks_format(self, raw_connection):
         """TASKS lines are tab-separated with correct field types.
-        COMMANDS.md: 'Each payload line contains five tab-separated fields:
+        protocol-commands.md: 'Each payload line contains five tab-separated fields:
         name, type (TASK/PROCESS), priority (signed integer), state
         (run/ready/wait), stacksize (numeric).'"""
         sock, _banner = raw_connection

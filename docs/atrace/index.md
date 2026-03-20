@@ -108,7 +108,7 @@ the plain-text CLI output, the interactive TUI viewer, and basic filtering.
 
 The amigactl wire protocol and command set are documented separately:
 
-- [COMMANDS.md](../COMMANDS.md) -- Complete command reference for the
+- [Protocol Commands Reference](../protocol-commands.md) -- Complete command reference for the
   amigactld daemon, including the TRACE command family.
-- [PROTOCOL.md](../PROTOCOL.md) -- Wire protocol specification for
+- [Wire Protocol Specification](../protocol.md) -- Wire protocol specification for
   client-daemon communication.

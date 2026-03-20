@@ -66,9 +66,9 @@ cp client/amigactl/trace_ui.py    "$STAGING/amigactl/client/amigactl/"
 # Copy documentation
 mkdir -p "$STAGING/amigactl/docs"
 
-cp docs/COMMANDS.md             "$STAGING/amigactl/docs/"
-cp docs/PROTOCOL.md             "$STAGING/amigactl/docs/"
-cp docs/AGENT_GUIDE.md          "$STAGING/amigactl/docs/"
+cp docs/protocol-commands.md    "$STAGING/amigactl/docs/"
+cp docs/protocol.md             "$STAGING/amigactl/docs/"
+cp docs/agent-guide.md          "$STAGING/amigactl/docs/"
 mkdir -p "$STAGING/amigactl/docs/atrace"
 cp docs/atrace/*.md             "$STAGING/amigactl/docs/atrace/"
 cp dist/amigactld.readme        "$STAGING/amigactl/"

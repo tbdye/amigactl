@@ -36,7 +36,7 @@ class TestArexxRexx:
 
     def test_arexx_simple_expression(self, conn, rexx_available):
         """AREXX REXX 'return 42' returns rc=0 with result '42'.
-        COMMANDS.md: 'The OK status line includes rc=<N> where N is the
+        protocol-commands.md: 'The OK status line includes rc=<N> where N is the
         return code from the target port's reply.'"""
         rc, result = conn.arexx("REXX", "return 42")
         assert rc == 0, (
@@ -48,7 +48,7 @@ class TestArexxRexx:
 
     def test_arexx_arithmetic(self, conn, rexx_available):
         """AREXX REXX 'return 1+2' returns rc=0 with result '3'.
-        COMMANDS.md example: arithmetic expressions are evaluated by the
+        protocol-commands.md example: arithmetic expressions are evaluated by the
         ARexx interpreter."""
         rc, result = conn.arexx("REXX", "return 1+2")
         assert rc == 0, (
@@ -60,7 +60,7 @@ class TestArexxRexx:
 
     def test_arexx_string_result(self, conn, rexx_available):
         """AREXX REXX with a string return value preserves the string.
-        COMMANDS.md: 'The DATA body is the ARexx RESULT string returned
+        protocol-commands.md: 'The DATA body is the ARexx RESULT string returned
         by the target port.'"""
         rc, result = conn.arexx("REXX", 'return "hello world"')
         assert rc == 0, (
@@ -72,7 +72,7 @@ class TestArexxRexx:
 
     def test_arexx_no_result(self, conn, rexx_available):
         """AREXX REXX with a command that returns no value produces empty
-        result.  COMMANDS.md: 'If no result string was set, no DATA
+        result.  protocol-commands.md: 'If no result string was set, no DATA
         chunks are sent (just END immediately after the OK line).'"""
         rc, result = conn.arexx("REXX", "nop")
         assert rc == 0, (
@@ -84,7 +84,7 @@ class TestArexxRexx:
 
     def test_arexx_error_rc(self, conn, rexx_available):
         """AREXX REXX with a syntax error returns non-zero rc and empty
-        result.  COMMANDS.md: 'A non-zero rc from the target is NOT a
+        result.  protocol-commands.md: 'A non-zero rc from the target is NOT a
         daemon-level error.  The daemon returns OK rc=<N>.'  When rc != 0,
         rm_Result2 is a secondary error code, not a result string."""
         rc, result = conn.arexx("REXX", "x = (")
@@ -100,7 +100,7 @@ class TestArexxRexx:
         """AREXX does not block the daemon's event loop.  While one client
         waits for a slow AREXX response, another client can send PING and
         get a response immediately.
-        COMMANDS.md: 'The requesting client is suspended until the ARexx
+        protocol-commands.md: 'The requesting client is suspended until the ARexx
         reply arrives or timeout.  Other clients can send commands normally.'
 
         Uses a pure ARexx busy loop (no external libraries needed) to
@@ -165,7 +165,7 @@ class TestArexxErrors:
 
     def test_arexx_port_not_found(self, raw_connection):
         """AREXX to a nonexistent port returns ERR 200.
-        COMMANDS.md: 'Target port not found -> ERR 200 ARexx port not
+        protocol-commands.md: 'Target port not found -> ERR 200 ARexx port not
         found'."""
         sock, _banner = raw_connection
         send_command(sock, "AREXX NONEXISTENT_PORT_12345 test command")
@@ -177,7 +177,7 @@ class TestArexxErrors:
 
     def test_arexx_missing_all_args(self, raw_connection):
         """AREXX with no arguments returns ERR 100.
-        COMMANDS.md: 'Missing port name or command -> ERR 100 Usage: AREXX
+        protocol-commands.md: 'Missing port name or command -> ERR 100 Usage: AREXX
         <port> <command>'."""
         sock, _banner = raw_connection
         send_command(sock, "AREXX")
@@ -189,7 +189,7 @@ class TestArexxErrors:
 
     def test_arexx_missing_command(self, raw_connection):
         """AREXX with port name but no command returns ERR 100.
-        COMMANDS.md: 'AREXX REXX (port name with no command text) returns
+        protocol-commands.md: 'AREXX REXX (port name with no command text) returns
         ERR 100.'"""
         sock, _banner = raw_connection
         send_command(sock, "AREXX REXX")
@@ -201,7 +201,7 @@ class TestArexxErrors:
 
     def test_arexx_response_format(self, rexx_available, raw_connection):
         """AREXX response uses DATA/END framing identical to EXEC.
-        COMMANDS.md: the response format is 'OK rc=<N> / DATA <len> /
+        protocol-commands.md: the response format is 'OK rc=<N> / DATA <len> /
         <bytes> / END / .'"""
         sock, _banner = raw_connection
         send_command(sock, "AREXX REXX return 99")
@@ -236,7 +236,7 @@ class TestArexxErrors:
 
     def test_arexx_connection_alive_after_error(self, raw_connection):
         """Connection remains usable after an AREXX error.
-        COMMANDS.md: error codes 500 and 200 are returned synchronously,
+        protocol-commands.md: error codes 500 and 200 are returned synchronously,
         and the connection continues."""
         sock, _banner = raw_connection
         send_command(sock, "AREXX NONEXISTENT_PORT_12345 test")

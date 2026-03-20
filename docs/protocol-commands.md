@@ -25,7 +25,7 @@ against it. Tests verify the documented behavior.
 - All text uses ISO-8859-1 encoding (native AmigaOS).
 
 For wire-level framing details (dot-stuffing, binary data chunking, error
-code table), see [PROTOCOL.md](PROTOCOL.md).
+code table), see [Wire Protocol Specification](protocol.md).
 
 ---
 
@@ -337,7 +337,7 @@ whitespace after the last field:
 | `protection` | 8 lowercase hex digits, zero-padded (raw AmigaOS `fib_Protection` value) |
 | `datestamp` | `YYYY-MM-DD HH:MM:SS` (local Amiga time) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md). If an entry
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md). If an entry
 name begins with `.`, the line will be dot-stuffed on the wire.
 
 An empty directory returns OK with no payload lines (just the sentinel).
@@ -425,7 +425,7 @@ comment=<comment>
 ```
 
 The payload consists of key=value lines in a fixed order. Payload lines
-are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 | Key | Description |
 |-----|-------------|
@@ -486,7 +486,7 @@ S> .
 ## READ
 
 Downloads a file from the Amiga. The response uses DATA/END chunked binary
-framing as described in [PROTOCOL.md](PROTOCOL.md).
+framing as described in [Wire Protocol Specification](protocol.md).
 
 ### Syntax
 
@@ -609,7 +609,7 @@ S> .
 ## WRITE
 
 Uploads a file to the Amiga. Uses a READY handshake and DATA/END chunked
-binary framing as described in [PROTOCOL.md](PROTOCOL.md). The file is
+binary framing as described in [Wire Protocol Specification](protocol.md). The file is
 written atomically via a temporary file and rename.
 
 ### Syntax
@@ -642,7 +642,7 @@ The validation sequence before READY is:
 ### Data Transfer
 
 After receiving READY, the client sends DATA/END chunks per
-[PROTOCOL.md](PROTOCOL.md). The maximum chunk size is 4096 bytes.
+[Wire Protocol Specification](protocol.md). The maximum chunk size is 4096 bytes.
 
 A zero-byte file sends no DATA chunks -- just `END` immediately after
 receiving READY.
@@ -813,7 +813,7 @@ OK
 
 If the client disconnects after sending the RENAME verb but before both
 path lines arrive, the server discards the partial command and closes the
-connection (per [PROTOCOL.md](PROTOCOL.md) multi-line command rules).
+connection (per [Wire Protocol Specification](protocol.md) multi-line command rules).
 
 ### Examples
 
@@ -1435,7 +1435,7 @@ ERR response.
   with an error message in stdout (e.g., "Unknown command nosuchcommand").
   The daemon returns `OK rc=20` with the shell's error output.
 - The command string is limited by the 4096-byte request line maximum
-  (see [PROTOCOL.md](PROTOCOL.md)), minus the `EXEC ` prefix and any
+  (see [Wire Protocol Specification](protocol.md)), minus the `EXEC ` prefix and any
   `CD=<path> ` prefix.
 
 #### Examples
@@ -1633,7 +1633,7 @@ Each payload line contains four tab-separated fields:
 | `status` | `RUNNING` or `EXITED` |
 | `rc` | Return code (integer) when EXITED; `-` when RUNNING |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 If no processes have been launched (empty process table), the response
 contains no payload lines (just OK and sentinel).
@@ -2057,7 +2057,7 @@ Each payload line contains two tab-separated fields:
 | `name:` | Assign name including the trailing colon (e.g., `SYS:`, `S:`, `FONTS:`) |
 | `path` | Resolved path for the assign |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 **Multi-directory assigns**: If an assign points to multiple directories,
 the paths are separated by semicolons within the path field (e.g.,
@@ -2263,7 +2263,7 @@ OK
 ```
 
 Each payload line contains a single port name. Payload lines are
-dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 Ports with NULL names are skipped. Control characters (bytes 0x00-0x1F)
 in port names are replaced with `?` before sending.
@@ -2319,7 +2319,7 @@ Each payload line contains five tab-separated fields:
 | `capacity` | Total capacity in bytes |
 | `blocksize` | Block size in bytes (e.g., 512) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 Only mounted volumes (those with an active filesystem handler) are
 listed. Unmounted volumes are omitted.
@@ -2387,7 +2387,7 @@ Each payload line contains five tab-separated fields:
 | `state` | `run` (currently executing), `ready` (ready to run), or `wait` (waiting for a signal) |
 | `stacksize` | Stack size in bytes (`tc_SPUpper - tc_SPLower`) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 ### Error Conditions
 

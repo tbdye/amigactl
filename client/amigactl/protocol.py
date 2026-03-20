@@ -1,7 +1,7 @@
 """Wire protocol helpers for the amigactl client.
 
 Handles line reading, response parsing, dot-unstuffing, and command
-sending per the amigactl wire protocol specification (PROTOCOL.md).
+sending per the amigactl wire protocol specification (protocol.md).
 All wire communication uses ISO-8859-1 encoding.
 """
 

@@ -37,7 +37,7 @@ class TestExecSync:
 
     def test_exec_simple(self, raw_connection):
         """EXEC echo hello returns OK rc=0 with output containing 'hello'.
-        COMMANDS.md: 'The OK status line includes rc=<N> where N is the
+        protocol-commands.md: 'The OK status line includes rc=<N> where N is the
         AmigaOS return code from the command.'"""
         sock, _banner = raw_connection
         send_command(sock, "EXEC echo hello")
@@ -48,7 +48,7 @@ class TestExecSync:
 
     def test_exec_multiline_output(self, raw_connection):
         """EXEC list SYS:S returns OK rc=0 with multi-line output.
-        COMMANDS.md: captured output follows using DATA/END chunked binary
+        protocol-commands.md: captured output follows using DATA/END chunked binary
         framing."""
         sock, _banner = raw_connection
         send_command(sock, "EXEC list SYS:S")
@@ -63,7 +63,7 @@ class TestExecSync:
 
     def test_exec_nonzero_rc(self, raw_connection):
         """EXEC a command that returns a non-zero rc.
-        COMMANDS.md: 'A command that runs but returns a non-zero return code
+        protocol-commands.md: 'A command that runs but returns a non-zero return code
         is NOT an error from the daemon's perspective.'  Uses 'search'
         which returns rc=5 (WARN) when no match is found."""
         sock, _banner = raw_connection
@@ -75,7 +75,7 @@ class TestExecSync:
 
     def test_exec_nonexistent_command(self, raw_connection):
         """EXEC with a nonexistent command returns OK with a high rc.
-        COMMANDS.md: 'A command that does not exist does NOT produce an ERR
+        protocol-commands.md: 'A command that does not exist does NOT produce an ERR
         response. AmigaOS returns a non-zero rc (typically 20).'"""
         sock, _banner = raw_connection
         send_command(sock, "EXEC nonexistent_amigactl_xyz")
@@ -86,7 +86,7 @@ class TestExecSync:
 
     def test_exec_empty_output(self, raw_connection):
         """EXEC a command that produces no output still returns OK rc=0.
-        COMMANDS.md: 'If the command produces no output, the response
+        protocol-commands.md: 'If the command produces no output, the response
         contains no DATA chunks.'"""
         sock, _banner = raw_connection
         # 'cd SYS:' changes the working directory and produces no output
@@ -97,7 +97,7 @@ class TestExecSync:
 
     def test_exec_serialization(self, amiga_host, amiga_port):
         """Two simultaneous EXEC commands complete sequentially.
-        COMMANDS.md: 'This blocks the daemon's event loop -- all other
+        protocol-commands.md: 'This blocks the daemon's event loop -- all other
         clients are blocked until the command completes.'"""
         # Open two independent connections
         sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -140,7 +140,7 @@ class TestExecSync:
 
     def test_exec_response_format(self, raw_connection):
         """EXEC response has OK rc=N status line, DATA chunks, END, and
-        sentinel.  COMMANDS.md: 'The OK status line includes rc=<N>'."""
+        sentinel.  protocol-commands.md: 'The OK status line includes rc=<N>'."""
         sock, _banner = raw_connection
         send_command(sock, "EXEC echo format_test")
 
@@ -181,7 +181,7 @@ class TestExecSync:
 
     def test_exec_cd(self, raw_connection):
         """EXEC CD=SYS:S with 'list' lists the contents of SYS:S.
-        COMMANDS.md: 'CD=<path> is an optional prefix that sets the working
+        protocol-commands.md: 'CD=<path> is an optional prefix that sets the working
         directory for the executed command.'"""
         sock, _banner = raw_connection
         send_command(sock, "EXEC CD=SYS:S list")
@@ -193,7 +193,7 @@ class TestExecSync:
 
     def test_exec_cd_nonexistent(self, raw_connection):
         """EXEC CD= with nonexistent path returns ERR 200.
-        COMMANDS.md: 'CD= path not found -> ERR 200 Directory not found'."""
+        protocol-commands.md: 'CD= path not found -> ERR 200 Directory not found'."""
         sock, _banner = raw_connection
         send_command(sock, "EXEC CD=RAM:nonexistent_amigactl_test echo hello")
         status, payload = read_response(sock)
@@ -204,7 +204,7 @@ class TestExecSync:
 
     def test_exec_cd_persistent(self, raw_connection):
         """EXEC CD= does not change the daemon's own working directory.
-        COMMANDS.md: 'The daemon's own current directory is saved before
+        protocol-commands.md: 'The daemon's own current directory is saved before
         the command and restored afterward.'"""
         sock, _banner = raw_connection
 
@@ -234,7 +234,7 @@ class TestExecSync:
 
     def test_exec_missing_command(self, raw_connection):
         """EXEC with no command text returns ERR 100.
-        COMMANDS.md: 'Missing command -> ERR 100 Missing command'."""
+        protocol-commands.md: 'Missing command -> ERR 100 Missing command'."""
         sock, _banner = raw_connection
         send_command(sock, "EXEC")
         status, payload = read_response(sock)
@@ -251,7 +251,7 @@ class TestExecAsync:
 
     def test_exec_async_launch(self, raw_connection):
         """EXEC ASYNC launches a process and returns a numeric ID.
-        COMMANDS.md: 'The OK status line includes the daemon-assigned
+        protocol-commands.md: 'The OK status line includes the daemon-assigned
         process ID (a monotonically incrementing integer).'"""
         sock, _banner = raw_connection
         send_command(sock, "EXEC ASYNC echo done")
@@ -269,7 +269,7 @@ class TestExecAsync:
 
     def test_proclist_shows_process(self, raw_connection):
         """After EXEC ASYNC, PROCLIST includes the launched process.
-        COMMANDS.md: PROCLIST lists all daemon-launched asynchronous
+        protocol-commands.md: PROCLIST lists all daemon-launched asynchronous
         processes."""
         sock, _banner = raw_connection
 
@@ -320,7 +320,7 @@ class TestExecAsync:
 
     def test_procstat_valid(self, raw_connection):
         """PROCSTAT for a valid process ID returns key=value pairs.
-        COMMANDS.md: 'The payload consists of key=value lines in a fixed
+        protocol-commands.md: 'The payload consists of key=value lines in a fixed
         order: id, command, status, rc.'"""
         sock, _banner = raw_connection
 
@@ -362,7 +362,7 @@ class TestExecAsync:
 
     def test_procstat_invalid(self, raw_connection):
         """PROCSTAT for an invalid ID returns ERR 200.
-        COMMANDS.md: 'Process not found -> ERR 200 Process not found'."""
+        protocol-commands.md: 'Process not found -> ERR 200 Process not found'."""
         sock, _banner = raw_connection
         send_command(sock, "PROCSTAT 99999")
         status, payload = read_response(sock)
@@ -373,7 +373,7 @@ class TestExecAsync:
 
     def test_procstat_missing_id(self, raw_connection):
         """PROCSTAT with no ID returns ERR 100.
-        COMMANDS.md: 'Missing process ID -> ERR 100 Missing process ID'."""
+        protocol-commands.md: 'Missing process ID -> ERR 100 Missing process ID'."""
         sock, _banner = raw_connection
         send_command(sock, "PROCSTAT")
         status, payload = read_response(sock)
@@ -382,7 +382,7 @@ class TestExecAsync:
 
     def test_procstat_nonnumeric_id(self, raw_connection):
         """PROCSTAT with non-numeric ID returns ERR 100.
-        COMMANDS.md: 'Invalid process ID (non-numeric) -> ERR 100'."""
+        protocol-commands.md: 'Invalid process ID (non-numeric) -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "PROCSTAT abc")
         status, payload = read_response(sock)
@@ -391,7 +391,7 @@ class TestExecAsync:
 
     def test_signal_running_process(self, raw_connection):
         """SIGNAL sends CTRL_C to a running process, causing it to exit.
-        COMMANDS.md: 'Sends an AmigaOS break signal to a daemon-launched
+        protocol-commands.md: 'Sends an AmigaOS break signal to a daemon-launched
         asynchronous process.'"""
         sock, _banner = raw_connection
 
@@ -441,7 +441,7 @@ class TestExecAsync:
 
     def test_signal_not_running(self, raw_connection):
         """SIGNAL to an EXITED process returns ERR 200.
-        COMMANDS.md: 'Process not running -> ERR 200 Process not running'."""
+        protocol-commands.md: 'Process not running -> ERR 200 Process not running'."""
         sock, _banner = raw_connection
 
         # Launch a quick process and wait for it to exit
@@ -476,7 +476,7 @@ class TestExecAsync:
 
     def test_signal_invalid_id(self, raw_connection):
         """SIGNAL to a nonexistent ID returns ERR 200.
-        COMMANDS.md: 'Process not found -> ERR 200 Process not found'."""
+        protocol-commands.md: 'Process not found -> ERR 200 Process not found'."""
         sock, _banner = raw_connection
         send_command(sock, "SIGNAL 99999")
         status, payload = read_response(sock)
@@ -487,7 +487,7 @@ class TestExecAsync:
 
     def test_signal_missing_id(self, raw_connection):
         """SIGNAL with no ID returns ERR 100.
-        COMMANDS.md: 'Missing process ID -> ERR 100 Missing process ID'."""
+        protocol-commands.md: 'Missing process ID -> ERR 100 Missing process ID'."""
         sock, _banner = raw_connection
         send_command(sock, "SIGNAL")
         status, payload = read_response(sock)
@@ -496,7 +496,7 @@ class TestExecAsync:
 
     def test_signal_nonnumeric_id(self, raw_connection):
         """SIGNAL with non-numeric ID returns ERR 100.
-        COMMANDS.md: 'Invalid process ID (non-numeric) -> ERR 100'."""
+        protocol-commands.md: 'Invalid process ID (non-numeric) -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "SIGNAL abc")
         status, payload = read_response(sock)
@@ -505,7 +505,7 @@ class TestExecAsync:
 
     def test_signal_invalid_name(self, raw_connection):
         """SIGNAL with invalid signal name returns ERR 100.
-        COMMANDS.md: 'Invalid signal name -> ERR 100 Invalid signal name'.
+        protocol-commands.md: 'Invalid signal name -> ERR 100 Invalid signal name'.
         Error checking order: process ID is validated first, then status,
         then signal name.  Uses a running process to reach the signal
         name validation."""
@@ -531,7 +531,7 @@ class TestExecAsync:
 
     def test_kill_not_permitted(self, raw_connection):
         """KILL when ALLOW_REMOTE_SHUTDOWN is NO returns ERR 201.
-        COMMANDS.md: 'Remote kill not permitted -> ERR 201'."""
+        protocol-commands.md: 'Remote kill not permitted -> ERR 201'."""
         sock, _banner = raw_connection
         send_command(sock, "KILL 1")
         status, payload = read_response(sock)
@@ -540,7 +540,7 @@ class TestExecAsync:
 
     def test_kill_missing_id(self, raw_connection):
         """KILL with no ID still returns ERR 201 when remote kill is disabled.
-        COMMANDS.md error checking order: 'permission is validated first'."""
+        protocol-commands.md error checking order: 'permission is validated first'."""
         sock, _banner = raw_connection
         send_command(sock, "KILL")
         status, payload = read_response(sock)
@@ -563,7 +563,7 @@ class TestExecAsync:
 
     def test_process_shows_rc(self, raw_connection):
         """After a process exits, PROCSTAT shows status=EXITED and a
-        numeric rc.  COMMANDS.md: 'rc -> Return code (integer) when EXITED;
+        numeric rc.  protocol-commands.md: 'rc -> Return code (integer) when EXITED;
         - when RUNNING'."""
         sock, _banner = raw_connection
 
@@ -611,7 +611,7 @@ class TestExecAsync:
 
     def test_exec_async_missing_command(self, raw_connection):
         """EXEC ASYNC with no command text returns ERR 100.
-        COMMANDS.md: 'Missing command -> ERR 100 Missing command'."""
+        protocol-commands.md: 'Missing command -> ERR 100 Missing command'."""
         sock, _banner = raw_connection
         send_command(sock, "EXEC ASYNC")
         status, payload = read_response(sock)
@@ -620,7 +620,7 @@ class TestExecAsync:
 
     def test_exec_async_cd(self, raw_connection):
         """EXEC ASYNC CD=SYS:S launches a process in the specified
-        directory.  COMMANDS.md: 'CD=<path> follows the same parsing rules
+        directory.  protocol-commands.md: 'CD=<path> follows the same parsing rules
         as synchronous EXEC.'"""
         sock, _banner = raw_connection
         send_command(sock, "EXEC ASYNC CD=SYS:S echo done")
@@ -636,7 +636,7 @@ class TestExecAsync:
 
     def test_proclist_format(self, raw_connection):
         """PROCLIST payload lines have 4 tab-separated fields.
-        COMMANDS.md: 'Each payload line contains four tab-separated fields:
+        protocol-commands.md: 'Each payload line contains four tab-separated fields:
         id, command, status, rc.'
 
         Note: this test may see entries from earlier tests in the session.

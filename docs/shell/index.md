@@ -151,7 +151,11 @@ cover related areas:
 - [atrace Documentation](../atrace/index.md) -- Library call tracing
   system, including the `trace` subcommands accessible from within the
   shell.
-- [COMMANDS.md](../COMMANDS.md) -- Complete command reference for the
+- [CLI Reference](../cli/index.md) -- Non-interactive, scriptable
+  command-line interface for one-shot operations.
+- [Configuration](../configuration.md) -- Global options, config file,
+  and environment variables shared across all amigactl modes.
+- [Protocol Commands Reference](../protocol-commands.md) -- Complete command reference for the
   amigactld daemon wire protocol.
-- [PROTOCOL.md](../PROTOCOL.md) -- Wire protocol specification for
+- [Wire Protocol Specification](../protocol.md) -- Wire protocol specification for
   client-daemon communication.

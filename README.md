@@ -1,481 +1,179 @@
 # amigactl
 
-Remote access toolkit for AmigaOS.
+A remote access toolkit for AmigaOS -- manage files, execute commands, inspect system state, and trace library calls over TCP.
 
-amigactl provides structured, programmatic remote access to AmigaOS over TCP.
-It consists of a lightweight C daemon (amigactld) running on the Amiga and a
-Python client library and CLI tool on the client side. Together they expose
-37 daemon commands spanning file operations (copy, checksum, streaming), CLI
-command execution, ARexx dispatch, environment variables, library version
-queries, system-level library call tracing (50 patched functions across
-exec.library, dos.library, and intuition.library), and system introspection (assigns, volumes,
-ports, tasks, devices) through a simple text protocol with machine-parseable
-responses. The interactive shell adds 6 client-side search and navigation
-commands (find, tree, grep, diff, du, watch). Designed for trusted LANs and
-emulator setups.
+## What is amigactl?
 
-## Architecture
+amigactl gives you full remote access to an Amiga from any modern workstation. A lightweight C daemon (`amigactld`) runs on the Amiga, while a Python CLI tool and library on the host side let you manage files, run commands, query system state, and automate workflows -- all over a simple TCP connection.
 
-```
-Client                            Amiga
-+-----------------+               +------------------+
-| amigactl CLI    |--TCP:6800---->| amigactld        |
-| (Python)        |               | (m68k C daemon)  |
-+-----------------+               |                  |
-                                  | - File I/O (DOS) |
-+-----------------+               | - EXEC / Proc    |
-| Python library  |--TCP:6800---->| - ARexx dispatch |
-| (client)        |               | - File streaming |
-+-----------------+               | - System queries |
-                                  | - Library tracing|
-                                  +------------------+
-```
+The toolkit spans the full range of daily Amiga development tasks: file transfers, remote command execution with process management, environment variable and assign manipulation, ARexx dispatch, and deep system introspection including running tasks, mounted volumes, message ports, and device drivers. An interactive shell with tab completion and Amiga-aware path navigation makes ad-hoc work feel native.
 
-- **amigactld**: Amiga daemon, C, cross-compiled with m68k-amigaos-gcc.
-  Multi-client via WaitSelect event loop (up to 8 simultaneous clients).
-- **amigactl**: Python client library and CLI tool (client-side).
-- **Protocol**: Text commands, dot-stuffed sentinel termination, length-prefixed
-  binary for file data. ISO-8859-1 encoding.
-- **Security**: IP-based ACL from `S:amigactld.conf`
+What sets amigactl apart is **atrace**, its library call tracing system. atrace patches 99 functions across 7 AmigaOS libraries (exec, dos, intuition, bsdsocket, icon, workbench, and graphics) at the machine code level, capturing every call with arguments, return values, caller task names, and timing data. Events stream to the host in real time and can be viewed through a live TUI with tier-based filtering, per-task isolation, and handle tracking. It is, as far as we know, the only tool of its kind for AmigaOS.
 
-## Requirements
+## Feature Highlights
 
-### Amiga (daemon)
+**File Management** -- `ls`, `stat`, `cat`, `get`, `put`, `cp`, `mv`, `rm`, `mkdir`, `chmod`, `touch`, `checksum`, `append`, `setcomment`, `tail` (live file streaming), with recursive listing, byte-range reads, and CRC32 checksums.
 
-- AmigaOS 2.0 or later
-- 68020 or later CPU
-- A TCP/IP stack providing `bsdsocket.library` (Roadshow, AmiTCP, Miami, or
-  emulator bsdsocket emulation)
+**Remote Command Execution** -- Synchronous (`exec`) and asynchronous (`run`) command execution with working directory control, process listing (`ps`), status queries, signal delivery, and forced termination.
 
-### Client
+**Interactive Shell** -- Tab completion for Amiga paths, `cd`/`pwd` navigation with `..` support, colorized output, inline `edit` with local editor integration, and shell-only utilities: `find`, `tree`, `grep`, `diff`, `du`, `watch`.
 
-- Python 3.8 or later
+**Library Call Tracing** -- 99 functions across 7 libraries, organized into three progressive tiers (Basic, Detail, Verbose) plus Manual-only functions for high-volume tracing. Filter by library, function, process name, or error-only. Stream events live or trace a single program's execution with `trace run`. Full TUI viewer with interactive controls.
 
-## Building the Daemon
+**System Introspection** -- `sysinfo` (memory stats, Exec/Kickstart/bsdsocket versions), `tasks` (running tasks/processes with stack sizes), `volumes` (mounted filesystems with free space), `ports` (Exec message ports), `assigns`/`assign` (list, create, modify, and remove logical assignments), `devices` (Exec device drivers), `libver` (library/device versions), `env`/`setenv` (environment variables), `uptime` (daemon uptime).
 
-### Prerequisites
+**ARexx Integration** -- Send commands to any ARexx port with return code and result capture.
 
-The [m68k-amigaos-gcc](https://github.com/AmigaPorts/m68k-amigaos-gcc)
-cross-compiler must be installed at `/opt/amiga`. The build uses `-noixemul`
-(libnix) and targets 68020.
+**Python Library** -- Every daemon capability is available as a method on `AmigaConnection` for scripting and automation. No external dependencies (stdlib only).
 
-### Compile
+**Wire Protocol** -- A documented text protocol with dot-stuffed framing and length-prefixed binary transfers, suitable for custom integrations in any language.
+
+## Quick Example
 
 ```
-make
+$ amigactl --host 192.168.6.200 sysinfo
+chip_free=477752
+fast_free=13298680
+total_free=13776432
+chip_total=1048576
+fast_total=14680064
+chip_largest=460488
+fast_largest=13036136
+exec_version=40.68
+kickstart=68
+bsdsocket=4.1
+
+$ amigactl --host 192.168.6.200 ls SYS:C
+file	Dir	4588	0	1994-10-20 00:00:00
+file	List	7808	0	1994-10-20 00:00:00
+file	Copy	5044	0	1994-10-20 00:00:00
+...
+
+$ amigactl --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
+Downloaded 1234 bytes to startup.txt
+
+$ amigactl --host 192.168.6.200 exec avail FLUSH
+Type   Available    In-Use   Maximum   Largest
+chip      477752    571528   1048576    460488
+fast    13298680    895176  14680064  13036136
+
+$ amigactl --host 192.168.6.200 tasks
+NAME	TYPE	PRI	STATE	STACK
+input.device	TASK	20	wait	4096
+amigactld	PROCESS	0	run	65536
+...
+
+$ amigactl --host 192.168.6.200 trace run -- list SYS:S
+SEQ                 TIME  FUNCTION                     TASK                 ARGS                                     RESULT
+1                 0.001s  dos.Lock                     List                 "SYS:S" SHARED_LOCK                      0x12345678
+2                 0.002s  dos.Examine                  List                 0x12345678 0x...                         1
+3                 0.003s  dos.ExNext                   List                 0x12345678 0x...                         1
+...
+8                 0.005s  dos.UnLock                   List                 0x12345678                               (void)
+
+$ amigactl --host 192.168.6.200
+amiga@192.168.6.200:SYS:> find C *.info
+C/Ed.info
+C/IconX.info
+amiga@192.168.6.200:SYS:> exit
 ```
 
-This produces the `amigactld` binary in the project root. Copy it to the Amiga
-(e.g., via SMB share, FTP, or any file transfer method available).
+## Installation
 
-## Daemon Configuration
+The quickest path:
 
-amigactld reads its configuration from `S:amigactld.conf` on the Amiga. If the
-file is missing, the daemon starts with default settings (port 6800, all IPs
-allowed, remote shutdown disabled).
-
-### Config file format
+1. Download the latest `.lha` release from the [Releases](https://github.com/tbdye/amigactl/releases) page.
+2. Extract on the Amiga. Copy `amigactld` to `C:` or any convenient location.
+3. On the host, install the Python client:
 
 ```
-# amigactld configuration
-#
-# Lines starting with # are comments.
-# Keywords are case-insensitive.
-
-# TCP port to listen on (default: 6800)
-PORT 6800
-
-# Allowed client IPs. One per line. If no ALLOW lines are present,
-# all IPs are permitted (development mode).
-ALLOW 192.168.6.100
-ALLOW 192.168.6.50
-
-# Allow the SHUTDOWN command from remote clients (default: NO).
-# When NO, SHUTDOWN CONFIRM returns ERR 201.
-ALLOW_REMOTE_SHUTDOWN NO
-
-# Allow the REBOOT command from remote clients (default: NO).
-# When NO, REBOOT CONFIRM returns ERR 201.
-ALLOW_REMOTE_REBOOT NO
+pip install -e client/
+amigactl --host <amiga-ip>
 ```
 
-An example config is provided in `dist/amigactld.conf.example`.
-
-## Running the Daemon
-
-### From the CLI
-
-```
-amigactld
-amigactld PORT 6900
-amigactld CONFIG S:my_custom.conf
-```
-
-ReadArgs template: `PORT/N,CONFIG/K`
-
-The daemon prints a startup message and listens for connections. Press Ctrl-C
-to shut down cleanly.
-
-### From Workbench
-
-Double-click the amigactld icon. A console window briefly appears showing the
-startup banner, then auto-dismisses once the daemon is running. If startup
-fails (e.g., port already in use), the window stays open with an error message.
-The daemon runs until a SHUTDOWN command is received or the system shuts down.
-Configuration can be set via Tool Types (`PORT`, `CONFIG`) in the icon's Info
-window.
-
-## Running the Client
-
-### Linux / macOS
-
-    sh client/amigactl.sh --host 192.168.6.200
-
-With no subcommand, this launches the interactive shell. If you extracted
-from the LHA archive, the execute bit is not preserved. Use `sh` as shown
-above, or run `chmod +x client/amigactl.sh` once to invoke it directly. You can also run
-one-off commands:
-
-    client/amigactl.sh --host 192.168.6.200 ls SYS:S
-    client/amigactl.sh --host 192.168.6.200 exec list SYS:S
-    client/amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence
-
-### Interactive Shell
-
-The interactive shell starts automatically when no subcommand is given, or
-explicitly with the `shell` subcommand:
-
-    $ client/amigactl.sh --host 192.168.6.200
-    Connected to 192.168.6.200 (amigactld 0.8.0)
-    Type "help" for a list of commands, "exit" to disconnect.
-    amiga@192.168.6.200:SYS:> ls
-    C/  Devs/  Expansion/  L/  Libs/  Locale/  Prefs/  S/  System/  T/
-    Utilities/  WBStartup/  Disk.info  Startup-Sequence  User-Startup
-    amiga@192.168.6.200:SYS:> cd S
-    amiga@192.168.6.200:SYS:S> cat Startup-Sequence
-    ; Startup-Sequence
-    ...
-    amiga@192.168.6.200:SYS:S> cd ..
-    amiga@192.168.6.200:SYS:> exec avail FLUSH
-    Type   Available    In-Use   Maximum   Largest
-    chip      477752    571528   1048576    460488
-    fast    13298680    895176  14680064  13036136
-    total   13776432   1466704  15728640  13036136
-    amiga@192.168.6.200:SYS:> sysinfo
-    cpu=MC68020
-    ...
-    amiga@192.168.6.200:SYS:> cp C/Dir RAM:Dir.bak
-    amiga@192.168.6.200:SYS:> checksum C/Dir
-    crc32=a1b2c3d4  size=12345  C/Dir
-    amiga@192.168.6.200:SYS:> libver dos.library
-    dos.library 40.3
-    amiga@192.168.6.200:SYS:> env Workbench
-    USE1MAP.16
-    amiga@192.168.6.200:SYS:> find C #?.info
-    C/Ed.info
-    C/IconX.info
-    ...
-    amiga@192.168.6.200:SYS:> grep "Pattern" S
-    S/Startup-Sequence:14: Pattern
-    ...
-    amiga@192.168.6.200:SYS:> exit
-    Disconnected.
-
-The shell supports `cd` and `pwd` for navigation (including `..` and `/`
-for parent directory). Relative paths are resolved client-side before
-sending to the daemon. Tab completion works with both absolute and
-relative Amiga paths. Type `help` for a command list, or `help COMMAND`
-for detailed usage of any command.
-
-The shell also provides search and navigation commands that combine
-multiple daemon operations client-side: `find` (recursive file search
-with glob patterns), `tree` (directory tree display), `grep` (recursive
-text search), `diff` (file comparison), `du` (disk usage), and `watch`
-(periodic command re-execution). These are shell-only and not available
-as CLI subcommands.
-
-Tab completion requires Python's readline module (included on Linux/macOS).
-On Windows, tab completion is not available by default. Installing the
-optional `pyreadline3` package (`pip install pyreadline3`) adds tab
-completion support.
-
-The `edit` command downloads a file, opens it in your editor, and uploads
-changes on save. It checks `$VISUAL`, `$EDITOR`, the config file `editor`
-setting, then falls back to `vi` (Linux/macOS) or `notepad` (Windows).
-
-    export EDITOR=nano                 # Linux/macOS
-    $env:EDITOR = "code --wait"        # Windows (VS Code)
-
-Colors are auto-detected (disable with `NO_COLOR=1` or
-`AMIGACTL_COLOR=never`).
-
-### Windows (PowerShell)
-
-    client\amigactl.ps1 --host 192.168.6.200
-
-If script execution is blocked, set the execution policy:
-
-    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-
-If `python` launches the Microsoft Store instead of running the script,
-disable the App execution aliases for `python.exe` and `python3.exe` in
-Settings > Apps > Advanced app settings > App execution aliases.
-
-### Alternative: pip install
-
-For users who prefer a system-wide install:
-
-    python3 -m venv .venv && . .venv/bin/activate
-    pip install -e client/
-    amigactl --host 192.168.6.200
-
-No external dependencies are required (stdlib only).
-
-### Directory layout
-
-The wrapper scripts are in the `client/` directory alongside the Python package:
-
-```
-amigactl/
-+-- client/
-    +-- amigactl.sh        (Linux/macOS wrapper)
-    +-- amigactl.ps1       (Windows wrapper)
-    +-- amigactl/
-        +-- __init__.py
-        +-- __main__.py
-        +-- protocol.py
-        +-- shell.py
-        +-- colors.py
-```
-
-### Environment variables
-
-The `--host` flag defaults to the `AMIGACTL_HOST` environment variable, or
-`192.168.6.200` if unset. `--port` defaults to `AMIGACTL_PORT` or `6800`.
-
-### Configuration file
-
-Settings can also be placed in `client/amigactl.conf`. On first run, this
-file is auto-created from `client/amigactl.conf.example` with defaults filled
-in. Edit it to match your setup:
-
-```ini
-[connection]
-host = 192.168.6.200
-port = 6800
-
-[editor]
-command = vi
-```
-
-CLI flags override environment variables, which override config file settings.
-Use `--config PATH` to specify an alternative location.
-
-### CLI usage
-
-```
-client/amigactl.sh --host 192.168.6.200 version
-client/amigactl.sh --host 192.168.6.200 ping
-client/amigactl.sh --host 192.168.6.200 uptime
-client/amigactl.sh --host 192.168.6.200 ls SYS:S
-client/amigactl.sh --host 192.168.6.200 stat SYS:S/Startup-Sequence
-client/amigactl.sh --host 192.168.6.200 cat SYS:S/Startup-Sequence > startup.txt
-client/amigactl.sh --host 192.168.6.200 get SYS:S/Startup-Sequence startup.txt
-client/amigactl.sh --host 192.168.6.200 put localfile.txt RAM:test.txt
-client/amigactl.sh --host 192.168.6.200 rm RAM:test.txt
-client/amigactl.sh --host 192.168.6.200 mv RAM:old.txt RAM:new.txt
-client/amigactl.sh --host 192.168.6.200 mkdir RAM:newdir
-client/amigactl.sh --host 192.168.6.200 chmod RAM:file.txt
-client/amigactl.sh --host 192.168.6.200 chmod RAM:file.txt 0f
-client/amigactl.sh --host 192.168.6.200 touch RAM:file.txt
-client/amigactl.sh --host 192.168.6.200 touch RAM:file.txt 2026-02-19 12:00:00
-client/amigactl.sh --host 192.168.6.200 exec echo hello
-client/amigactl.sh --host 192.168.6.200 run wait 30
-client/amigactl.sh --host 192.168.6.200 ps
-client/amigactl.sh --host 192.168.6.200 status 1
-client/amigactl.sh --host 192.168.6.200 signal 1
-client/amigactl.sh --host 192.168.6.200 kill 1
-client/amigactl.sh --host 192.168.6.200 sysinfo
-client/amigactl.sh --host 192.168.6.200 assigns
-client/amigactl.sh --host 192.168.6.200 assign MyAssign: RAM:mydir
-client/amigactl.sh --host 192.168.6.200 volumes
-client/amigactl.sh --host 192.168.6.200 ports
-client/amigactl.sh --host 192.168.6.200 tasks
-client/amigactl.sh --host 192.168.6.200 arexx REXX -- return 1+2
-client/amigactl.sh --host 192.168.6.200 cp SYS:C/Dir RAM:Dir
-client/amigactl.sh --host 192.168.6.200 append localdata.txt RAM:logfile.txt
-client/amigactl.sh --host 192.168.6.200 checksum SYS:C/Dir
-client/amigactl.sh --host 192.168.6.200 setcomment RAM:test.txt "Important file"
-client/amigactl.sh --host 192.168.6.200 libver exec.library
-client/amigactl.sh --host 192.168.6.200 env Workbench
-client/amigactl.sh --host 192.168.6.200 setenv MyVar hello
-client/amigactl.sh --host 192.168.6.200 devices
-client/amigactl.sh --host 192.168.6.200 capabilities
-client/amigactl.sh --host 192.168.6.200 tail RAM:logfile.txt
-client/amigactl.sh --host 192.168.6.200 shutdown
-client/amigactl.sh --host 192.168.6.200 reboot
-```
-
-### Python library
-
-```python
-from amigactl import AmigaConnection
-
-with AmigaConnection("192.168.6.200") as amiga:
-    print(amiga.version())
-    amiga.ping()
-
-    # File operations
-    entries = amiga.dir("SYS:S")
-    data = amiga.read("SYS:S/Startup-Sequence")
-    amiga.write("RAM:test.txt", b"hello world")
-    info = amiga.stat("RAM:test.txt")
-    amiga.rename("RAM:test.txt", "RAM:renamed.txt")
-    amiga.delete("RAM:renamed.txt")
-    amiga.makedir("RAM:mydir")
-    prot = amiga.protect("RAM:mydir")
-
-    amiga.copy("SYS:C/Dir", "RAM:Dir")
-    data = amiga.read("SYS:C/Dir", offset=100, length=50)
-    amiga.append("RAM:logfile.txt", b"new log entry\n")
-    csum = amiga.checksum("SYS:C/Dir")
-    amiga.setcomment("RAM:test.txt", "Important file")
-
-    # Command execution
-    rc, output = amiga.execute("list SYS:S")
-    proc_id = amiga.execute_async("wait 30")
-    procs = amiga.proclist()
-    info = amiga.procstat(proc_id)
-    amiga.signal(proc_id)
-
-    # ARexx
-    rc, result = amiga.arexx("REXX", "return 1+2")
-
-    # File streaming (Ctrl-C or stop_tail() to end)
-    amiga.tail("RAM:logfile.txt", lambda chunk: print(chunk))
-
-    # Lifecycle
-    uptime_secs = amiga.uptime()
-
-    # System info
-    sysinfo = amiga.sysinfo()
-    assigns = amiga.assigns()
-    volumes = amiga.volumes()
-    ports = amiga.ports()
-    tasks = amiga.tasks()
-    amiga.setdate("RAM:test.txt", "2026-02-19 12:00:00")
-
-    ver = amiga.libver("exec.library")
-    val = amiga.env("Workbench")
-    amiga.setenv("MyVar", "hello")
-    devs = amiga.devices()
-    caps = amiga.capabilities()
-```
-
-## Amiga Installation
-
-Download the latest `.lha` archive from the Releases page, or build it:
-
-    sh dist/build_lha.sh
-
-Extract to any location on the Amiga. Copy `amigactld.conf.example` to
-`S:amigactld.conf` and edit the ALLOW lines for your network.
-
-To auto-start, add to `S:User-Startup`:
-
-    RUN >NIL: <path>/amigactld
-
-## Protocol Overview
-
-amigactl uses a text-based protocol over TCP. Clients send one command per
-line (max 4096 bytes, excluding the terminating newline). The daemon accepts
-both LF and CR LF line endings for telnet compatibility. The server responds
-with a status line (`OK [info]\n` or `ERR <code> <message>\n`), optional
-payload lines, and
-a dot-on-a-line sentinel (`.\n`) that terminates every response. Payload lines
-starting with `.` are dot-stuffed (SMTP-style). Binary file data uses
-length-prefixed DATA/END chunking within the sentinel-terminated envelope.
-
-Full details are in [docs/PROTOCOL.md](docs/PROTOCOL.md) (wire format, framing,
-encoding, binary transfer) and [docs/COMMANDS.md](docs/COMMANDS.md) (per-command
-syntax, responses, error conditions, and example transcripts). For AI agents
-automating tasks via the Python library, see
-[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
-
-## Testing
-
-Tests are a pytest suite that exercises the daemon over a live TCP connection.
-Start amigactld on the Amiga, then run:
-
-```
-pytest tests/ --host 192.168.6.200 -v
-```
-
-The `--host` and `--port` options (or `AMIGACTL_HOST` / `AMIGACTL_PORT`
-environment variables) specify the daemon to test against.
-
-Some tests require manual execution (ACL rejection from a non-allowed IP,
-Ctrl-C shutdown) and are marked as skipped with instructions in their
-docstrings.
+No external Python dependencies are required (stdlib only, Python 3.8+).
+
+See [docs/installation.md](docs/installation.md) for the full guide, including daemon configuration, Workbench icon setup, auto-start, and cross-compiler build instructions.
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Installation](docs/installation.md) | Daemon build, Amiga setup, client install |
+| [Configuration](docs/configuration.md) | Daemon config file, client config, ACLs |
+| [CLI Reference](docs/cli/index.md) | CLI subcommand index and usage |
+| [CLI Quickstart](docs/cli/quickstart.md) | Get up and running fast |
+| [CLI Commands](docs/cli/commands.md) | Complete command reference |
+| [Interactive Shell](docs/shell/index.md) | Shell features, navigation, tab completion |
+| [Shell Quickstart](docs/shell/quickstart.md) | Shell tutorial |
+| [Library Tracing (atrace)](docs/atrace/index.md) | Architecture, traced functions, viewer, recipes |
+| [atrace Quickstart](docs/atrace/quickstart.md) | Start tracing in minutes |
+| [Agent/Automation Guide](docs/agent-guide.md) | Python library API for scripting and AI agents |
+| [Wire Protocol](docs/protocol.md) | Protocol framing, encoding, binary transfers |
+| [Protocol Commands](docs/protocol-commands.md) | Per-command syntax and response format |
+
+The `docs/atrace/` directory contains 20 pages covering the tracing system in depth: architecture, stub mechanism, ring buffer, event format, output tiers, filtering, interactive viewer, traced function catalog, recipes, performance, and troubleshooting.
+
+The `docs/shell/` directory contains 15 pages covering the interactive shell: navigation, file operations, file transfers, search utilities, command execution, system commands, ARexx, tab completion, recipes, and troubleshooting.
 
 ## Repository Layout
 
 ```
 amigactl/
 +-- README.md
-+-- LICENSE                          # GPL v3
-+-- Makefile                         # m68k cross-compilation
++-- LICENSE                              # GPL v3
++-- Makefile                             # m68k cross-compilation
 +-- daemon/
-|   +-- main.c                       # Entry, startup, event loop
-|   +-- daemon.h                     # Shared structures, constants, error codes
-|   +-- net.c / net.h                # Socket helpers, protocol I/O
-|   +-- config.c / config.h          # Config file parsing, ACL
-|   +-- file.c / file.h              # File operation command handlers
-|   +-- exec.c / exec.h              # EXEC and process management
-|   +-- sysinfo.c / sysinfo.h        # System info command handlers
-|   +-- arexx.c / arexx.h            # ARexx dispatch
-|   +-- tail.c / tail.h              # File streaming (TAIL)
-|   +-- trace.c / trace.h            # Library call tracing (TRACE)
+|   +-- main.c                           # Entry, startup, event loop
+|   +-- daemon.h                         # Shared structures, constants
+|   +-- net.c / net.h                    # Socket helpers, protocol I/O
+|   +-- config.c / config.h              # Config file parsing, ACL
+|   +-- file.c / file.h                  # File operation handlers
+|   +-- exec.c / exec.h                  # Command execution, process mgmt
+|   +-- sysinfo.c / sysinfo.h            # System info handlers
+|   +-- arexx.c / arexx.h                # ARexx dispatch
+|   +-- tail.c / tail.h                  # File streaming (TAIL)
+|   +-- trace.c / trace.h                # Library call tracing (TRACE)
 +-- atrace/
-|   +-- main.c                       # atrace_loader entry point
-|   +-- atrace.h                     # Shared data structures (anchor, ring, patch)
-|   +-- funcs.c                      # Function table (50 patched functions)
-|   +-- stub_gen.c                   # 68k stub code generator
+|   +-- main.c                           # atrace_loader entry point
+|   +-- atrace.h                         # Shared data structures
+|   +-- funcs.c                          # Function table (99 functions)
+|   +-- stub_gen.c                       # 68k stub code generator
+|   +-- ringbuf.c                        # Lock-free ring buffer
 +-- client/
-|   +-- amigactl.sh                  # Linux/macOS wrapper script
-|   +-- amigactl.ps1                 # Windows wrapper script
+|   +-- amigactl.sh                      # Linux/macOS wrapper script
+|   +-- amigactl.ps1                     # Windows wrapper script
+|   +-- pyproject.toml                   # Package metadata
+|   +-- amigactl.conf.example            # Client config template
 |   +-- amigactl/
-|   |   +-- __init__.py              # AmigaConnection class
-|   |   +-- __main__.py              # CLI tool
-|   |   +-- protocol.py              # Wire protocol helpers
-|   |   +-- shell.py                 # Interactive shell
-|   |   +-- colors.py                # ANSI color support
-|   +-- pyproject.toml
-|   +-- amigactl.conf.example        # Client config template
-+-- tests/
-|   +-- conftest.py                  # Fixtures, CLI options
-|   +-- test_connection.py           # Connection, auth, lifecycle
-|   +-- test_file.py                 # File operation tests
-|   +-- test_exec.py                 # Exec and process management tests
-|   +-- test_sysinfo.py              # System info tests
-|   +-- test_arexx.py                # ARexx dispatch tests
-|   +-- test_tail.py                 # File streaming tests
-|   +-- test_shell.py                # Shell command unit tests
-|   +-- test_shell_integration.py    # Shell command integration tests
+|       +-- __init__.py                  # AmigaConnection library API
+|       +-- __main__.py                  # CLI tool
+|       +-- protocol.py                  # Wire protocol helpers
+|       +-- shell.py                     # Interactive shell
+|       +-- colors.py                    # ANSI color support
+|       +-- trace_tiers.py              # Output tier definitions
+|       +-- trace_ui.py                  # Interactive trace viewer (TUI)
+|       +-- trace_grid.py               # Toggle grid for trace viewer
++-- tests/                              # pytest suite (live daemon tests)
++-- testapp/                            # Test helper programs (Amiga-side)
 +-- tools/
-|   +-- mkicon.py                    # Workbench icon generator
+|   +-- mkicon.py                        # Workbench icon generator
 +-- dist/
-|   +-- amigactld.conf.example       # Config template
-|   +-- amigactld.info               # Workbench icon
-|   +-- build_lha.sh                 # LHA packaging script
-|   +-- amigactld.readme             # Aminet-format distributable readme
+|   +-- amigactld.conf.example           # Daemon config template
+|   +-- amigactld.info                   # Workbench icon
+|   +-- amigactld.readme                 # Aminet-format readme
+|   +-- build_lha.sh                     # LHA packaging script
 +-- docs/
-|   +-- PROTOCOL.md                  # Wire protocol spec
-|   +-- COMMANDS.md                  # Per-command spec
-|   +-- AGENT_GUIDE.md               # AI agent automation guide
+    +-- installation.md                  # Installation guide
+    +-- configuration.md                 # Configuration reference
+    +-- agent-guide.md                   # AI agent automation guide
+    +-- protocol.md                      # Wire protocol spec
+    +-- protocol-commands.md             # Per-command spec
+    +-- cli/                             # CLI documentation (3 pages)
+    +-- shell/                           # Shell documentation (15 pages)
+    +-- atrace/                          # Tracing documentation (20 pages)
 ```
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0. See
-[LICENSE](LICENSE) for details.
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

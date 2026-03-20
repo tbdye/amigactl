@@ -439,41 +439,11 @@ For full TUI documentation, see
 
 ## Configuration
 
-### Config File
+amigactl uses a shared configuration system for connection settings,
+environment variables, and config file management. See
+[Configuration](../configuration.md) for complete details on:
 
-The config file location is `<client-dir>/amigactl.conf`, where
-`<client-dir>` is the directory containing the `amigactl` Python
-package (typically `client/amigactl.conf` within the project tree).
-This is **not** `~/.amigactl.conf`.
-
-On first run, if `amigactl.conf` does not exist but
-`amigactl.conf.example` does, the example is copied to create a
-starter config with the CLI-provided `--host` and `--port` values
-(if any) substituted in.
-
-Config file format (INI):
-
-```ini
-[connection]
-host = 192.168.6.200
-port = 6800
-
-[editor]
-command = vi
-```
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `AMIGACTL_HOST` | Default daemon hostname or IP address. |
-| `AMIGACTL_PORT` | Default daemon port (integer). |
-
-### Resolution Order
-
-Both host and port follow the same precedence (highest to lowest):
-
-1. CLI flag (`--host`, `--port`)
-2. Environment variable (`AMIGACTL_HOST`, `AMIGACTL_PORT`)
-3. Config file (`amigactl.conf`)
-4. Built-in default (`192.168.6.200`, `6800`)
+- Global options (`--host`, `--port`, `--config`)
+- Configuration file format and auto-creation
+- Environment variables (`AMIGACTL_HOST`, `AMIGACTL_PORT`, `AMIGACTL_COLOR`)
+- Resolution order (CLI flag > environment > config file > default)

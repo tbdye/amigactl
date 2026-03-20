@@ -94,11 +94,11 @@ Source: `daemon/trace.c`, `daemon/trace.h`
 The Python client library (`amigactl` package) provides both
 programmatic and interactive access to trace streams:
 
-- `AmigaCtl.trace_start()` opens a streaming connection and invokes a
+- `AmigaConnection.trace_start()` opens a streaming connection and invokes a
   callback for each parsed event.
-- `AmigaCtl.trace_run()` launches a program on the Amiga and traces only
+- `AmigaConnection.trace_run()` launches a program on the Amiga and traces only
   its library calls, auto-terminating when the process exits.
-- `AmigaCtl.stop_trace()` sends `STOP` and drains remaining events.
+- `AmigaConnection.stop_trace()` sends `STOP` and drains remaining events.
 - `TraceViewer` (in `trace_ui.py`) provides an interactive terminal UI
   with pause, scrollback, function toggle grid, tier switching, search,
   and statistics -- all rendered with ANSI escape sequences (no curses

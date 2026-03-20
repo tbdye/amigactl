@@ -2,7 +2,7 @@
 
 This document is the authoritative specification for the amigactl wire
 protocol.  Daemon and client implementations MUST conform to the behavior
-described here.  Where COMMANDS.md specifies per-command semantics, this
+described here.  Where protocol-commands.md specifies per-command semantics, this
 document specifies framing, encoding, connection lifecycle, error codes,
 and binary transfer conventions that apply to all commands.
 
@@ -108,7 +108,7 @@ COMMAND [arguments]\n
   **case-insensitive**: `ping`, `Ping`, and `PING` are equivalent.
 
 - **Arguments** follow the command, separated by a space.  Argument
-  syntax is command-specific and defined in COMMANDS.md.
+  syntax is command-specific and defined in protocol-commands.md.
 
 - The maximum request line length is **4096 bytes**, including the
   command, arguments, and any trailing CR, but excluding the terminating
@@ -150,7 +150,7 @@ OK [info]\n
   line is just `OK\n`.
 
 - Zero or more **payload lines** follow.  Payload content is
-  command-specific and defined in COMMANDS.md.  Payload lines are
+  command-specific and defined in protocol-commands.md.  Payload lines are
   subject to dot-stuffing (see below).
 
 - The response is terminated by the **sentinel**: a line consisting of a
@@ -282,10 +282,13 @@ Server: OK <bytes_written>\n.\n
   to the target.  On success, the server responds with
   `OK <bytes_written>\n.\n`.
 
-- **Error during transfer:** If the server encounters an error during
-  the data transfer phase (disk full, I/O error), it sends
-  `ERR <code> <message>\n.\n`.  The client MUST be prepared to receive
-  an ERR response instead of expecting more READY or OK messages.
+- **Error during transfer:** If the server encounters a write error
+  during the data transfer phase (disk full, I/O error), it closes the
+  file, deletes the temporary file, and **disconnects the client** (TCP
+  close).  No ERR response is sent.  The client detects this as EOF on
+  the next read.  This matches the behavior for malformed DATA lines
+  and client disconnect -- any unrecoverable error during the transfer
+  phase results in connection teardown.
 
 - **Partial WRITE on disconnect:** If the client disconnects before
   sending END, the server deletes the temporary file.
@@ -307,8 +310,10 @@ Server: OK <bytes_appended>\n.\n
 ```
 
 The handshake, DATA/END chunking, and error handling are identical to
-WRITE.  The only difference is that APPEND opens the file for appending
-rather than creating a new file via a temporary rename.
+WRITE.  Write errors during the transfer phase result in connection
+teardown (no ERR response), just as with WRITE.  The only difference is
+that APPEND opens the file for appending rather than creating a new file
+via a temporary rename.
 
 ### EXEC Response
 
@@ -349,11 +354,13 @@ of the first command's input (for commands that accept multi-line input
 like RENAME), or it may be buffered and processed after the first
 response -- no guarantee is made.
 
-**Exception: TAIL and TRACE streaming.**  During an active TAIL or TRACE
-stream, the client sends `STOP\n` to terminate the stream, even though
-the response sentinel has not yet been received.  These are the only
-cases where the client sends data before a response is complete.  See
-the TAIL and TRACE command specifications in COMMANDS.md for details.
+**Exception: TAIL and TRACE streaming.**  During an active TAIL stream,
+the client sends `STOP\n` to terminate the stream, even though the
+response sentinel has not yet been received.  During an active TRACE
+stream, the client may send `STOP\n`, `FILTER [args]\n`, or
+`TIER <1|2|3>\n` as mid-stream commands.  These are the only cases
+where the client sends data before a response is complete.  See
+the TAIL and TRACE command specifications in protocol-commands.md for details.
 
 ## System Query and Execution Wire Formats
 
@@ -363,38 +370,48 @@ patterns already defined in this protocol:
 
 ### Key=Value Payload (Text Lines, Dot-Stuffed)
 
-Used by **PROCSTAT**, **SYSINFO**, **SETDATE**, **CHECKSUM**, **LIBVER**,
-**ENV**, **CAPABILITIES**, **TRACE STATUS**: the payload consists of
-`key=value` lines in a fixed order, one per line, subject to
-dot-stuffing.  These follow the same framing as other text-payload
-commands (STAT, PROTECT).
+Used by **STAT**, **PROTECT**, **PROCSTAT**, **SYSINFO**, **UPTIME**,
+**SETDATE**, **CHECKSUM**, **LIBVER**, **ENV**, **CAPABILITIES**,
+**TRACE STATUS**: the payload consists of `key=value` lines in a fixed
+order, one per line, subject to dot-stuffing.  PROTECT returns
+`protection=<hex>` in both read mode (path only) and set mode (path
+with hex value) -- set mode applies the value, then reads it back.
 
 ### Tab-Separated Payload (Text Lines, Dot-Stuffed)
 
-Used by **PROCLIST**, **ASSIGNS**, **VOLUMES**, **TASKS**, **DEVICES**:
-the payload consists of lines with tab-separated fields, subject to
-dot-stuffing.  These follow the same framing as DIR.
+Used by **DIR**, **PROCLIST**, **ASSIGNS**, **VOLUMES**, **TASKS**,
+**DEVICES**: the payload consists of lines with tab-separated fields,
+subject to dot-stuffing.
 
 **PORTS** uses one port name per payload line (no tabs), dot-stuffed.
 
+**VERSION** returns a single text payload line (`amigactld <version>`),
+dot-stuffed.
+
 ### Simple OK/ERR (No Payload)
 
-Used by **SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**,
-**TRACE ENABLE [func ...]**, **TRACE DISABLE [func ...]**: the response
-is `OK\n.\n` on success or `ERR <code> <message>\n.\n` on failure (e.g.,
-`ERR 100 Unknown function: <name>` for unrecognized function names).
-No payload lines.  When called with no function arguments, these
-toggle `global_enable`.  When called with function names, they toggle
-individual per-patch enabled flags.  These follow the same framing as
-DELETE and MAKEDIR.
+Used by **DELETE**, **MAKEDIR**, **RENAME**, **QUIT**, **PING**,
+**SIGNAL**, **KILL**, **COPY**, **SETCOMMENT**, **SETENV**, **ASSIGN**,
+**REBOOT**, **SHUTDOWN**, **TRACE ENABLE [func ...]**,
+**TRACE DISABLE [func ...]**,
+**TRACE TIER <1|2|3>**: the response is `OK\n.\n` on success or
+`ERR <code> <message>\n.\n` on failure.  No payload lines.
+REBOOT requires a `CONFIRM` keyword (like SHUTDOWN) and calls
+`ColdReboot()` after sending `OK Rebooting\n.\n` -- the connection is
+lost immediately.  TRACE ENABLE/DISABLE toggle `global_enable` when
+called with no function arguments, or toggle individual per-patch
+enabled flags when called with function names.  TRACE TIER sets the
+content-based filtering tier level (1=basic, 2=detail, 3=verbose).
+See protocol-commands.md for per-command semantics.
 
 ### DATA/END Binary Framing
 
-**EXEC** (synchronous) uses DATA/END chunked binary framing as
-described in the EXEC Response section above.  **EXEC ASYNC** does not
-use binary framing -- it returns `OK <id>\n.\n` with no payload.
+**READ** and **EXEC** (synchronous) use DATA/END chunked binary framing
+as described in the READ Response and EXEC Response sections above.
+**EXEC ASYNC** does not use binary framing -- it returns
+`OK <id>\n.\n` with no payload.
 
-See COMMANDS.md for the specific fields and semantics of each command.
+See protocol-commands.md for the specific fields and semantics of each command.
 
 ## ARexx and Streaming Wire Formats
 
@@ -402,7 +419,7 @@ AREXX, TAIL, and TRACE use the following wire format patterns:
 
 **AREXX** uses DATA/END binary framing for the result string, identical
 to EXEC.  The OK status line includes `rc=<N>` where N is the ARexx
-return code.  See COMMANDS.md for details.
+return code.  See protocol-commands.md for details.
 
 **TAIL** uses an ongoing DATA/END streaming response.  Unlike READ
 (where the total size is known upfront) or EXEC (where the command
@@ -427,7 +444,7 @@ launched process exits (a `# PROCESS EXITED rc=<N>` comment is sent
 before END); the client may also send `STOP\n` for early termination.
 If the atrace module is unloaded during streaming, the server sends a
 comment line (`# ATRACE SHUTDOWN`) as a DATA chunk, followed by END and
-the sentinel.  See COMMANDS.md for the full TRACE command specification.
+the sentinel.  See protocol-commands.md for the full TRACE command specification.
 
 **FILTER** is a mid-stream command sent during an active TRACE session
 (similar to STOP).  It updates the server-side event filters without
@@ -452,8 +469,59 @@ clients, not just the sender.  This is fundamentally different from
 `LIB=`, `FUNC=`, and `PROC=`, which are per-session filters.  Unknown
 function names are silently ignored.
 
-The server responds to FILTER with `OK\n.\n`.  The response is delivered
-inline within the DATA/END stream.
+FILTER is fire-and-forget: the server does **not** send an `OK\n.\n`
+response.  Instead, after updating the filter state, the server emits a
+`# filter: tier=<tier>, <desc>` comment as a DATA chunk to confirm the
+change.  The client MUST NOT attempt to read an OK/ERR response after
+sending FILTER -- doing so would misinterpret the next DATA chunk as a
+response line.
+
+**TIER** is a mid-stream command sent during an active TRACE session
+(similar to FILTER).  It sets the daemon's tier level for content-based
+event filtering:
+
+```
+TIER <1|2|3>
+```
+
+Tier levels: 1 = basic (default; suppresses noise like OpenLibrary v0
+probes), 2 = detail, 3 = verbose.  Like FILTER, TIER is fire-and-forget:
+no OK/ERR response is sent.  If the tier level changes, the server emits
+a `# tier changed: <name>` comment as a DATA chunk.  Invalid values
+(outside 1-3) are silently ignored.  TIER may also be used as a normal
+command outside a trace stream via `TRACE TIER <1|2|3>`, which responds
+with `OK\n.\n` (see the Simple OK/ERR section above).
+
+### Trace Stream Comments
+
+During a TRACE stream, the daemon sends metadata as **comment DATA
+chunks** -- DATA chunks whose payload begins with `# ` (hash, space).
+Comments are not trace events; they carry session metadata, diagnostics,
+and state-change notifications.  Clients SHOULD parse comments
+separately from tab-separated event lines.
+
+Known comment formats:
+
+| Comment | When sent |
+|---------|-----------|
+| `# atrace v<N>, <timestamp>` | Stream start: atrace module version and session start time |
+| `# eclock_freq: <N> Hz` | Stream start: EClock frequency for timestamp interpretation |
+| `# timestamp_precision: microsecond` | Stream start: timestamp unit |
+| `# command: <cmdline>` | Stream start (TRACE RUN only): the launched command |
+| `# filter: tier=<name>[, <desc>]` | Stream start; also after FILTER command |
+| `# tier changed: <name>` | After mid-stream TIER command changes the level |
+| `# enabled: <funcs> (normally noise-disabled)` | Stream start: functions re-enabled from default-off |
+| `# disabled: <funcs> (manually disabled)` | Stream start: functions manually disabled |
+| `# PROCESS EXITED rc=<N>` | TRACE RUN: launched process has exited |
+| `# ATRACE SHUTDOWN` | The atrace module was unloaded during streaming |
+| `# DROPPED <N> events` | Ring buffer overflow: N events were lost |
+| `# OVERFLOW <N> events dropped` | Ring buffer overflow detected during polling |
+| `# WARNING: ...` | Diagnostic warning (e.g., unexpected LVO state) |
+| `# Patched bsdsocket base 0x<addr> (<N> LVOs)` | bsdsocket per-opener patching diagnostic |
+
+Clients SHOULD treat any DATA chunk beginning with `#` as a comment.
+Unknown comment formats SHOULD be logged or ignored, not treated as
+errors.
 
 ## Error Codes
 
@@ -481,12 +549,12 @@ additional input lines after the command verb:
 - **RENAME** uses a three-line format: the verb line is followed by the
   old path and the new path on separate lines.  Path lines follow the
   same line-ending and max-length rules as request lines.  See
-  COMMANDS.md for details.
+  protocol-commands.md for details.
 
 - **COPY** uses the same three-line format as RENAME: the verb line
   (with optional flags such as `NOCLONE` and `NOREPLACE`) is followed
   by the source path and destination path on separate lines.  See
-  COMMANDS.md for details.
+  protocol-commands.md for details.
 
 If the client disconnects mid-command (after sending the verb but before
 all required input lines), the server discards the partial command and
