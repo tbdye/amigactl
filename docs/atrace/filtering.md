@@ -398,7 +398,7 @@ ENABLE= directive.
 
 - **CLI:** `--basic`, `--detail`, or `--verbose` flags on
   `trace start` or `trace run`.
-- **TUI:** Press `1` (Basic), `2` (Detail), or `3` (Verbose) during
+- **Terminal viewer:** Press `1` (Basic), `2` (Detail), or `3` (Verbose) during
   a trace session.
 - **Wire protocol:** The client sends an inline `TIER <1|2|3>` command
   on the trace connection.

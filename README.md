@@ -4,11 +4,11 @@ A remote access toolkit for AmigaOS -- manage files, execute commands, inspect s
 
 ## What is amigactl?
 
-amigactl gives you full remote access to an Amiga from any modern workstation. A lightweight C daemon (`amigactld`) runs on the Amiga, while a Python CLI tool and library on the host side let you manage files, run commands, query system state, and automate workflows -- all over a simple TCP connection.
+amigactl gives you full remote access to an Amiga from any modern workstation. A lightweight C daemon (`amigactld`) runs on the Amiga, while a Python CLI tool and library on your machine let you manage files, run commands, query system state, and automate workflows -- all over a simple TCP connection.
 
 The toolkit spans the full range of daily Amiga development tasks: file transfers, remote command execution with process management, environment variable and assign manipulation, ARexx dispatch, and deep system introspection including running tasks, mounted volumes, message ports, and device drivers. An interactive shell with tab completion and Amiga-aware path navigation makes ad-hoc work feel native.
 
-What sets amigactl apart is **atrace**, its library call tracing system. atrace patches 99 functions across 7 AmigaOS libraries (exec, dos, intuition, bsdsocket, icon, workbench, and graphics) at the machine code level, capturing every call with arguments, return values, caller task names, and timing data. Events stream to the host in real time and can be viewed through a live TUI with tier-based filtering, per-task isolation, and handle tracking. It is, as far as we know, the only tool of its kind for AmigaOS.
+What sets amigactl apart is **atrace**, its library call tracing system. atrace patches 99 functions across 7 AmigaOS libraries (exec, dos, intuition, bsdsocket, icon, workbench, and graphics) at the machine code level, capturing every call with arguments, return values, caller task names, and timing data. Events stream to the client in real time and can be viewed through a live terminal UI with tier-based filtering, per-task isolation, and handle tracking.
 
 ## Feature Highlights
 
@@ -31,6 +31,12 @@ What sets amigactl apart is **atrace**, its library call tracing system. atrace 
 ## Quick Example
 
 ```
+$ amigactl --host 192.168.6.200
+amiga@192.168.6.200:SYS:> find C *.info
+C/Ed.info
+C/IconX.info
+amiga@192.168.6.200:SYS:> exit
+
 $ amigactl --host 192.168.6.200 sysinfo
 chip_free=477752
 fast_free=13298680
@@ -70,12 +76,6 @@ SEQ                 TIME  FUNCTION                     TASK                 ARGS
 3                 0.003s  dos.ExNext                   List                 0x12345678 0x...                         1
 ...
 8                 0.005s  dos.UnLock                   List                 0x12345678                               (void)
-
-$ amigactl --host 192.168.6.200
-amiga@192.168.6.200:SYS:> find C *.info
-C/Ed.info
-C/IconX.info
-amiga@192.168.6.200:SYS:> exit
 ```
 
 ## Installation
@@ -84,7 +84,7 @@ The quickest path:
 
 1. Download the latest `.lha` release from the [Releases](https://github.com/tbdye/amigactl/releases) page.
 2. Extract on the Amiga. Copy `amigactld` to `C:` or any convenient location.
-3. On the host, install the Python client:
+3. On your machine, install the Python client:
 
 ```
 pip install -e client/
@@ -101,11 +101,11 @@ See [docs/installation.md](docs/installation.md) for the full guide, including d
 |-------|-------------|
 | [Installation](docs/installation.md) | Daemon build, Amiga setup, client install |
 | [Configuration](docs/configuration.md) | Daemon config file, client config, ACLs |
+| [Interactive Shell](docs/shell/index.md) | Shell features, navigation, tab completion |
+| [Shell Quickstart](docs/shell/quickstart.md) | Shell tutorial |
 | [CLI Reference](docs/cli/index.md) | CLI subcommand index and usage |
 | [CLI Quickstart](docs/cli/quickstart.md) | Get up and running fast |
 | [CLI Commands](docs/cli/commands.md) | Complete command reference |
-| [Interactive Shell](docs/shell/index.md) | Shell features, navigation, tab completion |
-| [Shell Quickstart](docs/shell/quickstart.md) | Shell tutorial |
 | [Library Tracing (atrace)](docs/atrace/index.md) | Architecture, traced functions, viewer, recipes |
 | [atrace Quickstart](docs/atrace/quickstart.md) | Start tracing in minutes |
 | [Agent/Automation Guide](docs/agent-guide.md) | Python library API for scripting and AI agents |

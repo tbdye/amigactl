@@ -2,7 +2,7 @@
 
 amigactl has two components that must be installed separately:
 
-- **amigactl** (Python client) -- runs on your host machine (Linux, macOS, or
+- **amigactl** (Python client) -- runs on your machine (Linux, macOS, or
   Windows). Provides the CLI tool, interactive shell, and Python library.
 - **amigactld** (C daemon) -- runs on the Amiga. Listens for TCP connections
   and executes commands on behalf of the client.
@@ -11,7 +11,7 @@ Both communicate over TCP port 6800 by default.
 
 ## Requirements
 
-### Client (host machine)
+### Client
 
 - Python 3.8 or later (3.8 through 3.13 are tested)
 - No external dependencies (stdlib only)
@@ -156,7 +156,7 @@ contains:
 | `amigactld.readme` | Aminet-format readme |
 | `LICENSE` | GPL v3 license |
 
-Extract the archive on the Amiga (or on the host and transfer the files).
+Extract the archive on the Amiga (or on your machine and transfer the files).
 
 ### Placing Files on the Amiga
 
