@@ -8,6 +8,7 @@ by the interactive shell.
 import cmd
 import io
 import os
+import tempfile
 from unittest import mock
 
 import pytest
@@ -958,3 +959,264 @@ class TestDoCat:
         args, kwargs = shell.conn.read.call_args
         assert kwargs.get("offset") == 10 or (len(args) > 1 and args[1] == 10)
         assert kwargs.get("length") == 5 or (len(args) > 2 and args[2] == 5)
+
+
+# ---------------------------------------------------------------------------
+# _complete_local_path()
+# ---------------------------------------------------------------------------
+
+class TestCompleteLocalPath:
+    """Tests for local filesystem tab completion."""
+
+    @pytest.fixture(autouse=True)
+    def tmp_tree(self, tmp_path):
+        """Create a temp directory tree for completion tests."""
+        self.base = tmp_path
+        (tmp_path / "file1.txt").touch()
+        (tmp_path / "file2.txt").touch()
+        (tmp_path / "image.png").touch()
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "subdir" / "nested.txt").touch()
+        (tmp_path / ".hidden").touch()
+        (tmp_path / ".hiddendir").mkdir()
+
+    def _shell(self):
+        return _make_shell()
+
+    def test_absolute_path_prefix(self):
+        shell = self._shell()
+        prefix = str(self.base) + "/fil"
+        results = shell._complete_local_path(prefix)
+        assert sorted(results) == sorted([
+            str(self.base) + "/file1.txt",
+            str(self.base) + "/file2.txt",
+        ])
+
+    def test_absolute_path_dir_suffix(self):
+        shell = self._shell()
+        prefix = str(self.base) + "/sub"
+        results = shell._complete_local_path(prefix)
+        assert results == [str(self.base) + "/subdir/"]
+
+    def test_absolute_path_no_match(self):
+        shell = self._shell()
+        prefix = str(self.base) + "/nonexistent"
+        results = shell._complete_local_path(prefix)
+        assert results == []
+
+    def test_nonexistent_directory(self):
+        shell = self._shell()
+        results = shell._complete_local_path("/no/such/directory/file")
+        assert results == []
+
+    def test_hidden_files_excluded_by_default(self):
+        shell = self._shell()
+        # No dot prefix -> hidden files excluded
+        prefix = str(self.base) + "/"
+        results = shell._complete_local_path(prefix)
+        names = [os.path.basename(r.rstrip("/")) for r in results]
+        assert ".hidden" not in names
+        assert ".hiddendir" not in names
+
+    def test_hidden_files_included_with_dot_prefix(self):
+        shell = self._shell()
+        prefix = str(self.base) + "/."
+        results = shell._complete_local_path(prefix)
+        names = [os.path.basename(r.rstrip("/")) for r in results]
+        assert ".hidden" in names
+        assert ".hiddendir" in names
+
+    def test_tilde_expansion(self):
+        shell = self._shell()
+        home = os.path.expanduser("~")
+        # Use a prefix that should match at least some files in the home dir.
+        # We just verify tilde is preserved and results are returned without error.
+        results = shell._complete_local_path("~/")
+        # All results should start with ~/, not the expanded home path
+        for r in results:
+            assert r.startswith("~/"), \
+                "Expected tilde prefix, got: {}".format(r)
+
+    def test_relative_path(self):
+        shell = self._shell()
+        # Completions from CWD -- just verify no crash and returns a list
+        results = shell._complete_local_path("")
+        assert isinstance(results, list)
+
+    def test_empty_directory(self, tmp_path):
+        shell = self._shell()
+        empty = tmp_path / "emptydir"
+        empty.mkdir()
+        results = shell._complete_local_path(str(empty) + "/")
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# complete_get / complete_put / complete_append delegation
+# ---------------------------------------------------------------------------
+
+class TestCompleteGetDelegation:
+    """Verify complete_get delegates to the right completer per arg position."""
+
+    def test_first_arg_uses_amiga_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path",
+                               return_value=["SYS:S/"]) as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_get("SYS:", "get SYS:", 4, 8)
+            mp.assert_called_once_with("SYS:", "get SYS:", 4, 8)
+            ml.assert_not_called()
+            assert result == ["SYS:S/"]
+
+    def test_second_arg_uses_local_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path",
+                               return_value=["/tmp/out"]) as ml:
+            result = shell.complete_get("/tmp/", "get SYS:file /tmp/", 13, 18)
+            ml.assert_called_once_with("/tmp/")
+            mp.assert_not_called()
+            assert result == ["/tmp/out"]
+
+    def test_third_arg_returns_empty(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_get("x", "get a b x", 8, 9)
+            mp.assert_not_called()
+            ml.assert_not_called()
+            assert result == []
+
+
+class TestCompletePutDelegation:
+    """Verify complete_put delegates to the right completer per arg position."""
+
+    def test_first_arg_uses_local_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path",
+                               return_value=["/home/test.txt"]) as ml:
+            result = shell.complete_put("/home/te", "put /home/te", 4, 12)
+            ml.assert_called_once_with("/home/te")
+            mp.assert_not_called()
+            assert result == ["/home/test.txt"]
+
+    def test_second_arg_uses_amiga_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path",
+                               return_value=["RAM:dest"]) as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_put("RAM:", "put /tmp/f RAM:", 10, 14)
+            mp.assert_called_once_with("RAM:", "put /tmp/f RAM:", 10, 14)
+            ml.assert_not_called()
+            assert result == ["RAM:dest"]
+
+    def test_third_arg_returns_empty(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_put("x", "put a b x", 8, 9)
+            mp.assert_not_called()
+            ml.assert_not_called()
+            assert result == []
+
+
+class TestCompleteAppendDelegation:
+    """Verify complete_append delegates to the right completer per arg."""
+
+    def test_first_arg_uses_local_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path",
+                               return_value=["data.bin"]) as ml:
+            result = shell.complete_append("data", "append data", 7, 11)
+            ml.assert_called_once_with("data")
+            mp.assert_not_called()
+            assert result == ["data.bin"]
+
+    def test_second_arg_uses_amiga_path(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path",
+                               return_value=["RAM:log"]) as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_append("RAM:", "append data.bin RAM:", 16, 20)
+            mp.assert_called_once_with("RAM:", "append data.bin RAM:", 16, 20)
+            ml.assert_not_called()
+            assert result == ["RAM:log"]
+
+    def test_third_arg_returns_empty(self):
+        shell = _make_shell()
+        with mock.patch.object(shell, "_complete_path") as mp, \
+             mock.patch.object(shell, "_complete_local_path") as ml:
+            result = shell.complete_append("x", "append a b x", 11, 12)
+            mp.assert_not_called()
+            ml.assert_not_called()
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tilde expansion in file transfer commands
+# ---------------------------------------------------------------------------
+
+class TestTildeExpansion:
+    """Verify that ~/ in local paths is expanded before open() is called."""
+
+    def test_get_expands_tilde_in_local_path(self, tmp_path):
+        """get REMOTE ~/local should expand ~ before writing."""
+        shell = _make_shell()
+        shell.conn.read.return_value = b"file data"
+        dest = tmp_path / "downloaded.txt"
+        with mock.patch("os.path.expanduser",
+                         return_value=str(dest)) as exp:
+            shell.do_get("SYS:file.txt ~/downloaded.txt")
+            exp.assert_called_once_with("~/downloaded.txt")
+        assert dest.read_bytes() == b"file data"
+
+    def test_get_one_arg_no_tilde_expansion(self):
+        """get REMOTE (1-arg form) derives local name from remote; no tilde."""
+        shell = _make_shell()
+        shell.conn.read.return_value = b"data"
+        with mock.patch("os.path.expanduser") as exp, \
+             mock.patch("builtins.open", mock.mock_open()):
+            shell.do_get("SYS:file.txt")
+            exp.assert_not_called()
+
+    def test_put_expands_tilde_one_arg(self, tmp_path):
+        """put ~/file.txt should expand ~ before reading."""
+        shell = _make_shell()
+        src = tmp_path / "upload.txt"
+        src.write_bytes(b"upload data")
+        shell.conn.write.return_value = 11
+        with mock.patch("os.path.expanduser",
+                         return_value=str(src)) as exp:
+            shell.do_put("~/upload.txt")
+            exp.assert_called_once_with("~/upload.txt")
+        shell.conn.write.assert_called_once()
+        args = shell.conn.write.call_args[0]
+        # Remote name should be derived from expanded basename
+        assert args[0] == "SYS:upload.txt"
+        assert args[1] == b"upload data"
+
+    def test_put_expands_tilde_two_args(self, tmp_path):
+        """put ~/file.txt REMOTE should expand ~ before reading."""
+        shell = _make_shell()
+        src = tmp_path / "upload.txt"
+        src.write_bytes(b"upload data")
+        shell.conn.write.return_value = 11
+        with mock.patch("os.path.expanduser",
+                         return_value=str(src)) as exp:
+            shell.do_put("~/upload.txt RAM:dest.txt")
+            exp.assert_called_once_with("~/upload.txt")
+        shell.conn.write.assert_called_once()
+
+    def test_append_expands_tilde(self, tmp_path):
+        """append ~/file.txt REMOTE should expand ~ before reading."""
+        shell = _make_shell()
+        src = tmp_path / "extra.txt"
+        src.write_bytes(b"extra data")
+        shell.conn.append.return_value = 10
+        with mock.patch("os.path.expanduser",
+                         return_value=str(src)) as exp:
+            shell.do_append("~/extra.txt RAM:log.txt")
+            exp.assert_called_once_with("~/extra.txt")
+        shell.conn.append.assert_called_once()
