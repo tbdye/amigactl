@@ -13,6 +13,7 @@
 #include "sysinfo.h"
 #include "arexx.h"
 #include "tail.h"
+#include "trace.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -103,6 +104,8 @@ int main(int argc, char **argv)
 
     /* WaitSelect variables */
     fd_set rfds;
+    fd_set wfds;           /* write readiness for trace clients */
+    int have_wfds;
     LONG nfds;
     struct timeval tv;
     ULONG sigmask;
@@ -250,6 +253,9 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    trace_init();
+    /* trace_init always succeeds -- atrace may not be loaded yet */
+
     /* All initialization complete.  In WB mode, close the startup
      * console after a short delay so the user can read the banner.
      * The daemon continues running headless. */
@@ -274,17 +280,38 @@ int main(int argc, char **argv)
                     nfds = daemon.clients[i].fd;
             }
         }
+
+        /* Write fd_set: track clients with buffered trace data */
+        FD_ZERO(&wfds);
+        have_wfds = 0;
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            if (daemon.clients[i].fd >= 0 &&
+                daemon.clients[i].trace.active &&
+                daemon.clients[i].trace.sendbuf.len > 0) {
+                FD_SET(daemon.clients[i].fd, &wfds);
+                have_wfds = 1;
+                if (daemon.clients[i].fd > nfds)
+                    nfds = daemon.clients[i].fd;
+            }
+        }
+
         nfds++;
 
+        /* Reduce timeout when tracing is active */
         tv.tv_secs = 1;
         tv.tv_micro = 0;
+        if (trace_any_active(&daemon)) {
+            tv.tv_secs = 0;
+            tv.tv_micro = 20000;  /* 20ms -- ring buffer polling latency */
+        }
         sigmask = SIGBREAKF_CTRL_C;
         if (g_proc_sigbit >= 0)
             sigmask |= (1L << g_proc_sigbit);
         if (g_arexx_sigbit >= 0)
             sigmask |= (1L << g_arexx_sigbit);
 
-        rc = WaitSelect(nfds, &rfds, NULL, NULL, &tv, &sigmask);
+        rc = WaitSelect(nfds, &rfds, have_wfds ? &wfds : NULL,
+                        NULL, &tv, &sigmask);
 
         /* Check for Ctrl-C */
         if (sigmask & SIGBREAKF_CTRL_C) {
@@ -300,47 +327,79 @@ int main(int argc, char **argv)
             exec_scan_completed(&daemon);
         }
 
+        /* Check for TRACE RUN process completion */
+        trace_check_run_completed(&daemon);
+
         /* Check for ARexx reply */
         if (g_arexx_sigbit >= 0 &&
             (sigmask & (1L << g_arexx_sigbit))) {
             arexx_handle_replies(&daemon);
         }
 
-        if (rc < 0) {
-            /* WaitSelect error -- could be spurious, continue */
-            continue;
-        }
+        /* Only process fd_sets when WaitSelect returned ready descriptors */
+        if (rc > 0) {
+            /* Check listener for new connections */
+            if (FD_ISSET(daemon.listener_fd, &rfds))
+                handle_accept(&daemon);
 
-        /* Check listener for new connections */
-        if (FD_ISSET(daemon.listener_fd, &rfds))
-            handle_accept(&daemon);
-
-        /* Process each client based on its current mode */
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            if (daemon.clients[i].fd < 0)
-                continue;
-
-            if (daemon.clients[i].tail.active) {
-                /* TAIL mode: check for STOP, poll file */
-                if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
-                    if (tail_handle_input(&daemon, i) < 0) {
-                        disconnect_client(&daemon, i);
-                        continue;
+            /* Drain trace send buffers for writable clients */
+            if (have_wfds) {
+                for (i = 0; i < MAX_CLIENTS; i++) {
+                    if (daemon.clients[i].fd >= 0 &&
+                        daemon.clients[i].trace.active &&
+                        FD_ISSET(daemon.clients[i].fd, &wfds)) {
+                        if (trace_drain_client(&daemon, i) < 0) {
+                            /* Socket broken -- do NOT send END/sentinel */
+                            disconnect_client(&daemon, i);
+                        }
                     }
                 }
-                if (daemon.clients[i].tail.active)
-                    if (tail_poll_file(&daemon, i) < 0) {
-                        disconnect_client(&daemon, i);
-                        continue;
+            }
+
+            /* Process each client based on its current mode */
+            for (i = 0; i < MAX_CLIENTS; i++) {
+                if (daemon.clients[i].fd < 0)
+                    continue;
+
+                if (daemon.clients[i].trace.active) {
+                    /* TRACE mode: check for STOP */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                        if (trace_handle_input(&daemon, i) < 0) {
+                            disconnect_client(&daemon, i);
+                            continue;
+                        }
                     }
-            } else if (daemon.clients[i].arexx_pending) {
-                /* Waiting for ARexx reply -- skip command processing */
-            } else {
-                /* Normal command processing */
-                if (FD_ISSET(daemon.clients[i].fd, &rfds))
-                    handle_client(&daemon, i);
+                } else if (daemon.clients[i].tail.active) {
+                    /* TAIL mode: check for STOP */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds)) {
+                        if (tail_handle_input(&daemon, i) < 0) {
+                            disconnect_client(&daemon, i);
+                            continue;
+                        }
+                    }
+                } else if (daemon.clients[i].arexx_pending) {
+                    /* Waiting for ARexx reply -- skip command processing */
+                } else {
+                    /* Normal command processing */
+                    if (FD_ISSET(daemon.clients[i].fd, &rfds))
+                        handle_client(&daemon, i);
+                }
             }
         }
+
+        /* Poll TAIL files unconditionally -- file polling is independent
+         * of socket activity and must run every iteration */
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            if (daemon.clients[i].tail.active) {
+                if (tail_poll_file(&daemon, i) < 0) {
+                    disconnect_client(&daemon, i);
+                }
+            }
+        }
+
+        /* Poll trace ring buffer (broadcasts to all tracing clients) */
+        if (trace_any_active(&daemon))
+            trace_poll_events(&daemon);
 
         /* ARexx timeout housekeeping */
         arexx_check_timeouts(&daemon);
@@ -366,6 +425,12 @@ cleanup:
     /* Safely terminate tracked async processes */
     exec_shutdown_procs(&daemon);
 
+    /* Clean up TRACE RUN filter_task before closing sockets */
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        if (daemon.clients[i].fd >= 0)
+            trace_run_disconnect_cleanup(&daemon, i);
+    }
+
     /* Close all client sockets */
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (daemon.clients[i].fd >= 0) {
@@ -384,6 +449,7 @@ cleanup:
     net_cleanup();
 
     /* Free module resources (reverse order of init) */
+    trace_cleanup();
     tail_cleanup();
     arexx_cleanup();
     exec_cleanup();
@@ -441,6 +507,10 @@ static void handle_accept(struct daemon_state *d)
     d->clients[slot].discarding = 0;
     d->clients[slot].arexx_pending = 0;
     d->clients[slot].tail.active = 0;
+    d->clients[slot].trace.active = 0;
+    d->clients[slot].trace.mode = TRACE_MODE_START;
+    d->clients[slot].trace.run_proc_slot = -1;
+    d->clients[slot].trace.run_task_ptr = NULL;
 
     send_banner(fd);
 }
@@ -736,6 +806,9 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
     } else if (stricmp(verb, "TAIL") == 0) {
         rc = cmd_tail(c, rest);
 
+    } else if (stricmp(verb, "TRACE") == 0) {
+        rc = cmd_trace(d, idx, rest);
+
     } else {
         send_error(c->fd, ERR_SYNTAX, "Unknown command");
         send_sentinel(c->fd);
@@ -751,8 +824,19 @@ static void dispatch_command(struct daemon_state *d, int idx, char *cmd)
 
 static void disconnect_client(struct daemon_state *d, int idx)
 {
+    /* Clear filter_task if this client had an active TRACE RUN with
+     * stub-level filtering. Must come before the inline state
+     * clearing below. */
+    trace_run_disconnect_cleanup(d, idx);
+
     /* Clean up streaming state before closing the connection */
     d->clients[idx].tail.active = 0;
+    d->clients[idx].trace.active = 0;
+    d->clients[idx].trace.mode = TRACE_MODE_START;
+    d->clients[idx].trace.run_proc_slot = -1;
+    d->clients[idx].trace.run_task_ptr = NULL;
+    d->clients[idx].trace.sendbuf.len = 0;
+    d->clients[idx].trace.sendbuf.events_dropped = 0;
     arexx_orphan_client(d, idx);
     d->clients[idx].arexx_pending = 0;
 

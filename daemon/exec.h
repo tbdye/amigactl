@@ -40,6 +40,11 @@ void exec_cleanup_temp_files(void);
  * and mark them EXITED under Forbid. */
 void exec_shutdown_procs(struct daemon_state *d);
 
+/* Entry point for async child processes.  Used by both EXEC ASYNC
+ * and TRACE RUN.  Must find its proc_slot by matching FindTask(NULL)
+ * against daemon_state.procs[].task. */
+void async_wrapper(void);
+
 /* Globals needed by async wrapper and main.c event loop */
 extern struct daemon_state *g_daemon_state;
 extern struct Task *g_daemon_task;

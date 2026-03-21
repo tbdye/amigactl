@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.7.1
+**Version**: 0.8.0
 
 **Conventions used in this document:**
 
@@ -25,7 +25,7 @@ against it. Tests verify the documented behavior.
 - All text uses ISO-8859-1 encoding (native AmigaOS).
 
 For wire-level framing details (dot-stuffing, binary data chunking, error
-code table), see [PROTOCOL.md](PROTOCOL.md).
+code table), see [Wire Protocol Specification](protocol.md).
 
 ---
 
@@ -71,6 +71,7 @@ code table), see [PROTOCOL.md](PROTOCOL.md).
 - [SETENV](#setenv)
 - [AREXX](#arexx)
 - [TAIL](#tail)
+- [TRACE](#trace)
 - [STOP](#stop)
 - [Error Handling](#error-handling)
   - [Unknown Command](#unknown-command)
@@ -89,7 +90,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.7.1`).
+The version string matches the daemon version (currently `0.8.0`).
 
 ### Behavior
 
@@ -104,7 +105,7 @@ The version string matches the daemon version (currently `0.7.1`).
 ### Example
 
 ```
-S> AMIGACTL 0.7.0
+S> AMIGACTL 0.8.0
 ```
 
 ---
@@ -141,7 +142,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.7.0
+S> amigactld 0.8.0
 S> .
 ```
 
@@ -336,7 +337,7 @@ whitespace after the last field:
 | `protection` | 8 lowercase hex digits, zero-padded (raw AmigaOS `fib_Protection` value) |
 | `datestamp` | `YYYY-MM-DD HH:MM:SS` (local Amiga time) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md). If an entry
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md). If an entry
 name begins with `.`, the line will be dot-stuffed on the wire.
 
 An empty directory returns OK with no payload lines (just the sentinel).
@@ -424,7 +425,7 @@ comment=<comment>
 ```
 
 The payload consists of key=value lines in a fixed order. Payload lines
-are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 | Key | Description |
 |-----|-------------|
@@ -485,7 +486,7 @@ S> .
 ## READ
 
 Downloads a file from the Amiga. The response uses DATA/END chunked binary
-framing as described in [PROTOCOL.md](PROTOCOL.md).
+framing as described in [Wire Protocol Specification](protocol.md).
 
 ### Syntax
 
@@ -608,7 +609,7 @@ S> .
 ## WRITE
 
 Uploads a file to the Amiga. Uses a READY handshake and DATA/END chunked
-binary framing as described in [PROTOCOL.md](PROTOCOL.md). The file is
+binary framing as described in [Wire Protocol Specification](protocol.md). The file is
 written atomically via a temporary file and rename.
 
 ### Syntax
@@ -641,7 +642,7 @@ The validation sequence before READY is:
 ### Data Transfer
 
 After receiving READY, the client sends DATA/END chunks per
-[PROTOCOL.md](PROTOCOL.md). The maximum chunk size is 4096 bytes.
+[Wire Protocol Specification](protocol.md). The maximum chunk size is 4096 bytes.
 
 A zero-byte file sends no DATA chunks -- just `END` immediately after
 receiving READY.
@@ -812,7 +813,7 @@ OK
 
 If the client disconnects after sending the RENAME verb but before both
 path lines arrive, the server discards the partial command and closes the
-connection (per [PROTOCOL.md](PROTOCOL.md) multi-line command rules).
+connection (per [Wire Protocol Specification](protocol.md) multi-line command rules).
 
 ### Examples
 
@@ -1434,7 +1435,7 @@ ERR response.
   with an error message in stdout (e.g., "Unknown command nosuchcommand").
   The daemon returns `OK rc=20` with the shell's error output.
 - The command string is limited by the 4096-byte request line maximum
-  (see [PROTOCOL.md](PROTOCOL.md)), minus the `EXEC ` prefix and any
+  (see [Wire Protocol Specification](protocol.md)), minus the `EXEC ` prefix and any
   `CD=<path> ` prefix.
 
 #### Examples
@@ -1632,7 +1633,7 @@ Each payload line contains four tab-separated fields:
 | `status` | `RUNNING` or `EXITED` |
 | `rc` | Return code (integer) when EXITED; `-` when RUNNING |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 If no processes have been launched (empty process table), the response
 contains no payload lines (just OK and sentinel).
@@ -2056,7 +2057,7 @@ Each payload line contains two tab-separated fields:
 | `name:` | Assign name including the trailing colon (e.g., `SYS:`, `S:`, `FONTS:`) |
 | `path` | Resolved path for the assign |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 **Multi-directory assigns**: If an assign points to multiple directories,
 the paths are separated by semicolons within the path field (e.g.,
@@ -2262,7 +2263,7 @@ OK
 ```
 
 Each payload line contains a single port name. Payload lines are
-dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 Ports with NULL names are skipped. Control characters (bytes 0x00-0x1F)
 in port names are replaced with `?` before sending.
@@ -2318,7 +2319,7 @@ Each payload line contains five tab-separated fields:
 | `capacity` | Total capacity in bytes |
 | `blocksize` | Block size in bytes (e.g., 512) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 Only mounted volumes (those with an active filesystem handler) are
 listed. Unmounted volumes are omitted.
@@ -2386,7 +2387,7 @@ Each payload line contains five tab-separated fields:
 | `state` | `run` (currently executing), `ready` (ready to run), or `wait` (waiting for a signal) |
 | `stacksize` | Stack size in bytes (`tc_SPUpper - tc_SPLower`) |
 
-Payload lines are dot-stuffed per [PROTOCOL.md](PROTOCOL.md).
+Payload lines are dot-stuffed per [Wire Protocol Specification](protocol.md).
 
 ### Error Conditions
 
@@ -2557,7 +2558,7 @@ commands=<comma_separated_list>
 
 | Field | Description |
 |-------|-------------|
-| `version` | Daemon version (e.g. `0.7.0`) |
+| `version` | Daemon version (e.g. `0.8.0`) |
 | `protocol` | Protocol version (currently `1.0`) |
 | `max_clients` | Maximum simultaneous client connections |
 | `max_cmd_len` | Maximum command line length in bytes |
@@ -2572,7 +2573,7 @@ None. This command always succeeds.
 ```
 C> CAPABILITIES
 S> OK
-S> version=0.7.0
+S> version=0.8.0
 S> protocol=1.0
 S> max_clients=8
 S> max_cmd_len=4096
@@ -2808,7 +2809,7 @@ daemon's event loop.
 AREXX <port> <command>
 ```
 
-`<port>` is the target ARexx port name (e.g., `REXX`, `CNET`).
+`<port>` is the target ARexx port name (e.g., `REXX`, `MYAPP`).
 Case-sensitive (AmigaOS port names are case-sensitive). `<command>` is
 the ARexx command string. Everything after the first whitespace-
 delimited port name is the command, including any internal whitespace.
@@ -3058,8 +3059,9 @@ begins). The connection remains in normal command processing mode.
 
 ### Edge Cases / Notes
 
-- Only one TAIL per client at a time. A client in TAIL mode cannot
-  send other commands until STOP is sent.
+- Only one TAIL or TRACE session per client at a time. A client in
+  TAIL mode cannot send other commands until STOP is sent. Starting
+  TAIL while a TRACE session is active (or vice versa) returns an error.
 - If the client disconnects during an active TAIL stream, the daemon
   cleans up the tracking state silently. No error is logged.
 - TAIL does not lock the file exclusively. Other processes can write
@@ -3155,10 +3157,546 @@ S> .
 
 ---
 
+## TRACE
+
+Controls system-level library call tracing via the atrace kernel module.
+TRACE is a compound command with subcommands: STATUS, START, RUN,
+STOP, ENABLE, and DISABLE.
+
+The atrace module must be loaded on the Amiga (`RUN >NIL: atrace_loader`)
+before TRACE commands will work. atrace patches 50 functions across
+exec.library (20), dos.library (20), and intuition.library (10), capturing
+call arguments, return values, and the calling task for each invocation.
+
+### TRACE STATUS
+
+Queries the current status of the atrace module.
+
+#### Syntax
+
+```
+TRACE STATUS
+```
+
+No additional arguments.
+
+#### Response
+
+```
+OK
+loaded=<0|1>
+enabled=<0|1>
+patches=<n>
+events_produced=<n>
+events_consumed=<n>
+events_dropped=<n>
+buffer_capacity=<n>
+buffer_used=<n>
+patch_0=<lib>.<func> enabled=<0|1>
+patch_1=<lib>.<func> enabled=<0|1>
+...
+.
+```
+
+If atrace is not loaded, only `loaded=0` is returned.
+
+| Field | Description |
+|-------|-------------|
+| `loaded` | 1 if the atrace kernel module is present |
+| `enabled` | 1 if tracing is globally enabled |
+| `patches` | Number of installed function patches |
+| `events_produced` | Total events written to the ring buffer |
+| `events_consumed` | Total events read from the ring buffer |
+| `events_dropped` | Total events lost due to ring buffer overflow |
+| `buffer_capacity` | Ring buffer slot count |
+| `buffer_used` | Slots currently occupied |
+| `patch_N` | Per-patch status: library.function and enabled state |
+
+#### Error Conditions
+
+None. This command always succeeds (returns `loaded=0` when atrace is
+not loaded).
+
+#### Examples
+
+**atrace loaded and enabled:**
+
+```
+C> TRACE STATUS
+S> OK
+S> loaded=1
+S> enabled=1
+S> patches=50
+S> events_produced=12345
+S> events_consumed=12340
+S> events_dropped=0
+S> buffer_capacity=2048
+S> buffer_used=5
+S> patch_0=exec.FindPort enabled=1
+S> patch_1=exec.FindResident enabled=1
+S> ...
+S> .
+```
+
+**atrace not loaded:**
+
+```
+C> TRACE STATUS
+S> OK
+S> loaded=0
+S> .
+```
+
+### TRACE START
+
+Begins streaming trace events. The response is an ongoing DATA/END
+stream (same framing as TAIL) that continues until the client sends
+STOP.
+
+#### Syntax
+
+```
+TRACE START [LIB=<name>] [FUNC=<name>] [PROC=<name>] [ERRORS]
+```
+
+All filter arguments are optional. When multiple filters are specified,
+they are AND-combined (all must match for an event to be sent).
+
+| Filter | Description |
+|--------|-------------|
+| `LIB=<name>` | Only show calls to the named library. Accepts short names (`exec`, `dos`) or full names with suffix (`exec.library`, `dos.library`). The `.library`, `.device`, and `.resource` suffixes are stripped automatically before matching. Case-insensitive. An unrecognized library name produces an empty trace. |
+| `FUNC=<name>` | Only show calls to the named function (e.g. `OpenLibrary`, `Open`). Case-insensitive. Also sets the library filter to the function's library. An unrecognized function name produces an empty trace. |
+| `PROC=<name>` | Only show calls from tasks whose name contains `<name>` as a substring. Matches against the base process name only, not the `[N]` CLI number prefix. Case-insensitive. |
+| `ERRORS` | Only show calls that returned an error. Error classification is per-function: NULL for pointer-returning functions, non-zero for OpenDevice, rc != 0 for RunCommand/SystemTagList, (LONG)retval < 0 for GetVar. Void functions and GetMsg (where NULL is normal) are excluded. |
+
+**Note**: When both `LIB=` and `FUNC=` are specified, `FUNC=` takes precedence for library
+selection. For example, `LIB=exec FUNC=Open` filters to `dos.Open` (not exec), because
+`FUNC=` unambiguously identifies both the function and its owning library.
+
+#### Response
+
+```
+OK
+DATA <chunk_len>
+<tab-separated event line>
+DATA <chunk_len>
+<tab-separated event line>
+...
+(client sends STOP)
+END
+.
+```
+
+Each DATA chunk contains one tab-separated event line:
+
+```
+<seq>\t<time>\t<lib>.<func>\t<task>\t<args>\t<retval>\t<status>
+```
+
+| Field | Description |
+|-------|-------------|
+| `seq` | Monotonically increasing sequence number |
+| `time` | Timestamp in `HH:MM:SS.mmm` format (20ms resolution) |
+| `lib.func` | Library and function name (e.g. `dos.Open`, `exec.AllocMem`) |
+| `task` | Name of the calling task/process (with CLI number if applicable) |
+| `args` | Formatted arguments (strings quoted, constants named) |
+| `retval` | Return value (function-specific formatting) |
+| `status` | `O`=success, `E`=error, `-`=neutral |
+
+Argument formatting varies by function:
+
+- **String arguments** are quoted: `"dos.library"`, `"RAM:test.txt"`
+- **dos.Open mode**: `Read`, `Write`, `Read/Write`
+- **dos.Lock type**: `Shared`, `Exclusive`
+- **exec.AllocMem flags**: `MEMF_PUBLIC|MEMF_CLEAR`, `MEMF_CHIP`
+- **Void functions** (PutMsg, ObtainSemaphore, ReleaseSemaphore): `(void)`
+- Other arguments are shown as hex or decimal values
+
+Comment lines may appear in the stream, prefixed with `#`:
+
+- `# OVERFLOW N events dropped` -- ring buffer overflow notification
+- `# ATRACE SHUTDOWN` -- atrace module is being unloaded
+
+Comment lines are also delivered via DATA chunks.
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| TRACE session already active | `ERR 500 TRACE session already active` |
+| TAIL session active | `ERR 500 TAIL session active` |
+| atrace is disabled | `ERR 500 atrace is disabled (run: atrace_loader ENABLE)` |
+
+These errors are returned synchronously (before the streaming phase
+begins). The connection remains in normal command processing mode.
+
+#### Edge Cases / Notes
+
+- Only one TRACE or TAIL session per client at a time. A client in
+  TRACE mode cannot send other commands until STOP is sent.
+- If the client disconnects during an active TRACE stream, the daemon
+  cleans up the tracking state silently.
+- Multiple clients can have simultaneous TRACE sessions. Each client
+  has independent filters. All clients receive events from the same
+  shared ring buffer.
+- If atrace is unloaded (QUIT) while a TRACE stream is active, the
+  daemon sends a `# ATRACE SHUTDOWN` comment followed by END and the
+  sentinel.
+- Events are polled from the ring buffer on each daemon event loop
+  iteration. Up to 64 events are processed per poll cycle.
+- The receiver MUST read exactly `chunk_len` bytes by looping on
+  `recv()` before expecting the next DATA, END, or ERR line.
+
+#### Examples
+
+**Start tracing, receive events, then stop:**
+
+```
+C> TRACE START
+S> OK
+S> DATA 75
+S> 1	14:30:01.000	exec.OpenLibrary	Shell Process	"dos.library",v0	0x07a3b2c0	O
+S> DATA 64
+S> 2	14:30:01.000	dos.Lock	Shell Process	"SYS:",Shared	0x03c1a0b8	O
+C> STOP
+S> END
+S> .
+```
+
+**Start tracing with filters:**
+
+```
+C> TRACE START LIB=dos FUNC=Open
+S> OK
+S> DATA 71
+S> 5	14:30:02.020	dos.Open	Shell Process	"RAM:test.txt",Write	0x03c1a0b8	O
+C> STOP
+S> END
+S> .
+```
+
+**Start tracing with error filter:**
+
+```
+C> TRACE START ERRORS
+S> OK
+S> DATA 55
+S> 12	14:30:05.000	dos.Open	myapp	"NoSuchFile",Read	NULL	E
+C> STOP
+S> END
+S> .
+```
+
+**atrace not loaded:**
+
+```
+C> TRACE START
+S> ERR 500 atrace not loaded
+S> .
+```
+
+### TRACE RUN
+
+Launches a program and traces its library calls. The trace stream
+auto-terminates when the process exits. This combines EXEC ASYNC with
+TRACE START in a single command, automatically filtering events to
+only those from the launched process.
+
+#### Syntax
+
+```
+TRACE RUN [LIB=<name>] [FUNC=<name>] [ERRORS] [CD=<dir>] -- <command>
+```
+
+The `--` separator is required. Everything before it is filter options;
+everything after it is the command to execute.
+
+All filter arguments are optional. When multiple filters are specified,
+they are AND-combined (all must match for an event to be sent).
+
+| Option | Description |
+|--------|-------------|
+| `LIB=<name>` | Filter by library (same as TRACE START) |
+| `FUNC=<name>` | Filter by function (same as TRACE START) |
+| `ERRORS` | Only show calls that returned an error (same classification as TRACE START) |
+| `CD=<dir>` | Working directory for the command |
+
+`PROC=` is **not accepted**. Process filtering is automatic -- the
+daemon filters events by the launched process's Task pointer, so only
+calls made by that process are streamed to the client.
+
+**Note**: The launched process's task name is `amigactld-exec` (the
+same name used by EXEC ASYNC). When observing a TRACE RUN'd process
+from a separate TRACE START session on another connection, use
+`PROC=amigactld-exec`.
+
+#### Response
+
+```
+OK <proc_id>
+DATA <chunk_len>
+<tab-separated event line>
+DATA <chunk_len>
+<tab-separated event line>
+...
+DATA <chunk_len>
+# PROCESS EXITED rc=<N>
+END
+.
+```
+
+The response uses the same streaming DATA/END format as TRACE START.
+Each DATA chunk contains one trace event line (tab-separated fields,
+same format as TRACE START events).
+
+The `<proc_id>` in the OK line is the daemon-assigned process ID
+(same namespace as EXEC ASYNC). This ID can be used with PROCSTAT,
+SIGNAL, or KILL to manage the process independently.
+
+When the process exits, a comment line `# PROCESS EXITED rc=<N>` is
+sent as a DATA chunk (where N is the process's return code), followed
+by END and the sentinel. The stream terminates automatically -- the
+client does not need to send STOP.
+
+#### STOP During TRACE RUN
+
+The client may send `STOP` at any time during an active TRACE RUN
+stream. The daemon stops streaming events and sends END + sentinel.
+The launched process **continues running** and can be managed via
+PROCSTAT, SIGNAL, or KILL using the proc_id from the OK line.
+
+After STOP, the connection returns to normal command processing mode.
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| Missing `--` separator | `ERR 100 Missing -- separator` |
+| Missing command after `--` | `ERR 100 Missing command` |
+| `PROC=` filter specified | `ERR 100 PROC filter not valid for TRACE RUN` |
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| atrace is disabled | `ERR 500 atrace is disabled (run: atrace_loader ENABLE)` |
+| TRACE session already active | `ERR 500 TRACE session already active` |
+| TAIL session active | `ERR 500 TAIL session active` |
+| `CD=` directory not found | `ERR 200 Directory not found` |
+| Async exec unavailable | `ERR 500 Async exec unavailable` |
+| Process table full | `ERR 500 Process table full` |
+| Failed to create process | `ERR 500 Failed to create process` |
+
+These errors are returned synchronously (before the streaming phase
+begins). The connection remains in normal command processing mode.
+
+#### Examples
+
+**Trace a command until it exits:**
+
+```
+C> TRACE RUN -- List SYS:
+S> OK 5
+S> DATA 68
+S> 1001	14:30:01.000	dos.Lock	amigactld-exec	"SYS:",Shared	0x03c1a0b8	O
+S> DATA 63
+S> 1002	14:30:01.020	dos.Open	amigactld-exec	"*",Read	0x1a3c0040	O
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Trace with library filter:**
+
+```
+C> TRACE RUN LIB=exec -- Work:myapp
+S> OK 6
+S> DATA 80
+S> 2001	14:31:00.000	exec.OpenLibrary	amigactld-exec	"app.library",v0	0x0e2a1000	O
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Trace with working directory:**
+
+```
+C> TRACE RUN CD=Work:projects -- myprog
+S> OK 7
+S> DATA 70
+S> 3001	14:32:00.000	dos.Open	amigactld-exec	"data.txt",Read	0x03c1a0b8	O
+S> ...
+S> DATA 25
+S> # PROCESS EXITED rc=0
+S> END
+S> .
+```
+
+**Stop tracing early (process continues):**
+
+```
+C> TRACE RUN -- Work:myapp
+S> OK 8
+S> DATA 80
+S> 4001	14:33:00.000	exec.OpenLibrary	amigactld-exec	"app.library",v0	0x0e2a1000	O
+C> STOP
+S> END
+S> .
+```
+
+**Command not found (process exits with rc=-1):**
+
+```
+C> TRACE RUN -- NoSuchProgram
+S> OK 9
+S> DATA 26
+S> # PROCESS EXITED rc=-1
+S> END
+S> .
+```
+
+**PROC= filter rejected:**
+
+```
+C> TRACE RUN PROC=test -- Echo hello
+S> ERR 100 PROC filter not valid for TRACE RUN
+S> .
+```
+
+### TRACE STOP
+
+TRACE STOP is not a separate command. During an active TRACE stream, the
+client sends `STOP` (same as TAIL). See [STOP](#stop).
+
+### TRACE ENABLE
+
+Enables trace patches. When called with no arguments, toggles
+`global_enable` on (equivalent to `atrace_loader ENABLE` on the
+Amiga). When called with function names, enables individual patch
+stubs without changing `global_enable`.
+
+Function names are case-insensitive and match the function name
+without library prefix (e.g., `Open`, not `dos.Open`). If any
+function name is unrecognized, the command fails with an error and
+no patches are changed (all-or-nothing).
+
+#### Syntax
+
+```
+TRACE ENABLE [<func1> [<func2> ...]]
+```
+
+#### Response
+
+```
+OK
+.
+```
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| Unrecognized function name | `ERR 100 Unknown function: <name>` |
+
+#### Examples
+
+**Global enable:**
+
+```
+C> TRACE ENABLE
+S> OK
+S> .
+```
+
+**Per-function enable:**
+
+```
+C> TRACE ENABLE Open Lock FindTask
+S> OK
+S> .
+```
+
+**Unrecognized function name:**
+
+```
+C> TRACE ENABLE Open Bogus Lock
+S> ERR 100 Unknown function: Bogus
+S> .
+```
+
+### TRACE DISABLE
+
+Disables trace patches. When called with no arguments, toggles
+`global_enable` off (equivalent to `atrace_loader DISABLE` on the
+Amiga). Patches remain installed but stop recording events. In-flight
+calls (stubs currently executing) drain within one system timeslice
+(~20ms). The ring buffer is also drained on global disable so that
+subsequent re-enable starts with a clean buffer.
+
+When called with function names, disables individual patch stubs
+without changing `global_enable`. No buffer drain occurs for
+per-function disable (other functions may still be producing events).
+
+Function names are case-insensitive and match the function name
+without library prefix (e.g., `Open`, not `dos.Open`). If any
+function name is unrecognized, the command fails with an error and
+no patches are changed (all-or-nothing).
+
+#### Syntax
+
+```
+TRACE DISABLE [<func1> [<func2> ...]]
+```
+
+#### Response
+
+```
+OK
+.
+```
+
+#### Error Conditions
+
+| Condition | Response |
+|-----------|----------|
+| atrace not loaded | `ERR 500 atrace not loaded` |
+| Unrecognized function name | `ERR 100 Unknown function: <name>` |
+
+#### Examples
+
+**Global disable:**
+
+```
+C> TRACE DISABLE
+S> OK
+S> .
+```
+
+**Per-function disable:**
+
+```
+C> TRACE DISABLE GetMsg ObtainSemaphore ReleaseSemaphore
+S> OK
+S> .
+```
+
+**Unrecognized function name:**
+
+```
+C> TRACE DISABLE GetMsg Bogus
+S> ERR 100 Unknown function: Bogus
+S> .
+```
+
+---
+
 ## STOP
 
-Terminates an active TAIL stream. STOP is a contextual command: it is
-only valid during an active TAIL stream.
+Terminates an active TAIL or TRACE stream. STOP is a contextual command:
+it is only valid during an active TAIL or TRACE stream.
 
 ### Syntax
 
@@ -3168,17 +3706,18 @@ STOP
 
 No arguments. Case-insensitive.
 
-### Behavior During TAIL
+### Behavior During TAIL or TRACE
 
 Terminates the active stream. The server sends any remaining DATA
 chunks, then END, then the sentinel. After the sentinel, the
 connection returns to normal command processing. See the
-[TAIL](#tail) command for full details.
+[TAIL](#tail) and [TRACE](#trace) commands for full details.
 
-### Behavior Outside TAIL
+### Behavior Outside a Stream
 
-STOP is not recognized as a command outside of an active TAIL stream.
-Since STOP is not in the normal command dispatch table, it produces:
+STOP is not recognized as a command outside of an active TAIL or TRACE
+stream. Since STOP is not in the normal command dispatch table, it
+produces:
 
 ```
 ERR 100 Unknown command
@@ -3202,7 +3741,19 @@ S> OK
 S> .
 ```
 
-**Outside TAIL:**
+**During TRACE:**
+
+```
+(TRACE is active)
+C> STOP
+S> END
+S> .
+C> PING
+S> OK
+S> .
+```
+
+**Outside a stream:**
 
 ```
 C> STOP

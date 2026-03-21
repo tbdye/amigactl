@@ -1,5 +1,7 @@
 # Build artifacts
 amigactld
+atrace_loader
+atrace_test
 obj/
 
 # Python
@@ -15,6 +17,9 @@ __pycache__/
 # Build/release artifacts
 amigactld-*.lha
 /amigactld.readme
+
+# Local utility scripts (not part of the repo)
+scripts/
 
 # Auto-created client config (template is tracked as .conf.example)
 client/amigactl.conf

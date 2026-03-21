@@ -39,7 +39,6 @@ static char read_buf[4096];
 
 static int exec_sync(struct client *c, const char *args);
 static int exec_async(struct client *c, const char *args);
-static void async_wrapper(void);
 static const char *parse_cd_prefix(const char *args, BPTR *cd_lock,
                                    struct client *c);
 static BPTR find_command_segment(const char *cmdname, int *is_resident);
@@ -484,10 +483,51 @@ static int exec_async(struct client *c, const char *args)
     g_daemon_state->procs[slot].id = g_daemon_state->next_proc_id++;
     g_daemon_state->procs[slot].cd_lock = cd_lock;
 
+    /* Extract command basename for process name.
+     * Written into the per-slot proc_name buffer so each concurrent
+     * async process has its own stable NP_Name storage.  AmigaOS
+     * stores the NP_Name pointer, not a copy, so the buffer must
+     * outlive the process -- daemon_state slots persist for the
+     * daemon's lifetime. */
+    {
+        const char *cmd_start = command;
+        const char *basename;
+        int word_len = 0;
+        int name_len;
+        char *namebuf = g_daemon_state->procs[slot].proc_name;
+
+        /* Skip leading spaces */
+        while (*cmd_start == ' ') cmd_start++;
+
+        /* Find end of first word */
+        while (cmd_start[word_len] && cmd_start[word_len] != ' ')
+            word_len++;
+
+        /* Find basename: last '/' or ':' in first word */
+        basename = cmd_start;
+        {
+            int bi;
+            for (bi = 0; bi < word_len; bi++) {
+                if (cmd_start[bi] == '/' || cmd_start[bi] == ':')
+                    basename = &cmd_start[bi + 1];
+            }
+        }
+
+        /* Copy basename, truncate to 31 chars */
+        name_len = word_len - (int)(basename - cmd_start);
+        if (name_len > 31) name_len = 31;
+        memcpy(namebuf, basename, name_len);
+        namebuf[name_len] = '\0';
+
+        /* Fallback for empty basename (path ends with ':' or '/') */
+        if (namebuf[0] == '\0')
+            strcpy(namebuf, "amigactld-exec");
+    }
+
     Forbid();
     proc = CreateNewProcTags(
         NP_Entry, (ULONG)async_wrapper,
-        NP_Name, (ULONG)"amigactld-exec",
+        NP_Name, (ULONG)g_daemon_state->procs[slot].proc_name,
         NP_StackSize, 16384,
         NP_Cli, TRUE,
         TAG_DONE);
@@ -519,7 +559,7 @@ static int exec_async(struct client *c, const char *args)
 /* __saveds is not needed: the large data model (-noixemul) uses absolute
  * addressing for globals, so the a4 small-data base register setup that
  * __saveds provides is redundant and the compiler warns about it. */
-static void async_wrapper(void)
+void async_wrapper(void)
 {
     struct Task *me;
     struct tracked_proc *slot;
@@ -540,6 +580,13 @@ static void async_wrapper(void)
     BPTR old_out;
     LONG rc;
     int i;
+    /* cli_CommandName BSTR for RunCommand identification.
+     * BSTR format: byte 0 = length, bytes 1..N = string data.
+     * LONG array ensures the 4-byte alignment MKBADDR requires. */
+    LONG cmd_bstr_buf[(128 + 4 + 3) / 4];
+    UBYTE *cmd_bstr;
+    struct CommandLineInterface *cli;
+    BPTR old_cli_cmdname;
 
     me = FindTask(NULL);
 
@@ -625,6 +672,23 @@ static void async_wrapper(void)
      * process terminates without cleanup.  The slot remains PROC_RUNNING.
      * This is inherent to RunCommand -- the same risk exists with
      * SystemTags if the child shell exits abnormally. */
+    /* Set cli_CommandName before RunCommand so resolve_cli_name()
+     * can identify this process by command name during tracing.
+     * The AmigaOS shell does this before each RunCommand call.
+     * Without it, processes created with NP_Cli show as
+     * "Background CLI" instead of the command basename. */
+    cli = NULL;
+    old_cli_cmdname = 0;
+    if (((struct Process *)me)->pr_CLI) {
+        cli = (struct CommandLineInterface *)
+              BADDR(((struct Process *)me)->pr_CLI);
+        cmd_bstr = (UBYTE *)cmd_bstr_buf;
+        cmd_bstr[0] = (UBYTE)cmdlen;
+        memcpy(&cmd_bstr[1], cmdname, cmdlen);
+        old_cli_cmdname = cli->cli_CommandName;
+        cli->cli_CommandName = MKBADDR(cmd_bstr);
+    }
+
     used_runcommand = 0;
     seg = find_command_segment(cmdname, &is_resident);
     if (seg) {
@@ -644,6 +708,10 @@ static void async_wrapper(void)
                         SYS_Output, nil_out,
                         TAG_DONE);
     }
+
+    /* Restore cli_CommandName after execution completes */
+    if (cli)
+        cli->cli_CommandName = old_cli_cmdname;
 
     /* Restore directory and release the lock */
     if (cd_lock) {

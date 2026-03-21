@@ -12,7 +12,7 @@
 #include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.7.1"
+#define AMIGACTLD_VERSION "0.8.0"
 
 /* Limits */
 #define MAX_CLIENTS      8
@@ -57,6 +57,61 @@ struct tail_state {
     LONG last_pos;           /* current read position */
 };
 
+/* TRACE mode constants */
+#define TRACE_MODE_START  0  /* normal TRACE START */
+#define TRACE_MODE_RUN    1  /* TRACE RUN (auto-terminate on process exit) */
+
+/* Per-client trace output buffer for non-blocking send */
+#define TRACE_SENDBUF_SIZE  16384  /* 16KB per client */
+
+struct trace_sendbuf {
+    char buf[TRACE_SENDBUF_SIZE];
+    int len;              /* bytes currently in buf (0 = empty) */
+    ULONG events_dropped; /* events dropped due to buffer full */
+};
+
+/* Extended filter support for FILTER command */
+#define MAX_FILTER_NAMES 32
+
+/* TRACE streaming state (per-client) */
+struct trace_state {
+    int active;              /* 1 = TRACE in progress */
+
+    /* Simple filters (original, for TRACE START compatibility) */
+    int filter_lib_id;       /* -1 = all libs, or specific lib_id */
+    WORD filter_lvo;         /* 0 = all functions, or specific LVO */
+    int filter_errors_only;  /* 1 = only events where retval indicates error */
+    char filter_procname[64]; /* "" = all, or substring match on task name */
+
+    /* Extended filters (set by FILTER command during stream). */
+    int use_extended_filter;     /* 1 = use lists below instead */
+
+    /* Library whitelist/blacklist */
+    int lib_filter_mode;         /* 0=off, 1=whitelist, -1=blacklist */
+    int lib_filter_ids[MAX_FILTER_NAMES];
+    int lib_filter_count;
+
+    /* Function whitelist/blacklist (by lib_id + lvo pair).
+     * Stores (lib_id, lvo) pairs -- NOT func_table indices.
+     * This avoids O(FUNC_TABLE_SIZE) lookup per event. */
+    int func_filter_mode;        /* 0=off, 1=whitelist, -1=blacklist */
+    int func_filter_lib_ids[MAX_FILTER_NAMES];
+    WORD func_filter_lvos[MAX_FILTER_NAMES];
+    int func_filter_count;
+
+    /* TRACE RUN state (only used when mode == TRACE_MODE_RUN) */
+    int mode;                /* TRACE_MODE_START or TRACE_MODE_RUN */
+    int run_proc_slot;       /* index into daemon_state.procs[], -1 if none */
+    APTR run_task_ptr;       /* Task pointer for exact process matching */
+    ULONG run_start_seq;     /* event_sequence at TRACE RUN start; skip older */
+
+    /* (noise_saved fields removed -- noise functions are no longer
+     * auto-enabled/restored during TRACE RUN) */
+
+    /* Non-blocking send buffer for trace event delivery */
+    struct trace_sendbuf sendbuf;
+};
+
 /* Per-client state */
 struct client {
     LONG fd;                       /* socket fd, -1 = unused */
@@ -66,6 +121,7 @@ struct client {
     int discarding;                /* overflow discard mode flag */
     int arexx_pending;             /* 1 = waiting for ARexx reply */
     struct tail_state tail;        /* TAIL tracking */
+    struct trace_state trace;      /* TRACE tracking */
 };
 
 /* IP access control list entry */
@@ -91,6 +147,7 @@ struct tracked_proc {
     int rc;                      /* return code (valid when EXITED) */
     int completed;               /* set by wrapper under Forbid */
     BPTR cd_lock;                /* optional CD lock for async */
+    char proc_name[32];          /* NP_Name buffer (per-slot, outlives process) */
 };
 
 /* Top-level daemon state */

@@ -11,11 +11,13 @@ Usage::
         amiga.ping()
 """
 
+import os
 import socket
 from typing import Callable, Dict, List, Optional, Tuple, Type
 
 from .protocol import (
     BinaryTransferError, ENCODING, ProtocolError, ServerError,
+    TraceStreamReader, _parse_trace_event,
     read_binary_response,
     read_exec_response, read_line, read_response, recv_exact, send_command,
     send_data_chunks,
@@ -35,7 +37,48 @@ __all__ = [
     "InternalError",
     "ProtocolError",
     "ServerError",
+    "FILTER_PRESETS",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Filter presets
+# ---------------------------------------------------------------------------
+
+FILTER_PRESETS = {
+    "file-io": {
+        "lib": "dos",
+        "func_list": ["Open", "Close", "Lock", "DeleteFile",
+                       "CreateDir", "Rename", "MakeLink",
+                       "SetProtection"],
+    },
+    "lib-load": {
+        "func_list": ["OpenLibrary", "OpenDevice", "OpenResource",
+                       "CloseLibrary", "CloseDevice"],
+    },
+    "network": {
+        "lib": "bsdsocket",
+    },
+    "ipc": {
+        "func_list": ["FindPort", "GetMsg", "PutMsg",
+                       "ObtainSemaphore", "ReleaseSemaphore",
+                       "AddPort", "WaitPort"],
+    },
+    "errors-only": {
+        "errors_only": True,
+    },
+    "memory": {
+        "func_list": ["AllocMem", "FreeMem", "AllocVec", "FreeVec"],
+    },
+    "window": {
+        "func_list": ["OpenWindow", "CloseWindow", "OpenScreen",
+                       "CloseScreen", "OpenWindowTagList",
+                       "OpenScreenTagList", "ActivateWindow"],
+    },
+    "icon": {
+        "lib": "icon",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +182,74 @@ def _raise_for_error(info: str) -> None:
     if exc_class is not None:
         raise exc_class(message)
     raise AmigactlError(code, message)
+
+
+# ---------------------------------------------------------------------------
+# Raw trace session
+# ---------------------------------------------------------------------------
+
+class RawTraceSession:
+    """Context manager for a raw trace session.
+
+    Saves the socket timeout on entry and restores it on exit.
+    Provides the socket and a TraceStreamReader for non-blocking reads.
+    """
+
+    def __init__(self, sock, old_timeout):
+        self.sock = sock
+        self.reader = TraceStreamReader(sock)
+        self._old_timeout = old_timeout
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        try:
+            self.sock.settimeout(self._old_timeout)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Blocking trace event reader
+# ---------------------------------------------------------------------------
+
+def read_one_trace_event(sock):
+    """Read one trace event from the socket (BLOCKING).
+
+    Returns an event dict on success, or None if END was received
+    (stream terminated). Raises ProtocolError on framing errors.
+
+    This uses the blocking read_line() and is intended for the
+    callback-based trace_start() API, NOT the interactive viewer.
+    """
+    line = read_line(sock)
+    if line.startswith("DATA "):
+        try:
+            chunk_len = int(line[5:])
+        except ValueError:
+            raise ProtocolError(
+                "Invalid DATA chunk length: {!r}".format(line))
+        chunk = recv_exact(sock, chunk_len)
+        text = chunk.decode(ENCODING)
+        if text.startswith("#"):
+            return {
+                "type": "comment",
+                "text": text[2:] if len(text) > 2 else "",
+            }
+        return _parse_trace_event(text)
+    elif line == "END":
+        sentinel = read_line(sock)
+        if sentinel != ".":
+            raise ProtocolError(
+                "Expected sentinel, got: {!r}".format(sentinel))
+        return None
+    elif line == "ERR" or line.startswith("ERR "):
+        read_line(sock)  # sentinel
+        return None
+    else:
+        raise ProtocolError(
+            "Unexpected line during TRACE: {!r}".format(line))
 
 
 # ---------------------------------------------------------------------------
@@ -1154,3 +1265,777 @@ class AmigaConnection:
                             line))
         finally:
             self._sock.settimeout(old_timeout)
+
+    # -- Library call tracing (atrace) -------------------------------------
+
+    def trace_status(self):
+        # type: () -> dict
+        """Query atrace status.
+
+        Returns a dict with keys:
+            loaded (bool), enabled (bool), patches (int),
+            events_produced (int), events_consumed (int),
+            events_dropped (int), buffer_capacity (int),
+            buffer_used (int), filter_task (str or absent),
+            noise_disabled (int or absent),
+            anchor_version (int or absent),
+            eclock_freq (int or absent).
+
+        filter_task is a hex string like "0x0e300200" when a task
+        filter is active (during TRACE RUN), or "0x00000000" when
+        no filter is set.  Only present when atrace version >= 2.
+
+        noise_disabled is the count of noise functions currently
+        disabled.  Only present when atrace is loaded.
+
+        anchor_version is the atrace kernel module version (currently 4).
+        Only present when atrace is loaded.
+
+        eclock_freq is the EClock frequency in Hz (e.g. 709379 for
+        PAL).  Only present when anchor_version >= 3.
+
+        Integer fields are only present when atrace is loaded.
+        """
+        info, payload = self._send_command("TRACE STATUS")
+
+        result = {}  # type: dict
+        for line in payload:
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip()
+
+            if key == "loaded":
+                result["loaded"] = val == "1"
+            elif key == "enabled":
+                result["enabled"] = val == "1"
+            elif key in ("patches", "events_produced", "events_consumed",
+                          "events_dropped", "buffer_capacity", "buffer_used"):
+                try:
+                    result[key] = int(val)
+                except ValueError:
+                    result[key] = 0
+            elif key == "filter_task":
+                result["filter_task"] = val  # hex string like "0x0e300200"
+            elif key == "noise_disabled":
+                try:
+                    result["noise_disabled"] = int(val)
+                except ValueError:
+                    result["noise_disabled"] = 0
+            elif key == "anchor_version":
+                try:
+                    result["anchor_version"] = int(val)
+                except ValueError:
+                    result["anchor_version"] = 0
+            elif key == "eclock_freq":
+                try:
+                    result["eclock_freq"] = int(val)
+                except ValueError:
+                    result["eclock_freq"] = 0
+            elif key.startswith("patch_"):
+                # patch_0=exec.FindPort enabled=1
+                if "patch_list" not in result:
+                    result["patch_list"] = []
+                parts = val.split()
+                entry = {"name": parts[0]}
+                for p in parts[1:]:
+                    if p.startswith("enabled="):
+                        entry["enabled"] = p.split("=")[1] == "1"
+                result["patch_list"].append(entry)
+
+        return result
+
+    def trace_start(self, callback, lib=None, func=None, proc=None,
+                    errors_only=None, preset=None):
+        # type: (Callable, Optional[str], Optional[str], Optional[str], Optional[bool], Optional[str]) -> None
+        """Start a trace event stream.
+
+        callback(event_dict) is called for each trace event.
+        event_dict has keys: type, raw, seq, time, lib, func, task,
+        args, retval, status.
+
+        Comment lines produce: type="comment", text=<text>.
+
+        Does NOT catch KeyboardInterrupt -- the caller should catch it
+        and call stop_trace() to terminate cleanly.
+
+        Args:
+            callback: Function called with each event dict.
+            lib: Optional library filter (e.g. "dos").
+            func: Optional function filter (e.g. "Open").
+            proc: Optional process filter (e.g. "myapp").
+            errors_only: If True, only show error returns.
+            preset: Optional filter preset name from FILTER_PRESETS.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}. Available: {}".format(
+                    preset, ", ".join(sorted(FILTER_PRESETS))))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                # Join function list for FUNC= filter
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
+
+        cmd = "TRACE START"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if proc:
+            cmd += " PROC={}".format(proc)
+        if errors_only:
+            cmd += " ERRORS"
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR (streaming response -- no sentinel after OK)
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            # Read sentinel and raise
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        old_timeout = self._sock.gettimeout()
+        try:
+            # On Windows, blocking recv() cannot be interrupted by Ctrl+C.
+            # Use a short timeout so Python can process signals between reads.
+            if os.name == "nt":
+                self._sock.settimeout(0.5)
+            else:
+                self._sock.settimeout(None)
+
+            while True:
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    continue  # Windows: yield to signal handler
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    chunk = recv_exact(self._sock, chunk_len)
+                    text = chunk.decode(ENCODING)
+                    if text.startswith("#"):
+                        callback({
+                            "type": "comment",
+                            "text": text[2:] if len(text) > 2 else "",
+                        })
+                    else:
+                        event = _parse_trace_event(text)
+                        callback(event)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    _raise_for_error(line[4:])
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TRACE: {!r}".format(line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def stop_trace(self):
+        # type: () -> None
+        """Send STOP during an active trace stream and drain remaining
+        DATA chunks until END + sentinel.
+
+        After this call, the connection is back in normal command mode.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        send_command(self._sock, "STOP")
+
+        # Drain remaining DATA chunks until END + sentinel
+        old_timeout = self._sock.gettimeout()
+        self._sock.settimeout(10)  # 10s timeout for drain
+        try:
+            while True:
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    raise ProtocolError(
+                        "Timed out draining trace events after STOP")
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    recv_exact(self._sock, chunk_len)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    # Stream ended with error -- still drained, return
+                    return
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during STOP drain: {!r}".format(
+                            line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def trace_run(self, command, callback, lib=None, func=None,
+                  errors_only=None, cd=None, preset=None):
+        # type: (str, Callable, Optional[str], Optional[str], Optional[bool], Optional[str], Optional[str]) -> dict
+        """Launch a program and trace its library calls.
+
+        callback(event_dict) is called for each trace event.
+        event_dict has the same format as trace_start().
+
+        The stream auto-terminates when the process exits.  The final
+        callback receives a comment event with text "PROCESS EXITED rc=N".
+
+        Note: trace_run() does not accept a ``proc`` parameter because
+        TRACE RUN already filters by the launched process automatically.
+        Presets that contain only ``lib``, ``func_list``, or
+        ``errors_only`` keys work correctly with trace_run().  Presets
+        should not contain ``proc`` filters -- proc filtering is only
+        meaningful for trace_start()/trace_events().
+
+        Returns a dict with keys:
+            proc_id (int) -- daemon-assigned process ID
+            rc (int or None) -- process exit code (from the exit comment)
+            stats (dict) -- summary statistics:
+                total_events (int) -- total events received
+                by_function (dict) -- {func_name: count}
+                errors (int) -- total error events
+                error_functions (dict) -- {func_name: error_count}
+
+        Does NOT catch KeyboardInterrupt -- the caller should catch it
+        and call stop_trace() to terminate cleanly.
+
+        Args:
+            command: AmigaOS command string to execute.
+            callback: Function called with each event dict.
+            lib: Optional library filter (e.g. "dos").
+            func: Optional function filter (e.g. "Open").
+            errors_only: If True, only show error returns.
+            cd: Optional working directory for the command.
+            preset: Optional filter preset name from FILTER_PRESETS.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}. Available: {}".format(
+                    preset, ", ".join(sorted(FILTER_PRESETS))))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                # Join function list for FUNC= filter
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
+
+        cmd = "TRACE RUN"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if errors_only:
+            cmd += " ERRORS"
+        if cd:
+            cmd += " CD={}".format(cd)
+        cmd += " -- {}".format(command)
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        # Parse proc_id from OK line
+        proc_id = None
+        info = status_line[3:].strip()
+        if info:
+            try:
+                proc_id = int(info)
+            except ValueError:
+                pass
+
+        # Initialize stats
+        stats = {
+            "total_events": 0,
+            "by_function": {},
+            "errors": 0,
+            "error_functions": {},
+        }
+
+        # Stream events (same loop as trace_start)
+        rc = None
+        old_timeout = self._sock.gettimeout()
+        try:
+            # On Windows, blocking recv() cannot be interrupted by Ctrl+C.
+            # Use a short timeout so Python can process signals between reads.
+            if os.name == "nt":
+                self._sock.settimeout(0.5)
+            else:
+                self._sock.settimeout(None)
+
+            while True:
+                try:
+                    line = read_line(self._sock)
+                except socket.timeout:
+                    continue  # Windows: yield to signal handler
+                if line.startswith("DATA "):
+                    try:
+                        chunk_len = int(line[5:])
+                    except ValueError:
+                        raise ProtocolError(
+                            "Invalid DATA chunk length: {!r}".format(line))
+                    chunk = recv_exact(self._sock, chunk_len)
+                    text = chunk.decode(ENCODING)
+                    if text.startswith("#"):
+                        comment_text = text[2:] if len(text) > 2 else ""
+                        # Parse exit code from PROCESS EXITED comment
+                        if comment_text.startswith("PROCESS EXITED rc="):
+                            try:
+                                rc = int(comment_text[18:])
+                            except ValueError:
+                                pass
+                        callback({
+                            "type": "comment",
+                            "text": comment_text,
+                        })
+                    else:
+                        event = _parse_trace_event(text)
+                        # Accumulate stats
+                        stats["total_events"] += 1
+                        func_name = event.get("func", "")
+                        stats["by_function"][func_name] = \
+                            stats["by_function"].get(func_name, 0) + 1
+                        if event.get("status") == "E":
+                            stats["errors"] += 1
+                            stats["error_functions"][func_name] = \
+                                stats["error_functions"].get(func_name, 0) + 1
+                        callback(event)
+                elif line == "END":
+                    sentinel = read_line(self._sock)
+                    if sentinel != ".":
+                        raise ProtocolError(
+                            "Expected sentinel, got: {!r}".format(
+                                sentinel))
+                    return {"proc_id": proc_id, "rc": rc, "stats": stats}
+                elif line == "ERR" or line.startswith("ERR "):
+                    sentinel = read_line(self._sock)
+                    _raise_for_error(line[4:])
+                else:
+                    raise ProtocolError(
+                        "Unexpected line during TRACE RUN: {!r}".format(
+                            line))
+        finally:
+            self._sock.settimeout(old_timeout)
+
+    def trace_events(self, lib=None, func=None, proc=None,
+                     errors_only=None, preset=None):
+        """Yield trace events as dicts from a TRACE START session.
+
+        Usage::
+
+            with AmigaConnection("host") as conn:
+                for event in conn.trace_events(lib="dos"):
+                    print(event["func"], event["args"])
+
+        The generator yields event dicts.  When the caller breaks out
+        of the loop or the generator is garbage-collected, the trace
+        is stopped automatically.
+
+        Warning: This uses a second connection internally for stop_trace()
+        because the primary connection is occupied by the streaming session.
+        The caller must ensure the daemon can accept an additional connection.
+
+        Args:
+            lib: Optional library filter.
+            func: Optional function filter.
+            proc: Optional process filter.
+            errors_only: If True, only yield error events.
+            preset: Optional filter preset name.
+        """
+        import collections
+        import threading
+
+        # Resolve preset
+        if preset:
+            if preset not in FILTER_PRESETS:
+                raise ValueError("Unknown preset: {!r}".format(preset))
+            p = FILTER_PRESETS[preset]
+            if "lib" in p and lib is None:
+                lib = p["lib"]
+            if "func_list" in p and func is None:
+                func = ",".join(p["func_list"])
+            if "errors_only" in p and errors_only is None:
+                errors_only = p["errors_only"]
+
+        if errors_only is None:
+            errors_only = False
+
+        queue = collections.deque()
+        done = threading.Event()
+        error_holder = [None]
+
+        def collector(event):
+            queue.append(event)
+
+        def run_trace():
+            try:
+                self.trace_start(collector, lib=lib, func=func,
+                                 proc=proc, errors_only=errors_only)
+            except Exception as e:
+                error_holder[0] = e
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=run_trace, daemon=True)
+        thread.start()
+
+        try:
+            while not done.is_set() or queue:
+                while queue:
+                    yield queue.popleft()
+                if not done.is_set():
+                    done.wait(timeout=0.01)
+            if error_holder[0]:
+                raise error_holder[0]
+        finally:
+            # Stop the trace -- requires a separate connection because
+            # the primary socket is blocking in trace_start()
+            stop_conn = None
+            try:
+                stop_conn = AmigaConnection(self.host, self.port)
+                stop_conn.connect()
+                stop_conn.stop_trace()
+            except Exception:
+                pass  # Best-effort cleanup
+            finally:
+                if stop_conn is not None:
+                    try:
+                        stop_conn.close()
+                    except Exception:
+                        pass
+            thread.join(timeout=5)
+            # If the thread is still alive after join timeout (e.g., daemon
+            # unreachable so stop_trace failed and trace_start is blocked on
+            # socket recv), the background thread is orphaned. Close the
+            # primary socket as a fallback to unblock the recv.
+            if thread.is_alive():
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+
+    def trace_analyze(self, command, max_events=10000, cd=None,
+                      lib=None, func=None, errors_only=False,
+                      preset=None):
+        """Run a command under trace and return structured analysis.
+
+        This is a convenience method that combines trace_run() with
+        post-processing to produce a diagnostic summary.
+
+        Args:
+            command: AmigaOS command to trace.
+            max_events: Maximum events to capture (safety limit).
+            cd: Optional working directory.
+            lib: Optional library filter (passed to trace_run).
+            func: Optional function filter (passed to trace_run).
+            errors_only: If True, only capture error events
+                (passed to trace_run).
+            preset: Optional filter preset name (passed to trace_run).
+
+        Returns:
+            dict with keys:
+                events: list of event dicts (up to max_events)
+                stats: summary statistics (same as trace_run)
+                errors: list of error event dicts
+                file_access: list of unique files accessed
+                lib_opens: list of libraries opened
+                rc: process exit code
+        """
+        events = []
+        error_events = []
+        files_accessed = set()
+        libs_opened = set()
+        event_count = [0]
+
+        def collector(event):
+            if event.get("type") == "comment":
+                return
+            event_count[0] += 1
+            if event_count[0] <= max_events:
+                events.append(event)
+
+            # Collect error events
+            if event.get("status") == "E":
+                error_events.append(event)
+
+            # Collect file access
+            fn = event.get("func", "")
+            args = event.get("args", "")
+            if fn in ("Open", "Lock", "DeleteFile", "CreateDir",
+                         "SetProtection", "GetDiskObject"):
+                # Extract quoted filename from args
+                if args.startswith('"'):
+                    end = args.find('"', 1)
+                    if end > 0:
+                        files_accessed.add(args[1:end])
+
+            # Collect library opens
+            if fn == "OpenLibrary":
+                if args.startswith('"'):
+                    end = args.find('"', 1)
+                    if end > 0:
+                        libs_opened.add(args[1:end])
+
+        result = self.trace_run(command, collector, lib=lib, func=func,
+                                errors_only=errors_only, cd=cd,
+                                preset=preset)
+
+        return {
+            "events": events,
+            "stats": result.get("stats", {}),
+            "errors": error_events,
+            "file_access": sorted(files_accessed),
+            "lib_opens": sorted(libs_opened),
+            "rc": result.get("rc"),
+        }
+
+    def trace_start_raw(self, lib=None, func=None, proc=None,
+                        errors_only=False):
+        # type: (Optional[str], Optional[str], Optional[str], bool) -> RawTraceSession
+        """Start a trace stream and return a RawTraceSession.
+
+        Unlike trace_start(), this does NOT enter a read loop. The
+        caller uses the returned session's .sock for select() and
+        .reader for non-blocking event parsing.
+
+        Returns a RawTraceSession context manager. The caller should
+        use it in a ``with`` block to ensure socket timeout is restored:
+
+            with conn.trace_start_raw(lib="dos") as session:
+                # session.sock for select()
+                # session.reader.try_read_event() for events
+                ...
+
+        Raises AmigactlError or ProtocolError on failure.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE START"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if proc:
+            cmd += " PROC={}".format(proc)
+        if errors_only:
+            cmd += " ERRORS"
+
+        send_command(self._sock, cmd)
+
+        # Read OK or ERR (uses blocking read_line for the handshake)
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        # Save timeout before switching to non-blocking
+        old_timeout = self._sock.gettimeout()
+
+        # Set socket to non-blocking for the interactive loop
+        self._sock.setblocking(False)
+
+        return RawTraceSession(self._sock, old_timeout)
+
+    def trace_run_raw(self, command, lib=None, func=None,
+                      errors_only=False, cd=None):
+        # type: (str, Optional[str], Optional[str], bool, Optional[str]) -> Tuple[RawTraceSession, Optional[int]]
+        """Start a TRACE RUN stream and return (session, proc_id)."""
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        cmd = "TRACE RUN"
+        if lib:
+            cmd += " LIB={}".format(lib)
+        if func:
+            cmd += " FUNC={}".format(func)
+        if errors_only:
+            cmd += " ERRORS"
+        if cd:
+            cmd += " CD={}".format(cd)
+        cmd += " -- {}".format(command)
+
+        send_command(self._sock, cmd)
+
+        status_line = read_line(self._sock)
+        if status_line == "ERR" or status_line.startswith("ERR "):
+            read_line(self._sock)  # sentinel
+            _raise_for_error(status_line[4:])
+        if not status_line.startswith("OK"):
+            raise ProtocolError(
+                "Expected OK, got: {!r}".format(status_line))
+
+        proc_id = None
+        info = status_line[3:].strip()
+        if info:
+            try:
+                proc_id = int(info)
+            except ValueError:
+                pass
+
+        old_timeout = self._sock.gettimeout()
+        self._sock.setblocking(False)
+
+        return RawTraceSession(self._sock, old_timeout), proc_id
+
+    def send_filter(self, lib=None, func=None, proc=None, raw=None):
+        # type: (Optional[str], Optional[str], Optional[str], Optional[str]) -> None
+        """Send a FILTER command during an active trace stream.
+
+        Fire-and-forget: no response is expected. Call with no arguments
+        to clear all filters.
+
+        Handles non-blocking sockets: temporarily sets socket to blocking
+        mode with a short timeout for the sendall() call, then restores
+        non-blocking mode. This prevents BlockingIOError from sendall()
+        on a non-blocking socket when the TCP send buffer is full.
+
+        Args:
+            lib: Library name filter (e.g. "dos").
+            func: Function name filter (e.g. "Open").
+            proc: Process name filter (e.g. "myapp").
+            raw: Raw filter string (e.g. "LIB=dos,exec -FUNC=AllocMem").
+                 When provided, lib/func/proc are ignored.
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        if raw is not None:
+            cmd = "FILTER"
+            if raw:
+                cmd += " " + raw
+        else:
+            cmd = "FILTER"
+            if lib:
+                cmd += " LIB={}".format(lib)
+            if func:
+                cmd += " FUNC={}".format(func)
+            if proc:
+                cmd += " PROC={}".format(proc)
+
+        # Temporarily set blocking with short timeout for sendall().
+        # The socket may be in non-blocking mode (interactive viewer).
+        was_blocking = self._sock.getblocking()
+        try:
+            if not was_blocking:
+                self._sock.settimeout(2.0)
+            send_command(self._sock, cmd)
+        except (BlockingIOError, OSError):
+            # Fire-and-forget: silently drop if send fails.
+            # The daemon's filter state is unchanged; the user can
+            # retry by pressing Tab again.
+            pass
+        finally:
+            if not was_blocking:
+                self._sock.setblocking(False)
+
+    def send_inline(self, cmd):
+        # type: (str) -> None
+        """Send a bare inline command during an active trace stream.
+
+        Fire-and-forget: no response is expected. Handles non-blocking
+        sockets like send_filter(): temporarily sets socket to blocking
+        mode with a short timeout for the sendall() call, then restores
+        non-blocking mode.
+
+        Args:
+            cmd: The command string to send (e.g. "TIER 2").
+        """
+        if self._sock is None:
+            raise ProtocolError("Not connected")
+
+        was_blocking = self._sock.getblocking()
+        try:
+            if not was_blocking:
+                self._sock.settimeout(2.0)
+            send_command(self._sock, cmd)
+        except (BlockingIOError, OSError):
+            # Fire-and-forget: silently drop if send fails.
+            pass
+        finally:
+            if not was_blocking:
+                self._sock.setblocking(False)
+
+    def trace_enable(self, funcs=None):
+        # type: (Optional[List[str]]) -> None
+        """Enable atrace globally, or enable specific functions.
+
+        Args:
+            funcs: Optional list of function names to enable.  If None,
+                   toggles global_enable on.
+
+        Raises AmigactlError if atrace is not loaded or a function
+        name is not recognized.
+        """
+        cmd = "TRACE ENABLE"
+        if funcs:
+            cmd += " " + " ".join(funcs)
+        self._send_command(cmd)
+
+    def trace_disable(self, funcs=None):
+        # type: (Optional[List[str]]) -> None
+        """Disable atrace globally, or disable specific functions.
+
+        Args:
+            funcs: Optional list of function names to disable.  If None,
+                   toggles global_enable off and drains buffer.
+
+        Raises AmigactlError if atrace is not loaded or a function
+        name is not recognized.
+        """
+        cmd = "TRACE DISABLE"
+        if funcs:
+            cmd += " " + " ".join(funcs)
+        self._send_command(cmd)

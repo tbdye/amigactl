@@ -25,6 +25,7 @@ import pytest
 from conftest import (
     _read_line,
     _recv_exact,
+    _send_stop_and_drain,
     read_response,
     send_command,
     send_write_data,
@@ -100,41 +101,6 @@ def _read_tail_data(sock, timeout=5):
         sock.settimeout(old_timeout)
 
 
-def _send_stop_and_drain(sock, timeout=5):
-    """Send STOP and drain remaining DATA/END/sentinel.
-
-    Sets a timeout so the test does not hang if the daemon misbehaves.
-    Returns the total bytes received in any trailing DATA chunks.
-    """
-    old_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-        send_command(sock, "STOP")
-        total_bytes = 0
-        while True:
-            line = _read_line(sock)
-            if line.startswith("DATA "):
-                chunk_len = int(line[5:])
-                _recv_exact(sock, chunk_len)
-                total_bytes += chunk_len
-            elif line == "END":
-                sentinel = _read_line(sock)
-                assert sentinel == ".", (
-                    "Expected sentinel after END, got: {!r}".format(sentinel)
-                )
-                return total_bytes
-            elif line.startswith("ERR "):
-                sentinel = _read_line(sock)
-                assert sentinel == "."
-                return total_bytes
-            else:
-                raise AssertionError(
-                    "Unexpected line during STOP drain: {!r}".format(line)
-                )
-    finally:
-        sock.settimeout(old_timeout)
-
-
 # ---------------------------------------------------------------------------
 # TAIL basic operation
 # ---------------------------------------------------------------------------
@@ -144,7 +110,7 @@ class TestTailBasic:
 
     def test_tail_existing_file(self, raw_connection, cleanup_paths):
         """TAIL on an existing file returns OK with the current file size.
-        COMMANDS.md: 'The OK status line includes the file's current size
+        protocol-commands.md: 'The OK status line includes the file's current size
         in bytes at the time TAIL starts.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_tail_exist.txt"
@@ -173,7 +139,7 @@ class TestTailBasic:
     def test_tail_stop_clean(self, raw_connection, cleanup_paths):
         """STOP terminates TAIL cleanly: END + sentinel, then connection
         returns to normal command processing.
-        COMMANDS.md: 'After the sentinel, the connection returns to normal
+        protocol-commands.md: 'After the sentinel, the connection returns to normal
         command processing.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_tail_stop.txt"
@@ -200,7 +166,7 @@ class TestTailBasic:
 
     def test_tail_empty_file(self, raw_connection, cleanup_paths):
         """TAIL on an empty file reports OK 0.
-        COMMANDS.md: 'OK <current_size>' -- for an empty file this is
+        protocol-commands.md: 'OK <current_size>' -- for an empty file this is
         'OK 0'."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_tail_empty.txt"
@@ -223,7 +189,7 @@ class TestTailBasic:
     def test_tail_receives_appended_data(self, amiga_host, amiga_port,
                                          cleanup_paths):
         """TAIL streams DATA chunks when new content is appended.
-        COMMANDS.md: 'When new content is appended, it sends one or more
+        protocol-commands.md: 'When new content is appended, it sends one or more
         DATA chunks containing the new bytes.'
 
         Uses a second connection to append data via EXEC while TAIL is
@@ -282,7 +248,7 @@ class TestTailErrors:
 
     def test_tail_nonexistent_file(self, raw_connection):
         """TAIL on a nonexistent file returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "TAIL RAM:nonexistent_amigactl_tail_test.txt")
         status, payload = read_response(sock)
@@ -293,7 +259,7 @@ class TestTailErrors:
 
     def test_tail_directory(self, raw_connection):
         """TAIL on a directory returns ERR 300.
-        COMMANDS.md: 'Path is a directory -> ERR 300 TAIL requires a
+        protocol-commands.md: 'Path is a directory -> ERR 300 TAIL requires a
         file, not a directory'."""
         sock, _banner = raw_connection
         send_command(sock, "TAIL RAM:")
@@ -305,7 +271,7 @@ class TestTailErrors:
 
     def test_tail_missing_path(self, raw_connection):
         """TAIL with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100 Missing path
+        protocol-commands.md: 'Missing path argument -> ERR 100 Missing path
         argument'."""
         sock, _banner = raw_connection
         send_command(sock, "TAIL")
@@ -317,7 +283,7 @@ class TestTailErrors:
 
     def test_tail_error_leaves_connection_usable(self, raw_connection):
         """Connection remains usable after a TAIL error.
-        COMMANDS.md: 'These errors are returned synchronously.  The
+        protocol-commands.md: 'These errors are returned synchronously.  The
         connection remains in normal command processing mode.'"""
         sock, _banner = raw_connection
         send_command(sock, "TAIL RAM:nonexistent_amigactl_tail_test.txt")
@@ -340,7 +306,7 @@ class TestTailFileEvents:
 
     def test_tail_file_deleted(self, amiga_host, amiga_port, cleanup_paths):
         """TAIL sends ERR 300 when the file is deleted during streaming.
-        COMMANDS.md: 'If the file is deleted or becomes inaccessible:
+        protocol-commands.md: 'If the file is deleted or becomes inaccessible:
         ERR 300 File no longer accessible / .'"""
         path = "RAM:amigactl_test_tail_delete.txt"
 
@@ -397,7 +363,7 @@ class TestTailFileEvents:
     def test_tail_truncation_detection(self, amiga_host, amiga_port,
                                        cleanup_paths):
         """TAIL detects file truncation and resets position.
-        COMMANDS.md: 'If the file size decreases, the daemon resets its
+        protocol-commands.md: 'If the file size decreases, the daemon resets its
         read position to the new file end.  No error is generated.
         Subsequent growth is streamed from the new end.'
 
@@ -473,7 +439,7 @@ class TestTailNonBlocking:
     def test_tail_nonblocking(self, amiga_host, amiga_port, cleanup_paths):
         """While TAIL is active on one connection, another connection can
         send PING and get OK back.
-        COMMANDS.md: TAIL is an ongoing stream that does not block the
+        protocol-commands.md: TAIL is an ongoing stream that does not block the
         event loop for other clients."""
         path = "RAM:amigactl_test_tail_nonblock.txt"
 
@@ -530,7 +496,7 @@ class TestStopOutsideTail:
 
     def test_stop_outside_tail(self, raw_connection):
         """STOP outside TAIL returns ERR 100 Unknown command.
-        COMMANDS.md: 'STOP is not recognized as a command outside of an
+        protocol-commands.md: 'STOP is not recognized as a command outside of an
         active TAIL stream.'"""
         sock, _banner = raw_connection
         send_command(sock, "STOP")

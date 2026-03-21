@@ -445,6 +445,41 @@ def read_response(sock):
     return status_line, payload_lines
 
 
+def _send_stop_and_drain(sock, timeout=5):
+    """Send STOP and drain remaining DATA/END/sentinel.
+
+    Sets a timeout so the test does not hang if the daemon misbehaves.
+    Returns the total bytes received in any trailing DATA chunks.
+    """
+    old_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        send_command(sock, "STOP")
+        total_bytes = 0
+        while True:
+            line = _read_line(sock)
+            if line.startswith("DATA "):
+                chunk_len = int(line[5:])
+                _recv_exact(sock, chunk_len)
+                total_bytes += chunk_len
+            elif line == "END":
+                sentinel = _read_line(sock)
+                assert sentinel == ".", (
+                    "Expected sentinel after END, got: {!r}".format(sentinel)
+                )
+                return total_bytes
+            elif line.startswith("ERR "):
+                sentinel = _read_line(sock)
+                assert sentinel == "."
+                return total_bytes
+            else:
+                raise AssertionError(
+                    "Unexpected line during STOP drain: {!r}".format(line)
+                )
+    finally:
+        sock.settimeout(old_timeout)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

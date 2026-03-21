@@ -1,0 +1,318 @@
+/*
+ * atrace -- shared structures for atrace resident module and daemon
+ *
+ * Included by both atrace/main.c and daemon/trace.c.
+ */
+
+#ifndef ATRACE_H
+#define ATRACE_H
+
+#include <exec/types.h>
+#include <exec/semaphores.h>
+
+/* ---- Constants ---- */
+
+#define ATRACE_MAGIC        0x41545243  /* 'ATRC' */
+#define ATRACE_VERSION      6
+#define ATRACE_SEM_NAME     "atrace_patches"
+#define ATRACE_DEFAULT_BUFSZ 8192
+
+/* Library IDs (index into lib_info table) */
+#define LIB_EXEC    0
+#define LIB_DOS     1
+#define LIB_INTUITION  2
+#define LIB_BSDSOCKET  3
+#define LIB_GRAPHICS   4
+#define LIB_ICON       5
+#define LIB_WORKBENCH  6
+
+/* Event entry size -- must be 128 bytes for shift-based indexing */
+#define ATRACE_EVENT_SIZE   128
+
+/* Event flags (offset 33) */
+#define FLAG_HAS_ECLOCK     0x01    /* EClock timestamp fields are valid */
+#define FLAG_HAS_IOERR      0x02    /* IoErr field is valid */
+
+/* Indirect name deref types for func_info.name_deref_type */
+#define DEREF_NONE       0   /* No indirect string capture */
+#define DEREF_LN_NAME    1   /* One-level: struct->ln_Name (offset 10) */
+#define DEREF_IOREQUEST  2   /* Two-level: IORequest->io_Device->ln_Name + io_Command */
+#define DEREF_TEXTATTR   3   /* TextAttr->ta_Name (offset 0) + ta_YSize */
+#define DEREF_LOCK_VOLUME  4   /* Lock BPTR -> fl_Volume -> dol_Name BSTR */
+#define DEREF_NW_TITLE     5   /* NewWindow.Title at offset 26 */
+#define DEREF_WIN_TITLE    6   /* Window.Title at offset 32 */
+#define DEREF_NS_TITLE     7   /* NewScreen.DefaultTitle at offset 20 */
+#define DEREF_SCR_TITLE    8   /* Screen.Title at offset 22 */
+#define DEREF_SOCKADDR     9   /* sockaddr_in: 8 bytes into string_data[0..7] (arg_regs[1]) */
+#define DEREF_SOCKADDR_3  10   /* sockaddr_in: 8 bytes into string_data[0..7] (arg_regs[3]) */
+
+/* ---- struct bsd_patch_entry ----
+ *
+ * Compact table entry for stub-side bsdsocket per-opener patching.
+ * Used by the OpenLibrary stub's post-call handler to call SetFunction
+ * for each bsdsocket LVO on a newly-opened bsdsocket.library base.
+ *
+ *   lvo_offset:  offset  0,  2 bytes (WORD, e.g. -30 for socket)
+ *   padding:     offset  2,  2 bytes (UWORD, alignment to 4 bytes)
+ *   stub_code:   offset  4,  4 bytes (APTR, address of generated stub)
+ *   Total: 8 bytes per entry
+ */
+struct bsd_patch_entry {
+    WORD  lvo_offset;
+    UWORD padding;
+    APTR  stub_code;
+};
+
+/* ---- struct atrace_anchor ----
+ *
+ * Top-level structure, found via named semaphore.
+ *
+ * Byte offsets (explicit sem_padding field aligns magic to
+ * 4-byte boundary after 46-byte SignalSemaphore):
+ *
+ *   sem:              offset   0,  46 bytes (SignalSemaphore)
+ *   sem_padding:      offset  46,   2 bytes (alignment to 4-byte boundary)
+ *   magic:            offset  48,   4 bytes (ULONG)
+ *   version:          offset  52,   2 bytes (UWORD)
+ *   flags:            offset  54,   2 bytes (UWORD)
+ *   global_enable:    offset  56,   4 bytes (ULONG)
+ *   ring:             offset  60,   4 bytes (APTR)
+ *   patch_count:      offset  64,   2 bytes (UWORD)
+ *   padding1:         offset  66,   2 bytes
+ *   patches:          offset  68,   4 bytes (APTR)
+ *   event_sequence:   offset  72,   4 bytes (ULONG)
+ *   events_consumed:  offset  76,   4 bytes (ULONG)
+ *   filter_task:      offset  80,   4 bytes (volatile APTR)
+ *   eclock_freq:      offset  84,   4 bytes (ULONG, Hz from ReadEClock)
+ *   timer_base:       offset  88,   4 bytes (struct Device *)
+ *   bsd_table:        offset  92,   4 bytes (struct bsd_patch_entry *)
+ *   bsd_table_count:  offset  96,   2 bytes (UWORD)
+ *   padding2:         offset  98,   2 bytes (UWORD)
+ *   daemon_task:      offset 100,   4 bytes (volatile APTR)
+ *   Total: 104 bytes
+ */
+struct atrace_anchor {
+    struct SignalSemaphore sem;
+    UWORD sem_padding;            /* Alignment padding (46 -> 48 for ULONG) */
+    ULONG magic;
+    UWORD version;
+    UWORD flags;
+    volatile ULONG global_enable;
+    struct atrace_ringbuf *ring;
+    UWORD patch_count;
+    UWORD padding1;
+    struct atrace_patch *patches;
+    volatile ULONG event_sequence;
+    volatile ULONG events_consumed;
+
+    /* Stub-level task filter.
+     * NULL = trace all tasks, non-NULL = trace only matching task.
+     * Set by daemon during TRACE RUN; stubs compare SysBase->ThisTask
+     * against this value before writing to the ring buffer. */
+    volatile APTR filter_task;
+
+    /* EClock timestamp support */
+    ULONG eclock_freq;            /* EClock frequency in Hz (from ReadEClock) */
+    struct Device *timer_base;    /* timer.device base (for stub ReadEClock calls) */
+
+    /* Stub-side bsdsocket per-opener patching (version >= 5).
+     * The OpenLibrary stub's post-call handler iterates this table
+     * to call SetFunction for each bsdsocket LVO on a newly-opened
+     * bsdsocket.library base, eliminating the daemon-side race window.
+     * NULL when no bsdsocket patches are installed. */
+    struct bsd_patch_entry *bsd_table;
+    UWORD bsd_table_count;
+    UWORD padding2;
+
+    /* Stub-level daemon task exclusion filter (version >= 6).
+     * Non-NULL = skip event recording when SysBase->ThisTask matches.
+     * Set by daemon at startup; stubs compare ThisTask against this
+     * value before ring buffer slot allocation. */
+    volatile APTR daemon_task;
+};
+
+/* ---- struct atrace_ringbuf ----
+ *
+ *   capacity:   offset  0,  4 bytes (ULONG)
+ *   write_pos:  offset  4,  4 bytes (volatile ULONG)
+ *   read_pos:   offset  8,  4 bytes (volatile ULONG)
+ *   overflow:   offset 12,  4 bytes (volatile ULONG)
+ *   Total header: 16 bytes
+ *   Followed by entries[capacity] at offset 16.
+ */
+struct atrace_ringbuf {
+    ULONG capacity;
+    volatile ULONG write_pos;
+    volatile ULONG read_pos;
+    volatile ULONG overflow;
+    /* struct atrace_event entries[] follows in memory */
+};
+
+/* ---- struct atrace_event ----
+ *
+ *   valid:        offset   0,  1 byte  (volatile UBYTE)
+ *   lib_id:       offset   1,  1 byte  (UBYTE)
+ *   lvo_offset:   offset   2,  2 bytes (WORD)
+ *   sequence:     offset   4,  4 bytes (ULONG)
+ *   caller_task:  offset   8,  4 bytes (APTR)
+ *   args[4]:      offset  12, 16 bytes (ULONG * 4)
+ *   retval:       offset  28,  4 bytes (ULONG)
+ *   arg_count:    offset  32,  1 byte  (UBYTE)
+ *   flags:        offset  33,  1 byte  (UBYTE, FLAG_HAS_ECLOCK etc.)
+ *   string_data:  offset  34, 64 bytes (char[64])
+ *   ioerr:        offset  98,  1 byte  (UBYTE)
+ *   bsd_flag:     offset  99,  1 byte  (UBYTE, bsdsocket detection flag)
+ *   eclock_lo:    offset 100,  4 bytes (ULONG, low 32 bits of EClock)
+ *   eclock_hi:    offset 104,  2 bytes (UWORD, low 16 bits of ev_hi)
+ *   task_name:    offset 106, 22 bytes (char[22], 21 chars + NUL)
+ *   Total: 128 bytes
+ */
+struct atrace_event {
+    volatile UBYTE valid;
+    UBYTE lib_id;
+    WORD  lvo_offset;
+    ULONG sequence;
+    APTR  caller_task;
+    ULONG args[4];
+    ULONG retval;
+    UBYTE arg_count;
+    UBYTE flags;
+    char  string_data[64];
+    UBYTE ioerr;
+    UBYTE bsd_flag;           /* bsdsocket detection flag (set by OpenLibrary stub) */
+    ULONG eclock_lo;
+    UWORD eclock_hi;
+    char  task_name[22];
+};
+
+/* ---- struct atrace_patch ----
+ *
+ *   lib_id:           offset  0,  1 byte  (UBYTE)
+ *   padding0:         offset  1,  1 byte  (UBYTE)
+ *   lvo_offset:       offset  2,  2 bytes (WORD)
+ *   func_id:          offset  4,  2 bytes (UWORD)
+ *   arg_count:        offset  6,  2 bytes (UWORD)
+ *   enabled:          offset  8,  4 bytes (ULONG)
+ *   use_count:        offset 12,  4 bytes (ULONG)
+ *   original:         offset 16,  4 bytes (APTR)
+ *   stub_code:        offset 20,  4 bytes (APTR)
+ *   stub_size:        offset 24,  4 bytes (ULONG)
+ *   arg_regs[8]:      offset 28,  8 bytes (UBYTE * 8)
+ *   string_args:      offset 36,  1 byte  (UBYTE)
+ *   name_deref_type:  offset 37,  1 byte  (UBYTE)
+ *   skip_null_arg:    offset 38,  1 byte  (UBYTE)
+ *   padding_end:      offset 39,  1 byte
+ *   Total: 40 bytes
+ */
+struct atrace_patch {
+    UBYTE lib_id;
+    UBYTE padding0;
+    WORD  lvo_offset;
+    UWORD func_id;
+    UWORD arg_count;
+    volatile ULONG enabled;
+    volatile ULONG use_count;
+    APTR  original;
+    APTR  stub_code;
+    ULONG stub_size;
+    UBYTE arg_regs[8];
+    UBYTE string_args;
+    UBYTE name_deref_type;     /* Indirect name capture type */
+    UBYTE skip_null_arg;       /* NULL-arg filter register */
+    UBYTE padding_end;
+};
+
+/* ---- struct func_info ----
+ *
+ *   name:             offset  0,  4 bytes (const char *)
+ *   lvo_offset:       offset  4,  2 bytes (WORD)
+ *   arg_count:        offset  6,  1 byte  (UBYTE)
+ *   arg_regs[8]:      offset  7,  8 bytes (UBYTE * 8)
+ *   ret_reg:          offset 15,  1 byte  (UBYTE)
+ *   string_args:      offset 16,  1 byte  (UBYTE)
+ *   name_deref_type:  offset 17,  1 byte  (UBYTE)
+ *   skip_null_arg:    offset 18,  1 byte  (UBYTE)
+ *   padding:          offset 19,  1 byte  (UBYTE)
+ *   Total: 20 bytes
+ */
+struct func_info {
+    const char *name;
+    WORD lvo_offset;
+    UBYTE arg_count;
+    UBYTE arg_regs[8];
+    UBYTE ret_reg;
+    UBYTE string_args;
+    UBYTE name_deref_type;     /* Indirect name capture type */
+    UBYTE skip_null_arg;       /* NULL-arg filter register */
+    UBYTE padding;
+};
+
+/* ---- struct lib_info ----
+ *
+ *   name:         offset  0,  4 bytes (const char *)
+ *   funcs:        offset  4,  4 bytes (struct func_info *)
+ *   func_count:   offset  8,  2 bytes (UWORD)
+ *   lib_id:       offset 10,  1 byte  (UBYTE)
+ *   padding:      offset 11,  1 byte  (UBYTE)
+ *   Total: 12 bytes
+ */
+struct lib_info {
+    const char *name;
+    struct func_info *funcs;
+    UWORD func_count;
+    UBYTE lib_id;
+    UBYTE padding;
+};
+
+/* ---- Register encoding ----
+ *
+ * Register indices used in arg_regs[]:
+ *   0=d0, 1=d1, 2=d2, 3=d3, 4=d4, 5=d5, 6=d6, 7=d7,
+ *   8=a0, 9=a1, 10=a2, 11=a3, 12=a4, 13=a5, 14=a6, 15=a7
+ *
+ * MOVEM frame offsets (d0-d7/a0-a4/a6 = 14 regs, 56 bytes):
+ *   d0= 0, d1= 4, d2= 8, d3=12, d4=16, d5=20, d6=24, d7=28,
+ *   a0=32, a1=36, a2=40, a3=44, a4=48, a6=52
+ *
+ * Note: a5 is NOT in the MOVEM frame (it is saved separately).
+ *       a6 is at frame offset 52 (after a4, skipping a5).
+ */
+#define REG_D0  0
+#define REG_D1  1
+#define REG_D2  2
+#define REG_D3  3
+#define REG_D4  4
+#define REG_D5  5
+#define REG_D6  6
+#define REG_D7  7
+#define REG_A0  8
+#define REG_A1  9
+#define REG_A2 10
+#define REG_A3 11
+#define REG_A4 12
+#define REG_A5 13
+#define REG_A6 14
+
+/* Map register index to MOVEM frame offset (bytes from sp).
+ * a5 is not in the frame -- returns -1 as sentinel. */
+static __inline WORD reg_to_frame_offset(UBYTE reg)
+{
+    /* d0-d7 are at offsets 0,4,8,...,28 */
+    if (reg <= REG_D7)
+        return (WORD)(reg * 4);
+    /* a0-a4 are at offsets 32,36,40,44,48 */
+    if (reg >= REG_A0 && reg <= REG_A4)
+        return (WORD)(32 + (reg - REG_A0) * 4);
+    /* a6 is at offset 52 */
+    if (reg == REG_A6)
+        return 52;
+    /* a5 is not in the MOVEM frame */
+    return -1;
+}
+
+/* ---- External declarations for funcs.c ---- */
+
+extern struct lib_info atrace_libs[];
+extern int atrace_lib_count;
+
+#endif /* ATRACE_H */

@@ -13,7 +13,8 @@ import time
 from . import (
     AmigaConnection, AmigactlError, NotFoundError, ProtocolError,
 )
-from .colors import ColorWriter
+from .colors import ColorWriter, TRACE_HEADER, format_trace_event
+from .trace_ui import HandleResolver
 
 
 # ---------------------------------------------------------------------------
@@ -2476,7 +2477,7 @@ class AmigaShell(cmd.Cmd):
     Examples:
         arexx REXX return 1+2
         arexx REXX "say 'hello'"
-        arexx CNet_AREXX WHO"""
+        arexx MYPORT STATUS"""
         if not self._check_connected():
             return
         arg = arg.strip()
@@ -3054,6 +3055,341 @@ class AmigaShell(cmd.Cmd):
             self.conn = None
             self._update_prompt()
 
+    # -- Library call tracing (atrace) -------------------------------------
+
+    def do_trace(self, arg):
+        """Control library call tracing.
+
+    Usage: trace start [--basic|--detail|--verbose] [LIB=<lib>] [FUNC=<func>] [PROC=<name>] [ERRORS]
+           trace run [--basic|--detail|--verbose] [LIB=<lib>] [FUNC=<func>] [ERRORS] [CD=<dir>] -- <command>
+           trace stop
+           trace status
+           trace enable [<func1> <func2> ...]
+           trace disable [<func1> <func2> ...]
+
+    Start streaming system library calls. Press Ctrl-C to stop.
+    Run launches a command and traces it until it exits.
+
+    Output tiers:
+        --basic         Level 1: core diagnostics (default)
+        --detail        Level 2: Basic + resource lifecycle
+        --verbose       Level 3: Detail + high-volume I/O
+        Use 1/2/3 keys to switch tiers during viewing.
+
+    Filters (AND-combined):
+        LIB=<lib>       Only show calls to this library (e.g. dos.library)
+        FUNC=<func>     Only show calls to this function (e.g. Open)
+        PROC=<name>     Only show calls from tasks matching name (TRACE START only)
+        ERRORS          Only show calls that returned an error value
+
+    Examples:
+        trace start
+        trace start --detail LIB=dos.library PROC=myapp
+        trace run --verbose -- List SYS:
+        trace run LIB=dos.library -- Work:myapp
+        trace status
+        trace enable
+        trace disable"""
+        parts = arg.strip().split(None, 1)
+        if not parts:
+            print("Usage: trace "
+                  "start|run|stop|status|enable|disable [options]")
+            return
+        if not self._check_connected():
+            return
+
+        sub = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        if sub == "status":
+            try:
+                status = self.conn.trace_status()
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+                return
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+                return
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+                return
+
+            if not status.get("loaded"):
+                print("atrace is not loaded.")
+                return
+
+            print("atrace status:")
+            print("  Enabled:          {}".format(
+                "yes" if status.get("enabled") else "no"))
+            print("  Patches:          {}".format(
+                status.get("patches", 0)))
+            print("  Events produced:  {}".format(
+                status.get("events_produced", 0)))
+            print("  Events consumed:  {}".format(
+                status.get("events_consumed", 0)))
+            print("  Events dropped:   {}".format(
+                status.get("events_dropped", 0)))
+            if "buffer_capacity" in status:
+                print("  Buffer capacity:  {}".format(
+                    status["buffer_capacity"]))
+                print("  Buffer used:      {}".format(
+                    status.get("buffer_used", 0)))
+            if "noise_disabled" in status:
+                print("  Noise disabled:   {}".format(
+                    status["noise_disabled"]))
+            if "filter_task" in status:
+                ft = status["filter_task"]
+                if ft != "0x00000000":
+                    print("  Filter task:      {}".format(ft))
+            if "patch_list" in status:
+                print("\n  Patch details:")
+                for entry in status["patch_list"]:
+                    state = "enabled" if entry.get("enabled") else "disabled"
+                    print("    {:<25s} {}".format(entry["name"], state))
+
+        elif sub == "start":
+            kwargs = {}
+            # Parse filter args from rest
+            for token in rest.split():
+                upper = token.upper()
+                if upper.startswith("LIB="):
+                    kwargs["lib"] = token[4:]
+                elif upper.startswith("FUNC="):
+                    kwargs["func"] = token[5:]
+                elif upper.startswith("PROC="):
+                    kwargs["proc"] = token[5:]
+                elif upper == "ERRORS":
+                    kwargs["errors_only"] = True
+                elif upper == "--BASIC":
+                    kwargs["tier"] = 1
+                elif upper == "--DETAIL":
+                    kwargs["tier"] = 2
+                elif upper == "--VERBOSE":
+                    kwargs["tier"] = 3
+
+            # Pop tier before branching -- neither trace_start_raw()
+            # nor trace_start() accepts a tier parameter.
+            tier = kwargs.pop("tier", None)
+
+            try:
+                # Use interactive viewer if terminal supports it
+                if sys.stdout.isatty() and os.name != "nt":
+                    from .trace_ui import TraceViewer
+                    # Pre-populate grid data from TRACE STATUS (Fix 3).
+                    # Must happen before trace_start_raw() enters streaming mode.
+                    _pre_status = None
+                    try:
+                        _pre_status = self.conn.trace_status()
+                    except Exception:
+                        pass  # Non-fatal: grid will still auto-discover from events
+                    with self.conn.trace_start_raw(**kwargs) as session:
+                        viewer = TraceViewer(
+                            self.conn, session, self.cw, mode="start")
+                        if _pre_status is not None:
+                            viewer._prepopulate_from_status(_pre_status)
+                        if tier is not None:
+                            viewer.current_tier = tier
+                            # Store initial filters so _apply_initial_tier()
+                            # can reconstruct them (FILTER resets per-session
+                            # filter state; we must re-send initial filters).
+                            viewer._initial_filters = kwargs
+                        viewer.run()
+                else:
+                    # Callback-based fallback (non-TTY)
+                    # Apply tier by enabling functions before the
+                    # blocking trace_start() call.
+                    if tier is not None and tier > 1:
+                        from .trace_tiers import (
+                            functions_for_tier, TIER_BASIC)
+                        to_enable = functions_for_tier(tier) - TIER_BASIC
+                        if to_enable:
+                            self.conn.trace_enable(
+                                funcs=sorted(to_enable))
+                    print(TRACE_HEADER)
+                    resolver = HandleResolver()
+
+                    def trace_callback(event):
+                        line = format_trace_event(event, self.cw,
+                                                  handle_resolver=resolver)
+                        if line is not None:
+                            print(line)
+                    self.conn.trace_start(trace_callback, **kwargs)
+            except KeyboardInterrupt:
+                try:
+                    self.conn.stop_trace()
+                except Exception:
+                    pass
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        elif sub == "run":
+            # Parse filter args and command from rest
+            # Find "--" separator
+            parts_list = rest.split()
+            sep_idx = None
+            for ri, token in enumerate(parts_list):
+                if token == "--":
+                    sep_idx = ri
+                    break
+
+            if sep_idx is None:
+                print("Usage: trace run [options] -- <command>")
+                print("The -- separator is required.")
+                return
+
+            filter_tokens = parts_list[:sep_idx]
+            cmd_tokens = parts_list[sep_idx + 1:]
+            command = " ".join(cmd_tokens).strip()
+
+            if not command:
+                print("Missing command after --")
+                return
+
+            kwargs = {}
+            for token in filter_tokens:
+                upper = token.upper()
+                if upper.startswith("LIB="):
+                    kwargs["lib"] = token[4:]
+                elif upper.startswith("FUNC="):
+                    kwargs["func"] = token[5:]
+                elif upper == "ERRORS":
+                    kwargs["errors_only"] = True
+                elif upper.startswith("CD="):
+                    # Resolve relative CD= paths against the shell's CWD
+                    cd_path = self._resolve_path(token[3:])
+                    if cd_path is None:
+                        return  # _resolve_path already printed the error
+                    kwargs["cd"] = cd_path
+                elif upper == "--BASIC":
+                    kwargs["tier"] = 1
+                elif upper == "--DETAIL":
+                    kwargs["tier"] = 2
+                elif upper == "--VERBOSE":
+                    kwargs["tier"] = 3
+
+            # If no CD= specified, inherit the shell's CWD
+            if "cd" not in kwargs and self.cwd:
+                kwargs["cd"] = self.cwd
+
+            # Pop tier before branching -- neither trace_run_raw()
+            # nor trace_run() accepts a tier parameter.
+            tier = kwargs.pop("tier", None)
+
+            try:
+                if sys.stdout.isatty() and os.name != "nt":
+                    from .trace_ui import TraceViewer
+                    # Pre-populate grid data from TRACE STATUS (Fix 3).
+                    # Must happen before trace_run_raw() enters streaming mode.
+                    _pre_status = None
+                    try:
+                        _pre_status = self.conn.trace_status()
+                    except Exception:
+                        pass  # Non-fatal: grid will still auto-discover from events
+                    session, proc_id = self.conn.trace_run_raw(
+                        command, **kwargs)
+                    with session:
+                        viewer = TraceViewer(
+                            self.conn, session, self.cw,
+                            mode="run", proc_id=proc_id)
+                        if _pre_status is not None:
+                            viewer._prepopulate_from_status(_pre_status)
+                        if tier is not None:
+                            viewer.current_tier = tier
+                            viewer._initial_filters = kwargs
+                        viewer.run()
+                else:
+                    # Callback-based fallback (non-TTY)
+                    # Apply tier by enabling functions before the
+                    # blocking trace_run() call.
+                    if tier is not None and tier > 1:
+                        from .trace_tiers import (
+                            functions_for_tier, TIER_BASIC)
+                        to_enable = functions_for_tier(tier) - TIER_BASIC
+                        if to_enable:
+                            self.conn.trace_enable(
+                                funcs=sorted(to_enable))
+                    print(TRACE_HEADER)
+
+                    resolver = HandleResolver()
+
+                    def trace_callback(event):
+                        line = format_trace_event(event, self.cw,
+                                                  handle_resolver=resolver)
+                        if line is not None:
+                            print(line)
+
+                    result = self.conn.trace_run(command, trace_callback,
+                                                 **kwargs)
+                    if result.get("rc") is not None:
+                        proc_id = result.get("proc_id", "?")
+                        print("Process {} exited with rc={}".format(
+                            proc_id, result["rc"]))
+            except KeyboardInterrupt:
+                try:
+                    self.conn.stop_trace()
+                except Exception:
+                    pass
+                print("Tracing stopped. Process continues running.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        elif sub == "stop":
+            print("trace stop is only valid during an active trace stream.")
+            print("Use Ctrl-C to stop a running trace.")
+
+        elif sub == "enable":
+            funcs = rest.split() if rest.strip() else None
+            try:
+                self.conn.trace_enable(funcs=funcs)
+                if funcs:
+                    print("Enabled: {}".format(", ".join(funcs)))
+                else:
+                    print("atrace tracing enabled.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        elif sub == "disable":
+            funcs = rest.split() if rest.strip() else None
+            try:
+                self.conn.trace_disable(funcs=funcs)
+                if funcs:
+                    print("Disabled: {}".format(", ".join(funcs)))
+                else:
+                    print("atrace tracing disabled.")
+            except AmigactlError as e:
+                print(self.cw.error("Error: {}".format(e.message)))
+            except ProtocolError as e:
+                print(self.cw.error("Protocol error: {}".format(e)))
+            except OSError as e:
+                print(self.cw.error("Connection error: {}".format(e)))
+                self.conn = None
+                self._update_prompt()
+
+        else:
+            print("Unknown trace subcommand: {}".format(sub))
+            print("Usage: trace "
+                  "start|run|stop|status|enable|disable [options]")
+
     # -- Connection management ---------------------------------------------
 
     def do_reconnect(self, arg):
@@ -3086,18 +3422,18 @@ class AmigaShell(cmd.Cmd):
     # -- Destructive operations --------------------------------------------
 
     def do_shutdown(self, arg):
-        """Shut down the Amiga (requires confirmation).
+        """Shut down the amigactld daemon (requires confirmation).
 
     Usage: shutdown
 
-    Sends a shutdown command to the Amiga. The daemon must have
+    Sends a shutdown command to the amigactld daemon. The daemon must have
     ALLOW_REMOTE_SHUTDOWN enabled in its configuration. You will
     be prompted to confirm."""
         if not self._check_connected():
             return
         try:
             answer = input(
-                "Shut down the Amiga. Are you sure? [y/N] "
+                "Shut down the amigactld daemon. Are you sure? [y/N] "
             ).strip().lower()
         except EOFError:
             answer = "n"

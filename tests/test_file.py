@@ -41,7 +41,7 @@ class TestDir:
 
     def test_dir_system_directory(self, raw_connection):
         """DIR SYS:S returns OK with at least one payload line.
-        COMMANDS.md: DIR lists the contents of a directory.  SYS:S is a
+        protocol-commands.md: DIR lists the contents of a directory.  SYS:S is a
         standard AmigaOS directory that always contains files."""
         sock, _banner = raw_connection
         send_command(sock, "DIR SYS:S")
@@ -51,7 +51,7 @@ class TestDir:
 
     def test_dir_nonexistent(self, raw_connection):
         """DIR on a nonexistent path returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "DIR RAM:nonexistent_amigactl_test")
         status, payload = read_response(sock)
@@ -62,7 +62,7 @@ class TestDir:
 
     def test_dir_on_file(self, raw_connection):
         """DIR on a file (not a directory) returns ERR 200.
-        COMMANDS.md: 'Path is a file (not a directory) -> ERR 200 Not a
+        protocol-commands.md: 'Path is a file (not a directory) -> ERR 200 Not a
         directory'."""
         sock, _banner = raw_connection
         send_command(sock, "DIR SYS:S/Startup-Sequence")
@@ -74,7 +74,7 @@ class TestDir:
 
     def test_dir_field_format(self, raw_connection):
         """Each DIR entry has 5 tab-separated fields.
-        COMMANDS.md specifies: type (FILE/DIR), name, size (numeric),
+        protocol-commands.md specifies: type (FILE/DIR), name, size (numeric),
         protection (8 hex digits), datestamp (YYYY-MM-DD HH:MM:SS)."""
         sock, _banner = raw_connection
         send_command(sock, "DIR SYS:S")
@@ -110,7 +110,7 @@ class TestDir:
 
     def test_dir_empty_directory(self, raw_connection, cleanup_paths):
         """DIR on an empty directory returns OK with no payload lines.
-        COMMANDS.md: 'An empty directory returns OK with no payload lines
+        protocol-commands.md: 'An empty directory returns OK with no payload lines
         (just the sentinel).'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_empty_dir"
@@ -131,7 +131,7 @@ class TestDir:
     def test_dir_recursive(self, raw_connection):
         """DIR RECURSIVE on a directory with subdirectories includes entries
         with '/' in the name (relative paths from the base directory).
-        COMMANDS.md: 'entries from subdirectories use relative paths from
+        protocol-commands.md: 'entries from subdirectories use relative paths from
         the base directory as the name field (e.g., S/Startup-Sequence)'.
         Uses SYS:S rather than SYS: to keep the listing small enough to
         avoid timeouts."""
@@ -191,7 +191,7 @@ class TestDir:
 
     def test_dir_recursive_nonexistent(self, raw_connection):
         """DIR RECURSIVE on nonexistent path returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "DIR RAM:nonexistent_amigactl_test RECURSIVE")
         status, payload = read_response(sock)
@@ -202,7 +202,7 @@ class TestDir:
 
     def test_dir_missing_path(self, raw_connection):
         """DIR with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100 Missing path
+        protocol-commands.md: 'Missing path argument -> ERR 100 Missing path
         argument'."""
         sock, _banner = raw_connection
         send_command(sock, "DIR")
@@ -383,7 +383,7 @@ class TestStat:
 
     def test_stat_file(self, raw_connection):
         """STAT on a known file returns OK with 6 key=value payload lines.
-        COMMANDS.md: 'The payload consists of key=value lines in a fixed
+        protocol-commands.md: 'The payload consists of key=value lines in a fixed
         order' -- type, name, size, protection, datestamp, comment."""
         sock, _banner = raw_connection
         send_command(sock, "STAT SYS:S/Startup-Sequence")
@@ -406,7 +406,7 @@ class TestStat:
 
     def test_stat_nonexistent(self, raw_connection):
         """STAT on a nonexistent path returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "STAT RAM:nonexistent_amigactl_test")
         status, payload = read_response(sock)
@@ -417,7 +417,7 @@ class TestStat:
 
     def test_stat_format(self, raw_connection):
         """STAT key=value lines are in fixed order with correct formats.
-        COMMANDS.md specifies the order: type, name, size, protection,
+        protocol-commands.md specifies the order: type, name, size, protection,
         datestamp, comment.  Protection is 8 hex digits, datestamp matches
         YYYY-MM-DD HH:MM:SS."""
         sock, _banner = raw_connection
@@ -461,7 +461,7 @@ class TestStat:
 
     def test_stat_directory(self, raw_connection):
         """STAT on a directory returns type=dir.
-        COMMANDS.md: 'type -> file or dir (lowercase)'."""
+        protocol-commands.md: 'type -> file or dir (lowercase)'."""
         sock, _banner = raw_connection
         send_command(sock, "STAT SYS:S")
         status, payload = read_response(sock)
@@ -477,7 +477,7 @@ class TestStat:
 
     def test_stat_missing_path(self, raw_connection):
         """STAT with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100'."""
+        protocol-commands.md: 'Missing path argument -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "STAT")
         status, payload = read_response(sock)
@@ -494,7 +494,7 @@ class TestRead:
 
     def test_read_known_file(self, raw_connection):
         """READ a known file returns data of the declared size.
-        COMMANDS.md: 'The OK status line includes the total file size in
+        protocol-commands.md: 'The OK status line includes the total file size in
         bytes.'  SYS:S/Startup-Sequence exists on all AmigaOS systems."""
         sock, _banner = raw_connection
         send_command(sock, "READ SYS:S/Startup-Sequence")
@@ -505,7 +505,7 @@ class TestRead:
 
     def test_read_nonexistent(self, raw_connection):
         """READ on a nonexistent file returns ERR 200.
-        COMMANDS.md: 'File not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'File not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "READ RAM:nonexistent_amigactl_test")
         info, data = read_data_response(sock)
@@ -516,7 +516,7 @@ class TestRead:
 
     def test_read_directory(self, raw_connection):
         """READ on a directory returns ERR 300.
-        COMMANDS.md: 'Path is a directory -> ERR 300 Is a directory'."""
+        protocol-commands.md: 'Path is a directory -> ERR 300 Is a directory'."""
         sock, _banner = raw_connection
         send_command(sock, "READ SYS:S")
         info, data = read_data_response(sock)
@@ -527,7 +527,7 @@ class TestRead:
 
     def test_read_empty_file(self, raw_connection, cleanup_paths):
         """READ a 0-byte file returns OK 0 with no DATA chunks.
-        COMMANDS.md: 'A zero-length file produces: OK 0 / END / .'"""
+        protocol-commands.md: 'A zero-length file produces: OK 0 / END / .'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_empty_read.txt"
 
@@ -567,7 +567,7 @@ class TestRead:
 
     def test_read_missing_path(self, raw_connection):
         """READ with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100'."""
+        protocol-commands.md: 'Missing path argument -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "READ")
         status, payload = read_response(sock)
@@ -584,7 +584,7 @@ class TestWrite:
 
     def test_write_new_file(self, raw_connection, cleanup_paths):
         """WRITE a new file to RAM:, READ back, and verify content matches.
-        COMMANDS.md: 'Uploads a file to the Amiga.'"""
+        protocol-commands.md: 'Uploads a file to the Amiga.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_write.txt"
         content = b"hello world"
@@ -602,7 +602,7 @@ class TestWrite:
 
     def test_write_overwrite(self, raw_connection, cleanup_paths):
         """WRITE over an existing file replaces its contents.
-        COMMANDS.md: 'If the target already exists, it is deleted before
+        protocol-commands.md: 'If the target already exists, it is deleted before
         the rename.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_overwrite.txt"
@@ -627,7 +627,7 @@ class TestWrite:
 
     def test_write_nonexistent_volume(self, raw_connection):
         """WRITE to a nonexistent volume returns ERR (not READY).
-        COMMANDS.md: the server validates before sending READY and returns
+        protocol-commands.md: the server validates before sending READY and returns
         ERR if it cannot open the temporary file."""
         sock, _banner = raw_connection
         status, _payload = send_write_data(
@@ -639,7 +639,7 @@ class TestWrite:
 
     def test_write_zero_bytes(self, raw_connection, cleanup_paths):
         """WRITE a 0-byte file succeeds and READ returns empty content.
-        COMMANDS.md: 'A zero-byte file sends no DATA chunks -- just END
+        protocol-commands.md: 'A zero-byte file sends no DATA chunks -- just END
         immediately after receiving READY.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_zero.txt"
@@ -676,7 +676,7 @@ class TestWrite:
 
     def test_write_missing_args(self, raw_connection):
         """WRITE with no arguments returns ERR 100.
-        COMMANDS.md: 'Missing arguments -> ERR 100'."""
+        protocol-commands.md: 'Missing arguments -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "WRITE")
         status, payload = read_response(sock)
@@ -687,7 +687,7 @@ class TestWrite:
 
     def test_write_invalid_size(self, raw_connection):
         """WRITE with non-numeric size returns ERR 100.
-        COMMANDS.md: 'Invalid size -> ERR 100 Invalid size'."""
+        protocol-commands.md: 'Invalid size -> ERR 100 Invalid size'."""
         sock, _banner = raw_connection
         send_command(sock, "WRITE RAM:amigactl_test.txt notanumber")
         status, payload = read_response(sock)
@@ -706,7 +706,7 @@ class TestDelete:
 
     def test_delete_file(self, raw_connection, cleanup_paths):
         """DELETE a file and verify it is gone via STAT.
-        COMMANDS.md: DELETE deletes a file or an empty directory."""
+        protocol-commands.md: DELETE deletes a file or an empty directory."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_delete.txt"
 
@@ -733,7 +733,7 @@ class TestDelete:
 
     def test_delete_nonexistent(self, raw_connection):
         """DELETE on a nonexistent file returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "DELETE RAM:nonexistent_amigactl_test")
         status, payload = read_response(sock)
@@ -744,7 +744,7 @@ class TestDelete:
 
     def test_delete_nonempty_dir(self, raw_connection, cleanup_paths):
         """DELETE on a non-empty directory returns ERR.
-        COMMANDS.md: 'Directory not empty -> ERR 201 <dos error message>'."""
+        protocol-commands.md: 'Directory not empty -> ERR 201 <dos error message>'."""
         sock, _banner = raw_connection
         dir_path = "RAM:amigactl_test_nonempty"
         file_path = "RAM:amigactl_test_nonempty/child.txt"
@@ -775,7 +775,7 @@ class TestDelete:
 
     def test_delete_missing_path(self, raw_connection):
         """DELETE with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100'."""
+        protocol-commands.md: 'Missing path argument -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "DELETE")
         status, payload = read_response(sock)
@@ -792,7 +792,7 @@ class TestRename:
 
     def test_rename_file(self, raw_connection, cleanup_paths):
         """RENAME a file and verify the old name is gone and the new name
-        exists.  COMMANDS.md: 'Renames or moves a file or directory.'"""
+        exists.  protocol-commands.md: 'Renames or moves a file or directory.'"""
         sock, _banner = raw_connection
         old_path = "RAM:amigactl_test_rename_old.txt"
         new_path = "RAM:amigactl_test_rename_new.txt"
@@ -826,7 +826,7 @@ class TestRename:
 
     def test_rename_nonexistent(self, raw_connection):
         """RENAME with a nonexistent source returns ERR 200.
-        COMMANDS.md: 'Old path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Old path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         status, payload = send_rename(
             sock,
@@ -870,7 +870,7 @@ class TestRename:
                                           cleanup_paths, amiga_host,
                                           amiga_port):
         """Disconnecting after sending RENAME + old_path (but not new_path)
-        does not crash the daemon.  COMMANDS.md: 'If the client disconnects
+        does not crash the daemon.  protocol-commands.md: 'If the client disconnects
         after sending the RENAME verb but before both path lines arrive,
         the server discards the partial command and closes the connection.'"""
         sock, _banner = raw_connection
@@ -911,7 +911,7 @@ class TestRename:
 
     def test_rename_args_on_verb_line(self, raw_connection):
         """RENAME with arguments on the verb line returns ERR 100.
-        COMMANDS.md: 'Arguments on verb line -> ERR 100'."""
+        protocol-commands.md: 'Arguments on verb line -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "RENAME RAM:old RAM:new")
         status, payload = read_response(sock)
@@ -930,7 +930,7 @@ class TestMakedir:
 
     def test_makedir(self, raw_connection, cleanup_paths):
         """MAKEDIR creates a directory that appears in a DIR listing.
-        COMMANDS.md: MAKEDIR creates a new directory."""
+        protocol-commands.md: MAKEDIR creates a new directory."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_mkdir"
 
@@ -960,7 +960,7 @@ class TestMakedir:
 
     def test_makedir_exists(self, raw_connection, cleanup_paths):
         """MAKEDIR on an already-existing path returns ERR 202.
-        COMMANDS.md: 'Already exists -> ERR 202 <dos error message>'."""
+        protocol-commands.md: 'Already exists -> ERR 202 <dos error message>'."""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_mkdir_dup"
 
@@ -980,7 +980,7 @@ class TestMakedir:
 
     def test_makedir_missing_path(self, raw_connection):
         """MAKEDIR with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100'."""
+        protocol-commands.md: 'Missing path argument -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "MAKEDIR")
         status, payload = read_response(sock)
@@ -997,7 +997,7 @@ class TestProtect:
 
     def test_protect_get(self, raw_connection):
         """PROTECT on a known file returns OK with a protection=<8hex>
-        payload line.  COMMANDS.md: 'Both GET and SET return the same
+        payload line.  protocol-commands.md: 'Both GET and SET return the same
         response format.'"""
         sock, _banner = raw_connection
         send_command(sock, "PROTECT SYS:S/Startup-Sequence")
@@ -1018,7 +1018,7 @@ class TestProtect:
 
     def test_protect_set_roundtrip(self, raw_connection, cleanup_paths):
         """PROTECT SET then GET round-trips the protection value.
-        COMMANDS.md: 'SET echoes the newly applied protection value.'
+        protocol-commands.md: 'SET echoes the newly applied protection value.'
         The test writes a file, saves its original protection, sets a new
         value, reads it back, and restores the original."""
         sock, _banner = raw_connection
@@ -1061,7 +1061,7 @@ class TestProtect:
 
     def test_protect_missing_path(self, raw_connection):
         """PROTECT with no path argument returns ERR 100.
-        COMMANDS.md: 'Missing path argument -> ERR 100'."""
+        protocol-commands.md: 'Missing path argument -> ERR 100'."""
         sock, _banner = raw_connection
         send_command(sock, "PROTECT")
         status, payload = read_response(sock)
@@ -1070,7 +1070,7 @@ class TestProtect:
 
     def test_protect_nonexistent(self, raw_connection):
         """PROTECT on nonexistent path returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200'."""
+        protocol-commands.md: 'Path not found -> ERR 200'."""
         sock, _banner = raw_connection
         send_command(sock, "PROTECT RAM:nonexistent_amigactl_test")
         status, payload = read_response(sock)
@@ -1089,7 +1089,7 @@ class TestSetdate:
 
     def test_setdate_roundtrip(self, raw_connection, cleanup_paths):
         """SETDATE on a file, then STAT to verify the datestamp changed.
-        COMMANDS.md: 'The payload is a single key=value line echoing the
+        protocol-commands.md: 'The payload is a single key=value line echoing the
         applied datestamp.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_setdate.txt"
@@ -1136,7 +1136,7 @@ class TestSetdate:
 
     def test_setdate_nonexistent(self, raw_connection):
         """SETDATE on a nonexistent path returns ERR 200.
-        COMMANDS.md: 'Path not found -> ERR 200 <dos error message>'."""
+        protocol-commands.md: 'Path not found -> ERR 200 <dos error message>'."""
         sock, _banner = raw_connection
         send_command(sock, "SETDATE RAM:nonexistent_amigactl_test 2024-06-15 14:30:00")
         status, payload = read_response(sock)
@@ -1191,7 +1191,7 @@ class TestSetdate:
 
     def test_setdate_write_then_set(self, raw_connection, cleanup_paths):
         """WRITE a file, SETDATE it, STAT to verify the datestamp matches.
-        COMMANDS.md: 'SETDATE works on both files and directories.'"""
+        protocol-commands.md: 'SETDATE works on both files and directories.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_setdate_ws.txt"
 
@@ -1227,7 +1227,7 @@ class TestSetdate:
 
     def test_setdate_current_time(self, raw_connection, cleanup_paths):
         """SETDATE with no datestamp uses current time.
-        COMMANDS.md: 'When datestamp is omitted, the daemon uses the
+        protocol-commands.md: 'When datestamp is omitted, the daemon uses the
         current Amiga system time.'"""
         sock, _banner = raw_connection
         path = "RAM:amigactl_test_setdate_now.txt"
@@ -1264,7 +1264,7 @@ class TestSetdate:
 
     def test_setdate_missing_args(self, raw_connection):
         """SETDATE with no arguments returns ERR 100.
-        COMMANDS.md: 'Missing arguments -> ERR 100 Missing arguments'."""
+        protocol-commands.md: 'Missing arguments -> ERR 100 Missing arguments'."""
         sock, _banner = raw_connection
         send_command(sock, "SETDATE")
         status, payload = read_response(sock)

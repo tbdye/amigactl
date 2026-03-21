@@ -293,7 +293,7 @@ def cmd_touch(conn, args):
 
 def cmd_arexx(conn, args):
     """Handle the 'arexx' subcommand."""
-    parts = args.command
+    parts = args.cmd
     # argparse.REMAINDER may include a leading '--'; strip it
     if parts and parts[0] == "--":
         parts = parts[1:]
@@ -321,6 +321,159 @@ def cmd_tail(conn, args):
             conn.stop_tail()
         except Exception:
             pass
+
+
+def cmd_trace(conn, args):
+    """Handle the 'trace' subcommand."""
+    from .colors import ColorWriter, TRACE_HEADER, format_trace_event
+    from .trace_ui import HandleResolver
+
+    sub = args.trace_cmd
+    if sub is None:
+        print("Usage: amigactl trace "
+              "{start,run,stop,status,enable,disable}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if sub == "run":
+        # Join the command parts (argparse splits on spaces)
+        cmd_parts = args.cmd
+        # Strip leading "--" if present (argparse may include it)
+        if cmd_parts and cmd_parts[0] == "--":
+            cmd_parts = cmd_parts[1:]
+        command = " ".join(cmd_parts).strip()
+        if not command:
+            print("Usage: amigactl trace run [--lib LIB] [--func FUNC] "
+                  "[--errors] [--cd DIR] -- <command>",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        cw = ColorWriter()
+
+        kwargs = {}
+        if args.lib:
+            kwargs["lib"] = args.lib
+        if args.func:
+            kwargs["func"] = args.func
+        if args.errors:
+            kwargs["errors_only"] = True
+        if args.cd:
+            kwargs["cd"] = args.cd
+
+        tier = getattr(args, "tier", None)
+
+        # Column header
+        print(TRACE_HEADER)
+
+        resolver = HandleResolver()
+
+        def trace_callback(event):
+            line = format_trace_event(event, cw,
+                                      handle_resolver=resolver)
+            if line is not None:
+                print(line)
+
+        try:
+            # If tier > Basic, enable additional functions before
+            # starting the stream.
+            if tier and tier > 1:
+                from .trace_tiers import functions_for_tier, TIER_BASIC
+                to_enable = functions_for_tier(tier) - TIER_BASIC
+                if to_enable:
+                    conn.trace_enable(funcs=sorted(to_enable))
+
+            result = conn.trace_run(command, trace_callback, **kwargs)
+            if result.get("rc") is not None:
+                rc = result["rc"]
+                if rc != 0:
+                    proc_id = result.get("proc_id", "?")
+                    print("Process {} exited with rc={}".format(proc_id, rc),
+                          file=sys.stderr)
+                    sys.exit(min(rc, 255))
+        except KeyboardInterrupt:
+            try:
+                conn.stop_trace()
+            except Exception:
+                pass
+            print("\nTracing stopped. Process continues running.",
+                  file=sys.stderr)
+
+    elif sub == "status":
+        status = conn.trace_status()
+        if not status.get("loaded"):
+            print("atrace is not loaded.")
+            return
+        print("loaded=1")
+        print("enabled={}".format(1 if status.get("enabled") else 0))
+        for key in ("patches", "events_produced", "events_consumed",
+                     "events_dropped", "buffer_capacity", "buffer_used"):
+            if key in status:
+                print("{}={}".format(key, status[key]))
+
+    elif sub == "enable":
+        funcs = args.funcs if args.funcs else None
+        conn.trace_enable(funcs=funcs)
+        if funcs:
+            print("Enabled: {}".format(", ".join(funcs)))
+        else:
+            print("atrace tracing enabled.")
+
+    elif sub == "disable":
+        funcs = args.funcs if args.funcs else None
+        conn.trace_disable(funcs=funcs)
+        if funcs:
+            print("Disabled: {}".format(", ".join(funcs)))
+        else:
+            print("atrace tracing disabled.")
+
+    elif sub == "stop":
+        print("trace stop is only valid during an active trace stream.",
+              file=sys.stderr)
+        print("Use Ctrl-C to stop a running trace.", file=sys.stderr)
+        sys.exit(1)
+
+    elif sub == "start":
+        cw = ColorWriter()
+
+        # Column header
+        print(TRACE_HEADER)
+
+        resolver = HandleResolver()
+
+        def trace_callback(event):
+            line = format_trace_event(event, cw,
+                                      handle_resolver=resolver)
+            if line is not None:
+                print(line)
+
+        kwargs = {}
+        if args.lib:
+            kwargs["lib"] = args.lib
+        if args.func:
+            kwargs["func"] = args.func
+        if args.proc:
+            kwargs["proc"] = args.proc
+        if args.errors:
+            kwargs["errors_only"] = True
+
+        tier = getattr(args, "tier", None)
+
+        try:
+            # If tier > Basic, enable additional functions before
+            # starting the stream. Send ENABLE BEFORE trace_start()
+            # because trace_start() enters blocking mode immediately.
+            if tier and tier > 1:
+                from .trace_tiers import functions_for_tier, TIER_BASIC
+                to_enable = functions_for_tier(tier) - TIER_BASIC
+                if to_enable:
+                    conn.trace_enable(funcs=sorted(to_enable))
+
+            conn.trace_start(trace_callback, **kwargs)
+        except KeyboardInterrupt:
+            try:
+                conn.stop_trace()
+            except Exception:
+                pass
 
 
 def cmd_cp(conn, args):
@@ -689,12 +842,74 @@ def main() -> None:
     p_arexx = subparsers.add_parser("arexx",
                                      help="Send ARexx command to named port")
     p_arexx.add_argument("port", help="ARexx port name")
-    p_arexx.add_argument("command", nargs=argparse.REMAINDER,
+    p_arexx.add_argument("cmd", nargs=argparse.REMAINDER,
                           help="ARexx command string (use -- before flags)")
 
     p_tail = subparsers.add_parser("tail",
                                     help="Stream file appends (Ctrl-C to stop)")
     p_tail.add_argument("path", help="Amiga file path to tail")
+
+    p_trace = subparsers.add_parser("trace",
+                                     help="Control library call tracing")
+    trace_sub = p_trace.add_subparsers(dest="trace_cmd")
+
+    p_trace_start = trace_sub.add_parser("start", help="Start tracing")
+    p_trace_start.add_argument("--lib",
+                                help="Filter by library name")
+    p_trace_start.add_argument("--func",
+                                help="Filter by function name")
+    p_trace_start.add_argument("--proc",
+                                help="Filter by process name")
+    p_trace_start.add_argument("--errors", action="store_true",
+                                help="Only show error returns")
+    tier_group = p_trace_start.add_mutually_exclusive_group()
+    tier_group.add_argument("--basic", action="store_const",
+                            const=1, dest="tier",
+                            help="Basic output tier (default)")
+    tier_group.add_argument("--detail", action="store_const",
+                            const=2, dest="tier",
+                            help="Detail output tier")
+    tier_group.add_argument("--verbose", action="store_const",
+                            const=3, dest="tier",
+                            help="Verbose output tier")
+
+    trace_sub.add_parser("stop", help="Stop tracing")
+    trace_sub.add_parser("status", help="Show atrace status")
+
+    p_trace_enable = trace_sub.add_parser(
+        "enable", help="Enable atrace globally or specific functions")
+    p_trace_enable.add_argument(
+        "funcs", nargs="*",
+        help="Function names to enable (all if omitted)")
+
+    p_trace_run = trace_sub.add_parser("run",
+        help="Launch a program and trace its calls")
+    p_trace_run.add_argument("--lib",
+        help="Filter by library name")
+    p_trace_run.add_argument("--func",
+        help="Filter by function name")
+    p_trace_run.add_argument("--errors", action="store_true",
+        help="Only show error returns")
+    p_trace_run.add_argument("--cd",
+        help="Working directory for the command")
+    tier_group_run = p_trace_run.add_mutually_exclusive_group()
+    tier_group_run.add_argument("--basic", action="store_const",
+                                const=1, dest="tier",
+                                help="Basic output tier (default)")
+    tier_group_run.add_argument("--detail", action="store_const",
+                                const=2, dest="tier",
+                                help="Detail output tier")
+    tier_group_run.add_argument("--verbose", action="store_const",
+                                const=3, dest="tier",
+                                help="Verbose output tier")
+    p_trace_run.add_argument("cmd", nargs=argparse.REMAINDER,
+        help="Command to execute (after --)")
+
+    p_trace_disable = trace_sub.add_parser(
+        "disable", help="Disable atrace globally or specific functions")
+    p_trace_disable.add_argument(
+        "funcs", nargs="*",
+        help="Function names to disable (all if omitted)")
 
     subparsers.add_parser("shell", help="Interactive shell mode")
 
@@ -770,6 +985,7 @@ def main() -> None:
         "sysinfo": cmd_sysinfo,
         "tail": cmd_tail,
         "tasks": cmd_tasks,
+        "trace": cmd_trace,
         "touch": cmd_touch,
         "uptime": cmd_uptime,
         "version": cmd_version,

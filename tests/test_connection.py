@@ -2,8 +2,8 @@
 
 These tests exercise the daemon's connection handling, banner, and the four
 lifecycle commands (VERSION, PING, QUIT, SHUTDOWN) using raw TCP sockets.
-They validate behavior against the specs in docs/COMMANDS.md and
-docs/PROTOCOL.md.
+They validate behavior against the specs in docs/protocol-commands.md and
+docs/protocol.md.
 
 All tests use the ``raw_connection`` fixture from conftest.py, which opens
 a socket, sets a 10-second timeout, and reads the banner.  Protocol helpers
@@ -31,7 +31,7 @@ class TestBanner:
 
     def test_banner_format(self, raw_connection):
         """The banner must match 'AMIGACTL <version>' where version is a
-        dotted numeric string (e.g. 0.1.0).  COMMANDS.md specifies the
+        dotted numeric string (e.g. 0.1.0).  protocol-commands.md specifies the
         format as 'AMIGACTL <version>' and notes that the version matches
         the daemon version."""
         _sock, banner = raw_connection
@@ -49,7 +49,7 @@ class TestPing:
 
     def test_ping(self, raw_connection):
         """PING returns 'OK' with no payload and no info text.
-        COMMANDS.md: Response is 'OK\\n.\\n'."""
+        protocol-commands.md: Response is 'OK\\n.\\n'."""
         sock, _banner = raw_connection
         send_command(sock, "PING")
         status, payload = read_response(sock)
@@ -58,7 +58,7 @@ class TestPing:
 
     def test_case_insensitive(self, raw_connection):
         """Commands are case-insensitive.  'ping' in lowercase must produce
-        the same response as 'PING'.  COMMANDS.md: 'Commands are
+        the same response as 'PING'.  protocol-commands.md: 'Commands are
         case-insensitive.'"""
         sock, _banner = raw_connection
         send_command(sock, "ping")
@@ -94,7 +94,7 @@ class TestVersion:
 
     def test_version(self, raw_connection):
         """VERSION returns 'OK' with a single payload line containing
-        'amigactld <version>'.  COMMANDS.md: 'The payload is a single line
+        'amigactld <version>'.  protocol-commands.md: 'The payload is a single line
         containing the daemon identifier and version in the format
         amigactld <version>.'"""
         sock, _banner = raw_connection
@@ -136,7 +136,7 @@ class TestQuit:
 
     def test_quit(self, raw_connection):
         """QUIT returns 'OK Goodbye' with no payload, then the server
-        closes the connection (recv returns EOF).  COMMANDS.md: 'After
+        closes the connection (recv returns EOF).  protocol-commands.md: 'After
         sending the sentinel, the server closes the client's TCP
         connection.'"""
         sock, _banner = raw_connection
@@ -172,7 +172,7 @@ class TestErrors:
 
     def test_unknown_command(self, raw_connection):
         """An unrecognized command verb returns 'ERR 100 Unknown command'.
-        COMMANDS.md: 'Any command verb that the server does not recognize
+        protocol-commands.md: 'Any command verb that the server does not recognize
         produces a syntax error.'"""
         sock, _banner = raw_connection
         send_command(sock, "FOOBAR")
@@ -183,7 +183,7 @@ class TestErrors:
     def test_oversized_command(self, raw_connection):
         """Sending >4096 bytes without a newline triggers 'ERR 100 Command
         too long'.  After the error, the connection must remain usable.
-        COMMANDS.md: 'The connection is NOT closed.  The client can recover
+        protocol-commands.md: 'The connection is NOT closed.  The client can recover
         by ensuring its next transmission after the error includes a
         newline.'
 
@@ -223,7 +223,7 @@ class TestMultipleClients:
     def test_multiple_clients(self, amiga_host, amiga_port):
         """The daemon must handle multiple simultaneous connections.  Open
         three connections, send PING on each, and verify all respond.
-        PROTOCOL.md: 'The daemon accepts up to 8 simultaneous clients.'"""
+        protocol.md: 'The daemon accepts up to 8 simultaneous clients.'"""
         sockets = []
         try:
             for _ in range(3):
@@ -259,7 +259,7 @@ class TestShutdown:
     def test_shutdown_not_permitted(self, raw_connection):
         """With default configuration (ALLOW_REMOTE_SHUTDOWN not set),
         'SHUTDOWN CONFIRM' returns 'ERR 201 Remote shutdown not permitted'.
-        COMMANDS.md: the error table shows code 201 for this condition."""
+        protocol-commands.md: the error table shows code 201 for this condition."""
         sock, _banner = raw_connection
         send_command(sock, "SHUTDOWN CONFIRM")
         status, payload = read_response(sock)
@@ -268,7 +268,7 @@ class TestShutdown:
 
     def test_shutdown_missing_confirm(self, raw_connection):
         """'SHUTDOWN' without the CONFIRM keyword returns 'ERR 100
-        SHUTDOWN requires CONFIRM keyword'.  COMMANDS.md: 'Error checking
+        SHUTDOWN requires CONFIRM keyword'.  protocol-commands.md: 'Error checking
         order: the CONFIRM keyword is validated first.'"""
         sock, _banner = raw_connection
         send_command(sock, "SHUTDOWN")
@@ -401,24 +401,66 @@ class TestManual:
 # MAX_CLIENTS enforcement
 # ---------------------------------------------------------------------------
 
+def _wait_for_all_slots_free(host, port, max_slots=8, retries=10, delay=0.5):
+    """Wait until the daemon has all client slots available.
+
+    Attempts to open max_slots connections simultaneously.  If any
+    connection gets EOF instead of a banner (meaning the slot was
+    occupied by a stale connection from a previous test), closes
+    everything, waits briefly, and retries.
+
+    Returns a list of max_slots connected sockets on success, all with
+    banners already read.  The caller owns these sockets.
+
+    Raises RuntimeError if all retries are exhausted.
+    """
+    for attempt in range(retries):
+        sockets = []
+        all_ok = True
+        try:
+            for i in range(max_slots):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((host, port))
+                sockets.append(s)
+                try:
+                    banner = _read_banner(s)
+                    if not banner.startswith("AMIGACTL"):
+                        all_ok = False
+                        break
+                except ConnectionError:
+                    all_ok = False
+                    break
+        except (ConnectionError, OSError):
+            all_ok = False
+
+        if all_ok and len(sockets) == max_slots:
+            return sockets
+
+        # Close everything and retry after a delay
+        for s in sockets:
+            try:
+                s.close()
+            except Exception:
+                pass
+        time.sleep(delay)
+
+    raise RuntimeError(
+        "Daemon did not free all {} slots after {} retries".format(
+            max_slots, retries)
+    )
+
+
 class TestMaxClients:
     """Tests for maximum simultaneous client enforcement."""
 
     def test_max_clients_enforcement(self, amiga_host, amiga_port):
         """Open 8 connections (all get banners), 9th gets EOF."""
-        sockets = []
+        # Wait for all slots to be free before testing.  Stale
+        # connections from prior tests (e.g. trace tests) may not
+        # have fully disconnected on the daemon side yet.
+        sockets = _wait_for_all_slots_free(amiga_host, amiga_port)
         try:
-            # Open 8 connections -- all should succeed
-            for i in range(8):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((amiga_host, amiga_port))
-                banner = _read_banner(s)
-                assert banner.startswith("AMIGACTL"), (
-                    "Connection {} did not get banner: {!r}".format(i, banner)
-                )
-                sockets.append(s)
-
             # 9th connection should be rejected (EOF, no banner)
             rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             rejected.settimeout(5)
@@ -438,15 +480,9 @@ class TestMaxClients:
     def test_max_clients_recovery(self, amiga_host, amiga_port):
         """After hitting the limit, close one connection and verify a new
         one succeeds."""
-        sockets = []
+        # Wait for all slots to be free before testing.
+        sockets = _wait_for_all_slots_free(amiga_host, amiga_port)
         try:
-            # Open 8 connections
-            for i in range(8):
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((amiga_host, amiga_port))
-                _read_banner(s)
-                sockets.append(s)
 
             # Verify 9th is rejected
             rejected = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

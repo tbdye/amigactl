@@ -2,68 +2,106 @@ Short:    Remote access toolkit for AmigaOS
 Uploader: thomas@tfenet.com (Thomas Dye)
 Author:   thomas@tfenet.com (Thomas Dye)
 Type:     comm/tcp
-Version:  0.7.1
+Version:  0.8.0
 Requires: AmigaOS 2.0+, 68020+, bsdsocket.library
 Architecture: m68k-amigaos
 
-amigactl provides structured, programmatic remote access to AmigaOS
-over TCP. It consists of a lightweight C daemon (amigactld) running
-on the Amiga and a Python client library and CLI tool on the client
-side. Together they expose file operations (copy, checksum, append,
-streaming), CLI command execution, ARexx dispatch, environment
-variables, library version queries, and system introspection (assigns,
-volumes, ports, tasks, devices) through a simple text protocol with
-machine-parseable responses.
+ABOUT
 
-The client provides an interactive shell with tab completion,
-colorized output, remote file editing, and client-side search and
-navigation commands (find, tree, grep, diff, du, watch).
+amigactl is a remote access toolkit for AmigaOS. A lightweight C
+daemon (amigactld) runs on the Amiga, and a Python client runs on
+your workstation. Together they give you full remote access to the
+Amiga over TCP.
 
-Designed for trusted LANs and emulator setups. Supports IP-based
-access control via a configuration file.
+What you can do: file management (copy, list, edit, checksum,
+streaming tail), command execution (synchronous and background),
+interactive shell with tab completion and Amiga path navigation,
+system introspection (tasks, volumes, ports, assigns, devices,
+memory stats, library versions), ARexx dispatch, environment
+variables, and real-time library call tracing (atrace) across 99
+functions in 7 AmigaOS libraries.
 
-CHANGES IN 0.7.1
+Designed for development workflows, emulator setups, and trusted
+LANs. The text protocol is simple enough to drive from scripts or
+AI agents.
 
-Shell: Added tab completion for local filesystem paths in get, put,
-and append commands. Added tilde (~) expansion for local paths in
-get, put, and append commands.
+INSTALLATION -- DAEMON SIDE
 
-CHANGES IN 0.7.0
+1. Copy amigactld to C: or any convenient location.
 
-New daemon commands: COPY, APPEND, CHECKSUM, SETCOMMENT, LIBVER,
-ENV, SETENV, DEVICES, CAPABILITIES. Extended READ with partial
-read support (OFFSET/LENGTH). Extended SYSINFO with largest
-contiguous memory block fields.
-
-New shell commands: find, tree, grep, diff, du, watch. New CLI
-subcommands: cp, append, checksum, setcomment, libver, env, setenv,
-devices, capabilities.
-
-Bug fix: DIR RECURSIVE on volume roots (RAM:, SYS:) now correctly
-recurses into nested directories.
-
-INSTALLATION
-
-1. Extract the archive to any location on the Amiga.
 2. Copy amigactld.conf.example to S:amigactld.conf.
+
 3. Edit S:amigactld.conf to set ALLOW lines for your client IPs.
-4. Run from CLI: amigactld
-   Or place in S:User-Startup: RUN >NIL: <path>/amigactld
 
-For Workbench use, double-click the amigactld icon. Configuration
-can be set via Tool Types (PORT, CONFIG) in the icon's Info window.
+4. Run from CLI:
 
-CLIENT
+     amigactld
 
-The client/ directory contains the Python client. Requires Python
-3.8+.
+   Or add to S:User-Startup:
 
-Linux/macOS: sh client/amigactl.sh --host <amiga-ip>
-Windows:     client\amigactl.ps1 --host <amiga-ip>
+     RUN >NIL: C:amigactld
 
-Or install via pip: pip install -e client/
+5. For Workbench: double-click the amigactld icon. PORT and CONFIG
+   can be set via Tool Types in the icon's Info window.
 
-SOURCE AND LICENSE
+6. For library call tracing, make the loader resident:
 
-Source code: https://github.com/tbdye/amigactl
+     RESIDENT C:atrace_loader PURE
+
+INSTALLATION -- CLIENT SIDE
+
+Requires Python 3.8+ with no external dependencies.
+
+  Linux/macOS:  sh client/amigactl.sh --host <amiga-ip>
+  Windows:      client\amigactl.ps1 --host <amiga-ip>
+
+Or install via pip:
+
+  pip install -e client/
+  amigactl --host <amiga-ip>
+
+To avoid typing --host every time, save your host in a config file:
+
+  client/amigactl.conf
+
+See client/amigactl.conf.example for the format.
+
+QUICK START
+
+Connect to the interactive shell:
+
+  amigactl --host <amiga-ip>
+
+List files:
+
+  amigactl --host <amiga-ip> ls SYS:C
+
+Download a file:
+
+  amigactl --host <amiga-ip> get SYS:S/Startup-Sequence startup.txt
+
+Upload a file:
+
+  amigactl --host <amiga-ip> put local.txt RAM:local.txt
+
+Run a command:
+
+  amigactl --host <amiga-ip> exec avail FLUSH
+
+System info:
+
+  amigactl --host <amiga-ip> sysinfo
+
+Trace a program:
+
+  amigactl --host <amiga-ip> trace run -- list SYS:S
+
+DOCUMENTATION AND SOURCE
+
+Full documentation:
+  https://github.com/tbdye/amigactl/tree/main/docs
+
+Source code:
+  https://github.com/tbdye/amigactl
+
 License: GNU General Public License v3.0

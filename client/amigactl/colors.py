@@ -1,6 +1,7 @@
 """ANSI terminal color support for amigactl shell output."""
 
 import os
+import re
 import sys
 
 
@@ -41,10 +42,68 @@ def _supports_color():
 # ANSI escape sequences
 RESET = "\033[0m"
 BOLD = "\033[1m"
+DIM = "\033[2m"
+REVERSE = "\033[7m"
 RED = "\033[31m"
 GREEN = "\033[32m"
+YELLOW = "\033[33m"
 BLUE = "\033[34m"
 CYAN = "\033[36m"
+
+
+# Library color palette for trace events.
+# Known libraries get fixed colors. Unknown libraries are
+# auto-assigned from a rotating palette.
+#
+# Palette expanded to 10 entries (C3 fix) to reduce collision
+# likelihood. Bold variants create visual distinction even when
+# base colors repeat.
+_LIB_COLORS = {
+    "dos": CYAN,
+    "exec": YELLOW,
+    "intuition": GREEN,
+    "graphics": BLUE,
+    "bsdsocket": "\033[1;31m",    # bold red
+    "icon": "\033[35m",           # magenta
+    "workbench": "\033[1;36m",    # bold cyan
+}
+
+_LIB_COLOR_PALETTE = [
+    CYAN,
+    YELLOW,
+    GREEN,
+    BLUE,
+    "\033[35m",      # magenta
+    "\033[1;31m",    # bold red
+    "\033[1;32m",    # bold green
+    "\033[1;33m",    # bold yellow
+    "\033[1;34m",    # bold blue
+    "\033[1;35m",    # bold magenta
+]
+
+_lib_color_assignments = {}  # runtime cache
+
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x9b[0-9;]*[A-Za-z]')
+
+
+def strip_ansi(text):
+    """Remove ANSI escape sequences from text."""
+    return _ANSI_RE.sub('', text)
+
+
+def get_lib_color(lib_name):
+    """Get the ANSI color code for a library name.
+
+    Known libraries get fixed colors. Unknown libraries are
+    auto-assigned from a rotating palette.
+    """
+    if lib_name in _LIB_COLORS:
+        return _LIB_COLORS[lib_name]
+    if lib_name not in _lib_color_assignments:
+        idx = len(_lib_color_assignments) % len(_LIB_COLOR_PALETTE)
+        _lib_color_assignments[lib_name] = _LIB_COLOR_PALETTE[idx]
+    return _lib_color_assignments[lib_name]
 
 
 class ColorWriter:
@@ -86,5 +145,95 @@ class ColorWriter:
     def bold(self, text):
         return self._wrap(BOLD, text)
 
+    def warning(self, text):
+        return self._wrap(YELLOW, text)
+
+    def dim(self, text):
+        return self._wrap(DIM, text)
+
+    def reverse(self, text):
+        return self._wrap(REVERSE, text)
+
+    def yellow(self, text):
+        return self._wrap(YELLOW, text)
+
+    def cyan(self, text):
+        return self._wrap(CYAN, text)
+
+    def green(self, text):
+        return self._wrap(GREEN, text)
+
     def write(self, text):
         return text
+
+
+TRACE_HEADER = "{:<10s} {:>13s}  {:<28s} {:<20s} {:<40s} {}".format(
+    "SEQ", "TIME", "FUNCTION", "TASK", "ARGS", "RESULT")
+
+
+def format_trace_event(event, cw, handle_resolver=None):
+    """Format a trace event dict for columnar terminal output.
+
+    Returns a formatted string ready to print.
+
+    This function is shared between the shell and CLI so both display
+    identical output.  cw is a ColorWriter instance.
+
+    Args:
+        event: Parsed event dict.
+        cw: ColorWriter instance.
+        handle_resolver: Optional HandleResolver instance for
+            annotating Close and CurrentDir events with file paths.
+            Note: Read/Write/Seek annotation is not currently
+            supported by HandleResolver.annotate() -- those events
+            would require a cache lookup by the file handle argument,
+            which is not yet implemented.
+    """
+    if event.get("type") == "comment":
+        return cw.warning("# {}".format(event.get("text", "")))
+
+    # Handle annotation: resolve file handles to paths
+    annotation = None
+    if handle_resolver is not None:
+        handle_resolver.track(event)
+        annotation = handle_resolver.annotate(event)
+        # Note: consume parameter omitted (defaults to False) because
+        # track() already handles eviction of the cache entry on Close.
+
+    retval = event.get("retval", "")
+    status = event.get("status", "-")
+
+    # Color retval based on daemon-provided status classification
+    if status == "E":
+        retval_formatted = cw.error(retval)
+    elif status == "O":
+        retval_formatted = cw.success(retval)
+    else:
+        retval_formatted = retval  # neutral: no color
+
+    seq_str = cw.dim(str(event.get("seq", "")))
+    lib_str = event.get("lib", "")
+    func_str = event.get("func", "")
+    lib_func = "{}.{}".format(cw.cyan(lib_str), cw.yellow(func_str))
+    task_str = cw.green(event.get("task", ""))
+
+    args_str = event.get("args", "")
+    if annotation:
+        args_str = "{} [{}]".format(args_str, annotation)
+
+    # For column alignment, compute visible widths and pad manually
+    # since ANSI escape codes add invisible characters.
+    seq_vis = len(str(event.get("seq", "")))
+    lib_func_vis = len(lib_str) + 1 + len(func_str)
+    task_vis = len(event.get("task", ""))
+
+    return "{}{} {:>13s}  {}{} {}{} {:<40s} {}".format(
+        seq_str,
+        " " * max(0, 10 - seq_vis),
+        event.get("time", ""),
+        lib_func,
+        " " * max(0, 28 - lib_func_vis),
+        task_str,
+        " " * max(0, 20 - task_vis),
+        args_str,
+        retval_formatted)
