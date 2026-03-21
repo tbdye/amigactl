@@ -63,16 +63,7 @@ cp client/amigactl/trace_grid.py  "$STAGING/amigactl/client/amigactl/"
 cp client/amigactl/trace_tiers.py "$STAGING/amigactl/client/amigactl/"
 cp client/amigactl/trace_ui.py    "$STAGING/amigactl/client/amigactl/"
 
-# Copy documentation
-mkdir -p "$STAGING/amigactl/docs"
-
-cp docs/protocol-commands.md    "$STAGING/amigactl/docs/"
-cp docs/protocol.md             "$STAGING/amigactl/docs/"
-cp docs/agent-guide.md          "$STAGING/amigactl/docs/"
-mkdir -p "$STAGING/amigactl/docs/atrace"
-cp docs/atrace/*.md             "$STAGING/amigactl/docs/atrace/"
 cp dist/amigactld.readme        "$STAGING/amigactl/"
-cp README.md                    "$STAGING/amigactl/"
 
 # Create archive
 ARCHIVE="amigactld-${VERSION}.lha"
