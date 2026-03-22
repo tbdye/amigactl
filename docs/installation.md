@@ -252,7 +252,7 @@ on demand.
 ### Verifying the Daemon
 
 From the Amiga CLI, confirm the daemon is running by checking that it printed
-its startup banner (e.g., `amigactld 0.8.0 listening on port 6800`).
+its startup banner (e.g., `amigactld listening on port 6800`).
 
 From the client machine:
 
@@ -332,7 +332,7 @@ $ amigactl --host 192.168.6.200 ping
 OK
 
 $ amigactl --host 192.168.6.200 version
-amigactld 0.8.0
+amigactld
 
 $ amigactl --host 192.168.6.200 sysinfo
 chip_free=1234567

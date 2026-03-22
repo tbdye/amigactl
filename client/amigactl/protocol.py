@@ -91,7 +91,7 @@ def read_response(sock: socket.socket) -> Tuple[str, str, List[str]]:
         empty)
 
     Examples:
-      VERSION -> ("OK", "", ["amigactld 0.8.0"])
+      VERSION -> ("OK", "", ["amigactld <version>"])
       PING    -> ("OK", "", [])
       QUIT    -> ("OK", "Goodbye", [])
       error   -> ("ERR", "100 Unknown command", [])

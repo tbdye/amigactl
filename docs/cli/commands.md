@@ -102,7 +102,7 @@ amigactl version
 **Output:** Single line with the daemon version identifier.
 
 ```
-amigactld 0.8.0
+amigactld
 ```
 
 ---
@@ -878,7 +878,7 @@ amigactl capabilities
 max_clients, max_cmd_len, and commands (comma-separated list).
 
 ```
-version=0.8.0
+version=<version>
 protocol=1.0
 max_clients=8
 max_cmd_len=4096

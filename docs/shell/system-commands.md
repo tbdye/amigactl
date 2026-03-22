@@ -23,7 +23,7 @@ shown when the shell first connects.
 
 ```bash
 amiga@192.168.6.200:SYS:> version
-amigactld 0.8.0
+amigactld
 ```
 
 ### ping
@@ -86,7 +86,7 @@ The command list is printed one command per line for readability.
 
 ```bash
 amiga@192.168.6.200:SYS:> capabilities
-version=0.8.0
+version=<version>
 protocol=1.0
 max_clients=8
 max_cmd_len=4096

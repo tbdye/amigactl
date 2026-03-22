@@ -52,7 +52,7 @@ On successful connection, the shell prints a banner and sets the
 initial working directory to `SYS:`:
 
 ```
-Connected to 192.168.6.200 (amigactld 0.8.0)
+Connected to 192.168.6.200 (amigactld)
 Type "help" for a list of commands, "exit" to disconnect.
 amiga@192.168.6.200:SYS:>
 ```

@@ -4,7 +4,7 @@ This document is the authoritative specification for all amigactl commands.
 Code is written to satisfy this spec. Reviewers validate implementations
 against it. Tests verify the documented behavior.
 
-**Version**: 0.8.0
+**Version**: See `daemon/daemon.h` for the current version.
 
 **Conventions used in this document:**
 
@@ -90,7 +90,7 @@ a new TCP connection, before the client sends anything.
 AMIGACTL <version>
 ```
 
-The version string matches the daemon version (currently `0.8.0`).
+The version string matches the daemon version.
 
 ### Behavior
 
@@ -105,7 +105,7 @@ The version string matches the daemon version (currently `0.8.0`).
 ### Example
 
 ```
-S> AMIGACTL 0.8.0
+S> AMIGACTL <version>
 ```
 
 ---
@@ -142,7 +142,7 @@ None. This command always succeeds.
 ```
 C> VERSION
 S> OK
-S> amigactld 0.8.0
+S> amigactld <version>
 S> .
 ```
 
@@ -2558,7 +2558,7 @@ commands=<comma_separated_list>
 
 | Field | Description |
 |-------|-------------|
-| `version` | Daemon version (e.g. `0.8.0`) |
+| `version` | Daemon version string |
 | `protocol` | Protocol version (currently `1.0`) |
 | `max_clients` | Maximum simultaneous client connections |
 | `max_cmd_len` | Maximum command line length in bytes |
@@ -2573,7 +2573,7 @@ None. This command always succeeds.
 ```
 C> CAPABILITIES
 S> OK
-S> version=0.8.0
+S> version=<version>
 S> protocol=1.0
 S> max_clients=8
 S> max_cmd_len=4096

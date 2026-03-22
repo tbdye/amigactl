@@ -25,7 +25,7 @@ Failed to connect to 192.168.6.200:6800: timed out
 
 - **Daemon not running.** Start `amigactld` on the Amiga. From the
   CLI, run `amigactld` or launch it from Workbench. Verify it prints
-  a banner like `amigactld 0.8.0 listening on port 6800`.
+  a banner like `amigactld listening on port 6800`.
 
 - **Wrong host or port.** Verify the Amiga's IP address and the
   daemon's listening port. The default port is 6800. Set the correct
@@ -94,7 +94,7 @@ connection:
 
 ```
 amiga> reconnect
-Reconnected to 192.168.6.200 (amigactld 0.8.0)
+Reconnected to 192.168.6.200 (amigactld)
 amiga@192.168.6.200:SYS:>
 ```
 

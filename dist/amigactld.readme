@@ -2,7 +2,7 @@ Short:    Remote access toolkit for AmigaOS
 Uploader: thomas@tfenet.com (Thomas Dye)
 Author:   thomas@tfenet.com (Thomas Dye)
 Type:     comm/tcp
-Version:  0.8.0
+Version:  0.8.1
 Requires: AmigaOS 2.0+, 68020+, bsdsocket.library
 Architecture: m68k-amigaos
 
@@ -95,6 +95,26 @@ System info:
 Trace a program:
 
   amigactl --host <amiga-ip> trace run -- list SYS:S
+
+HISTORY
+
+  v0.8.1 (2026-03-22)
+    - Fixed ring buffer overflow losing recent events; now circular
+      (oldest events discarded instead of newest)
+    - Fixed ghost events from dangling post-call writes to reused
+      ring buffer slots (sequence guard)
+    - Fixed garbled task names from stale AmigaOS name pointers
+    - OpenWindowTagList now captures window title from tag list
+    - Overflow reporting moved to session-end summary
+    - Fixed WRITE command failure with 30-character filenames
+
+  v0.8.0 (2026-03-20)
+    - Initial public release
+    - 99 traced functions across 7 libraries
+    - Interactive TUI trace viewer with filtering
+    - Per-opener bsdsocket.library patching
+    - Three-tier output (Basic/Detail/Verbose)
+    - Remote file transfer, process management, system introspection
 
 DOCUMENTATION AND SOURCE
 

@@ -16,7 +16,7 @@ Test that you can reach the daemon with `version` and `ping`:
 
 ```
 $ amigactl --host 192.168.6.200 version
-amigactld 0.8.0
+amigactld
 
 $ amigactl --host 192.168.6.200 ping
 OK

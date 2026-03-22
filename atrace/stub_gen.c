@@ -122,19 +122,19 @@ static const UWORD stub_prefix[] = {
  * (a5) and the event's sequence number through the original function
  * call WITHOUT clobbering a0.
  * After MOVEM restore, saved_a5 is on top of stack:
- *   1. Push entry->sequence onto stack (sequence guard for Fix 2)
+ *   1. Push entry->sequence onto stack (sequence guard)
  *   2. Duplicate saved_a5 lower on the stack (past the sequence)
  *   3. Overwrite original saved_a5 slot with entry pointer (a5)
  *   4. Pop the duplicate to restore a5
  * This leaves [saved_seq][entry_ptr] on the stack, accessible after
  * the original function returns via .post_call.
  *
- * Post-call sequence guard (Fix 2):
+ * Post-call sequence guard:
  * Before writing retval/ioerr/valid=1, compares saved_seq against
  * entry->sequence. If mismatched (daemon consumed and slot reused),
  * skips all writes but still decrements use_count.
  *
- * Circular overflow (Fix 1):
+ * Circular overflow:
  * Instead of dropping new events, advances read_pos by 1 (discards
  * oldest event) and branches back to the write path in the prefix.
  *
@@ -209,7 +209,7 @@ static const UWORD stub_suffix[] = {
 /* ---- Suffix-relative byte offsets ---- */
 
 /* PATCH_ADDR occurrence 4 (high word of address in suffix) */
-#define PATCH_SUFFIX_REL            98   /* was 80, +18 (Fix 1+2 combined) */
+#define PATCH_SUFFIX_REL            98   /* was 80, +18 */
 
 /* DOS_BASE_ADDR (high word of DOSBase address in suffix IoErr block) */
 #define DOS_BASE_SUFFIX_REL         68   /* was 50, +18 */
@@ -957,7 +957,7 @@ int stub_generate_and_install(
     var_buf[var_words++] = 0x1019;  /* move.b (a1)+, d0     d0 = string length  */
     var_buf[var_words++] = 0x671E;  /* beq.s +30 (.use_task_name)  was +24, +6  */
 
-    /* Fix 3: validate first BSTR data byte is printable (>= 0x20) */
+    /* Validate first BSTR data byte is printable (>= 0x20) */
     var_buf[var_words++] = 0x0C11;  /* cmpi.b #0x20, (a1)   first char < space? */
     var_buf[var_words++] = 0x0020;
     var_buf[var_words++] = 0x6518;  /* bcs.s +24 (.use_task_name)  stale BSTR   */
@@ -989,7 +989,7 @@ int stub_generate_and_install(
     var_buf[var_words++] = 0x2008;  /* move.l a0, d0        NULL check          */
     var_buf[var_words++] = 0x6716;  /* beq.s +22 (.name_clear)  was +16, +6     */
 
-    /* Fix 3: validate first ln_Name byte is printable (>= 0x20) */
+    /* Validate first ln_Name byte is printable (>= 0x20) */
     var_buf[var_words++] = 0x0C10;  /* cmpi.b #0x20, (a0)   first byte < space? */
     var_buf[var_words++] = 0x0020;
     var_buf[var_words++] = 0x6510;  /* bcs.s +16 (.name_clear)  stale name      */

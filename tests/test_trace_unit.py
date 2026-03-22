@@ -34,7 +34,7 @@ def _make_mock_conn():
     """
     conn = AmigaConnection.__new__(AmigaConnection)
     conn._sock = mock.MagicMock()
-    conn._banner = "AMIGACTL 0.8.0"
+    conn._banner = "AMIGACTL 1.0.0"
     conn._send_command = mock.MagicMock(return_value=("", []))
     return conn
 
