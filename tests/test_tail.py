@@ -441,7 +441,7 @@ class TestTailNonBlocking:
         send PING and get OK back.
         protocol-commands.md: TAIL is an ongoing stream that does not block the
         event loop for other clients."""
-        path = "RAM:amigactl_test_tail_nonblock.txt"
+        path = "RAM:act_tail_nonblock.txt"
 
         # Create file
         setup_conn = AmigaConnection(amiga_host, amiga_port)

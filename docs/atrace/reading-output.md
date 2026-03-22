@@ -60,10 +60,11 @@ Key properties:
   completed -- a blocking function that entered the stub first may
   complete after a non-blocking function that entered second.
 
-- **Gap detection.** A gap in sequence numbers indicates dropped events
-  due to ring buffer overflow. When the daemon detects overflow, it
-  sends a comment line: `# OVERFLOW <N> events dropped`. The overflow
-  counter in the ring buffer header is reset after each report.
+- **Gap detection.** A gap in sequence numbers indicates events
+  discarded by ring buffer overflow. The ring buffer uses circular
+  overwrite, discarding the oldest unread events when full. The
+  overflow count is reported in the session-end summary and in
+  TRACE STATUS output.
 
 - **Wrapping.** The counter wraps at 2^32 (approximately 4.3 billion
   events), which is far beyond any practical tracing session.

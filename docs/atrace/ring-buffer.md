@@ -26,7 +26,7 @@ Offset  Size   Field       Type             Description
 0       4      capacity    ULONG            Number of event slots
 4       4      write_pos   volatile ULONG   Next slot the producer will write
 8       4      read_pos    volatile ULONG   Next slot the consumer will read
-12      4      overflow    volatile ULONG   Dropped event counter
+12      4      overflow    volatile ULONG   Discarded old event counter
 16      128*N  entries[]   atrace_event[]   Event slot array (N = capacity)
 ```
 
@@ -156,7 +156,8 @@ The sequence within the critical section:
 3. **Compute new_pos**: `d1 = write_pos + 1`. If `d1 >= capacity`,
    wrap to 0 (the `bcs.s .nowrap` / `moveq #0, d1` pair handles this).
 4. **Full check**: Compare `new_pos` against `ring->read_pos`. If equal,
-   the buffer is full -- branch to the overflow path.
+   the buffer is full -- branch to the overflow path (which overwrites
+   the oldest event).
 5. **Commit write_pos**: Store `new_pos` back to `ring->write_pos`.
 6. **Increment use_count**: `patch->use_count += 1`. This tracks
    in-flight stubs for safe disable/quiesce.
@@ -339,31 +340,34 @@ count from a previous wrap-around.
 ## Overflow Handling
 
 When a stub's slot reservation finds the buffer full (`new_pos ==
-read_pos`), it takes the overflow path instead of the normal event
-recording path.
+read_pos`), it takes the overflow path. The ring buffer uses a circular
+overwrite strategy: the oldest event is discarded to make room for the
+new one.
 
 ### Producer-Side Overflow
 
-The overflow path in the stub suffix (bytes 104--125):
+The overflow path in the stub suffix (bytes 104--137):
 
 1. **Increment overflow counter**: `addq.l #1, ring->overflow`. This
    happens while still inside the Disable()/Enable() critical section,
    so the increment is atomic with respect to the full-check.
-2. **Enable interrupts**: `jsr _LVOEnable(a6)`.
-3. **Restore registers**: `movem.l (sp)+, d0-d7/a0-a4/a6` followed by
-   restoring a5 from the stack.
-4. **Tail-call original**: Push the original function address and `rts`,
-   executing the library function with no tracing. The event is lost.
+2. **Advance read_pos**: `read_pos` is moved forward by one slot
+   (wrapping to 0 at capacity), discarding the oldest unread event.
+3. **Enable interrupts**: `jsr _LVOEnable(a6)`.
+4. **Branch to prefix write path**: Execution branches back to the
+   prefix's event fill code to write the new event into the slot that
+   was just freed. The original function is still traced.
 
-The overflow path is carefully designed to have zero side effects beyond
-incrementing the counter. The original function still executes normally --
-only the trace event is dropped. `patch->use_count` is not incremented
-(the stub never got past the reservation stage), so the DISABLE drain
-logic is not affected.
+The overflow path discards the oldest event to preserve the newest.
+`patch->use_count` is incremented because the stub proceeds with normal
+event recording after freeing the slot.
 
 ### Consumer-Side Overflow Reporting
 
-At the end of each poll cycle, the consumer checks `ring->overflow`:
+At the end of a trace session, the consumer reports any accumulated
+overflow. The overflow counter tracks how many old events were
+discarded during the session. Per-session overflow is reset at
+session start by `drain_stale_events()`.
 
 ```c
 if (ring->overflow > 0) {
@@ -378,17 +382,46 @@ if (ring->overflow > 0) {
 
 The read-and-clear of the overflow counter uses Disable()/Enable()
 because in-flight stubs may be incrementing it concurrently. The
-consumer accumulates the total in `g_events_dropped` and sends an
-`# OVERFLOW <n> events dropped` notification to all connected tracing
-clients. (The exception is `drain_stale_events()`, which reads and
+consumer accumulates the total in `g_events_dropped` and reports the
+count in the session-end summary and in `TRACE STATUS` output.
+(The exception is `drain_stale_events()`, which reads and
 clears the overflow counter under Forbid() rather than Disable/Enable,
 since it runs during session setup when stubs are already quiesced.)
 
 Overflow is not an error condition in the protocol sense -- it is an
 expected consequence of sustained high event rates exceeding the
-consumer's throughput. The client displays the overflow count in its
-status bar so the user can decide whether to increase the buffer size
-or reduce the number of enabled functions.
+consumer's throughput. The circular overwrite strategy ensures that
+the most recent events are always preserved. The client displays the
+overflow count in its status bar so the user can decide whether to
+increase the buffer size or reduce the number of enabled functions.
+
+
+## Post-Call Sequence Guard
+
+The trampoline mechanism creates a window where a post-call handler
+could write to a ring buffer slot that has already been reused by
+another event. This can happen when a blocking function (e.g.,
+`WaitSelect`) occupies a slot for long enough that the consumer drains
+past it, the ring wraps, and a new event claims the same slot.
+
+The sequence guard prevents this corruption. During the trampoline
+setup, the event's sequence number is pushed onto the stack alongside
+the entry pointer:
+
+```
+Stack after trampoline setup:
+  sp -> [ORIG_ADDR] [.post_call] [retval_slot] [saved_seq] [entry_ptr] [caller's return addr]
+```
+
+When the post-call handler executes, it compares the saved sequence
+number against the current sequence number in the entry slot. If they
+match, the slot still belongs to this event, and the handler writes
+`retval` and sets `valid=1`. If they differ, the slot has been reused
+by a different event -- the handler skips the retval and valid writes
+to avoid corrupting the new occupant.
+
+In both cases, `patch->use_count` is decremented. The sequence guard
+only suppresses the data writes, not the bookkeeping.
 
 
 ## Stale Event Draining
@@ -458,12 +491,13 @@ This means the usable capacity is `capacity - 1` slots.
 
 ### No Backpressure
 
-Producers never block. If the buffer is full, the event is silently
-dropped and the overflow counter is incremented. This is a deliberate
-design choice: stubs run in the context of the calling task, potentially
-at interrupt time or inside Forbid() sections. Blocking would risk
-deadlocks or system hangs. The tradeoff is that sustained event rates
-above the consumer's throughput cause data loss rather than slowdown.
+Producers never block. If the buffer is full, the oldest event is
+overwritten and the overflow counter is incremented. This is a
+deliberate design choice: stubs run in the context of the calling task,
+potentially at interrupt time or inside Forbid() sections. Blocking
+would risk deadlocks or system hangs. The circular overwrite strategy
+ensures the most recent events are always preserved, at the cost of
+discarding older events that the consumer has not yet read.
 
 ### Memory Lifetime
 

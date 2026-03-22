@@ -3490,7 +3490,7 @@ class TestBasicTierFunctions:
                 len(trace_events)))
         ev = matches[0]
         assert ev["lib"] == "intuition"
-        assert '"atrace_test_win"' in ev["args"]
+        assert '"atrace_test_tagwin"' in ev["args"]
         # OpenWindowTagList returns a Window pointer or NULL
         if ev["status"] == "O":
             assert _HEX_PTR.match(ev["retval"]), (

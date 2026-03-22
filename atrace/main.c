@@ -54,7 +54,7 @@ extern int stub_generate_and_install(
     int *out_suffix_start);
 
 /* BSD patching block: suffix-relative offset of the table address placeholder */
-#define BSD_TABLE_SUFFIX_REL  58
+#define BSD_TABLE_SUFFIX_REL  76
 
 /* Helper: patch a 32-bit address into stub code (same as stub_gen.c) */
 static void patch_addr(UWORD *stub, int byte_offset, ULONG addr)

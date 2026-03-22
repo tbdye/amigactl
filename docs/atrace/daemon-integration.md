@@ -191,8 +191,11 @@ The function:
 5. Updates `events_consumed` on the anchor.
 
 6. Checks `ring->overflow`. If non-zero, atomically reads and clears it
-   under Disable/Enable, accumulates into `g_events_dropped`, and sends
-   an `# OVERFLOW <N> events dropped` comment to all tracing clients.
+   under Disable/Enable and accumulates into `g_events_dropped`. The
+   overflow count is reported in the session-end summary rather than
+   as per-poll comments. The per-session counter is reset at session
+   start by `drain_stale_events()`. TRACE STATUS also reports the
+   cumulative count.
 
 7. Releases the anchor semaphore.
 
@@ -705,7 +708,7 @@ Returns a multi-line payload with current state information:
 | `patches`          | Total patch count                               |
 | `events_produced`  | `event_sequence` counter                        |
 | `events_consumed`  | Consumer counter                                |
-| `events_dropped`   | Cumulative overflow count                       |
+| `events_dropped`   | Cumulative count of old events discarded by overflow |
 | `events_self_filtered` | Self-filter + content-filter suppression count |
 | `buffer_capacity`  | Ring buffer slot count                          |
 | `buffer_used`      | Current occupancy                               |
@@ -889,7 +892,7 @@ Key module-global variables in `trace.c`:
 |------------------------- |-------- |---------------------------------------|
 | `g_anchor`               | Pointer | Cached anchor, NULL if not found      |
 | `g_ring_entries`         | Pointer | First event slot in ring buffer       |
-| `g_events_dropped`       | ULONG   | Cumulative overflow count             |
+| `g_events_dropped`       | ULONG   | Cumulative count of old events discarded |
 | `g_self_filtered`        | ULONG   | Self-filter + content-filter count    |
 | `g_poll_count`           | ULONG   | Total poll cycles                     |
 | `g_current_tier`         | int     | 1=Basic, 2=Detail, 3=Verbose         |

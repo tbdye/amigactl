@@ -154,7 +154,7 @@ followed by an array of 128-byte event entries.
 | `capacity` | 0 | 4 | Number of event slots |
 | `write_pos`| 4 | 4 | Next write slot index (producer) |
 | `read_pos` | 8 | 4 | Next read slot index (consumer) |
-| `overflow` | 12 | 4 | Count of events dropped due to buffer full |
+| `overflow` | 12 | 4 | Count of old events discarded by circular overwrite |
 
 Total allocation size: `16 + 128 * capacity` bytes. The default capacity
 is 8192 entries (1 MB total), configurable via the `BUFSZ` argument to
@@ -271,18 +271,22 @@ A stub has three regions:
    (which also writes the resolved name into `task_name`). Ends by
    setting `valid` to 2 (in-progress).
 
-3. **Suffix** (126 bytes standard, 196 bytes for OpenLibrary, 152 bytes
+3. **Suffix** (156 bytes standard, 226 bytes for OpenLibrary, 182 bytes
    for accept): MOVEM restore, trampoline to the original function
-   (pushes original address and executes `RTS`), post-call handler that
-   writes `retval` and optionally calls `IoErr()` for `dos.library`
-   functions with zero return values, sets `valid` to 1, decrements
-   `use_count`, and returns to the original caller. Also contains the
-   disabled fast path (transparent tail-call to the original) and the
-   overflow path (increments the overflow counter and tail-calls the
-   original). The OpenLibrary suffix includes a 70-byte bsdsocket
-   per-opener patching block that calls `SetFunction` for each
-   bsdsocket LVO on a newly opened `bsdsocket.library` base. The
-   accept suffix includes a 26-byte `sockaddr_in` capture block.
+   (pushes original address and the event's sequence number onto the
+   stack, then executes `RTS`), post-call handler that compares the
+   saved sequence number against the entry's current sequence (sequence
+   guard) before writing `retval` and setting `valid` to 1, optionally
+   calls `IoErr()` for `dos.library` functions with zero return values,
+   decrements `use_count`, and returns to the original caller. Also
+   contains the disabled fast path (transparent tail-call to the
+   original) and the overflow path (increments the overflow counter,
+   advances `read_pos` to discard the oldest event, and branches back
+   to the prefix write path). The OpenLibrary suffix includes a
+   70-byte bsdsocket per-opener patching block that calls
+   `SetFunction` for each bsdsocket LVO on a newly opened
+   `bsdsocket.library` base. The accept suffix includes a 26-byte
+   `sockaddr_in` capture block.
 
 Total stub size = prefix + variable region + suffix, rounded up to a
 4-byte (ULONG) boundary.
@@ -357,8 +361,8 @@ client has `trace.active == 1`. Each call:
    - Formats the event into a tab-separated text line.
    - Broadcasts to all tracing clients that pass the per-client filter.
    - Clears `valid` to release the slot, advances `read_pos`.
-4. Reports any ring buffer overflow as a `# OVERFLOW` comment to all
-   tracing clients.
+4. Checks and clears the ring buffer overflow counter. The overflow
+   count is reported in the session-end summary and in TRACE STATUS.
 5. Releases the anchor semaphore.
 
 ### Task Name Resolution
@@ -442,7 +446,7 @@ tab-separated line with 7 fields:
 | retval | `0x001A2B3C` | Formatted return value |
 | status | `O` | `O` = ok, `E` = error, `-` = neutral |
 
-Comments (overflow notifications, session metadata, process exit
+Comments (session metadata, overflow summary, process exit
 notifications) use `DATA` chunks with payloads beginning with `#`.
 
 ### Server-Side Filters
@@ -587,9 +591,10 @@ See [Output Tiers](output-tiers.md) for tier membership details.
   strings byte-by-byte with a length limit.
 
 - **Ring buffer overflow.** When the ring buffer is full and a new event
-  arrives, the event is dropped and the `overflow` counter is
-  incremented. The daemon reports overflow to clients as a comment. No
-  backpressure mechanism exists; the stub simply drops the event and
-  calls the original function normally.
+  arrives, the oldest unread event is discarded and the `overflow`
+  counter is incremented. The circular overwrite strategy preserves
+  the most recent events. The daemon reports the overflow count in
+  the session-end summary and in TRACE STATUS. No backpressure
+  mechanism exists.
 
 - **IoErr truncation.** The `ioerr` field stores only the low byte (UBYTE) of the 32-bit `IoErr()` return value. Standard AmigaOS error codes (103--233) fit within this range, but values above 255 would be truncated.

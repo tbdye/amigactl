@@ -23,6 +23,36 @@
 
 /* ---- Static helpers ---- */
 
+/* Build a temp file path in the same directory as the target.
+ * Uses the fixed name "~act.tmp" (8 chars, well under 30-char FFS limit).
+ * The daemon is single-threaded, so concurrent temp file conflicts are
+ * impossible.  buf must be large enough for the directory portion of
+ * path plus 9 bytes (8-char temp name + NUL). */
+static void build_temp_path(char *buf, int bufsz, const char *path)
+{
+    static const char temp_name[] = "~act.tmp";
+    const char *last_sep;
+    int dir_len;
+
+    /* Find last path separator (: or /) */
+    last_sep = strrchr(path, '/');
+    if (!last_sep)
+        last_sep = strrchr(path, ':');
+
+    if (last_sep) {
+        dir_len = (int)(last_sep - path) + 1;
+    } else {
+        dir_len = 0;
+    }
+
+    if (dir_len + (int)sizeof(temp_name) > bufsz)
+        dir_len = bufsz - (int)sizeof(temp_name);
+
+    memcpy(buf, path, dir_len);
+    /* If dir ends with ':', no separator needed; otherwise already has '/' */
+    memcpy(buf + dir_len, temp_name, sizeof(temp_name));
+}
+
 /* Map AmigaOS IoErr() codes to wire protocol error codes. */
 static int map_dos_error(LONG ioerr)
 {
@@ -872,14 +902,15 @@ int cmd_write(struct client *c, const char *args)
         return 0;
     }
 
-    /* Check path length for temp file suffix */
+    /* Check path length -- must fit in temp_path buffer with room for
+     * the ~act.tmp name (path directory portion + 8 chars + NUL) */
     if (strlen(path) > 497) {
         send_error(c->fd, ERR_IO, "Path too long");
         send_sentinel(c->fd);
         return 0;
     }
 
-    sprintf(temp_path, "%s.amigactld.tmp", path);
+    build_temp_path(temp_path, sizeof(temp_path), path);
 
     /* Open temp file for writing */
     fh = Open((STRPTR)temp_path, MODE_NEWFILE);

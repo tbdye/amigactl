@@ -56,7 +56,7 @@ consumer (the daemon's polling loop in `trace_poll_events()`).
 | Value | Meaning | Written by |
 |-------|---------|------------|
 | 0 | Slot is empty. No event data is present. The ring buffer is allocated with `MEMF_CLEAR`, so all slots start at 0. The daemon also clears valid to 0 after consuming an event. | Ring buffer allocator; daemon after consumption |
-| 1 | Event is complete. All fields -- including retval, ioerr, and flags -- are fully populated. | Stub post-call handler (suffix byte 74) |
+| 1 | Event is complete. All fields -- including retval, ioerr, and flags -- are fully populated. Only written after the post-call sequence guard confirms the slot has not been reused. | Stub post-call handler (suffix byte 86) |
 | 2 | Event is in-progress. The original function is currently executing. Pre-call fields (lib_id, lvo_offset, sequence, caller_task, args, arg_count, flags, string_data, eclock_lo/hi, task_name) are valid. Post-call fields (retval, ioerr, FLAG_HAS_IOERR) may contain stale data from a previous ring buffer occupant. | Stub variable region (last instruction before suffix) |
 
 The stub sets `valid=2` immediately before the trampoline jumps to the
@@ -119,7 +119,7 @@ A monotonically increasing 32-bit counter assigned from
 `anchor->event_sequence` under `Disable()`/`Enable()` protection. Each
 event gets a unique sequence number.
 
-The sequence number serves two purposes:
+The sequence number serves three purposes:
 
 1. **Ordering.** Events are numbered in the order their ring buffer
    slots were reserved, which corresponds to the order the library calls
@@ -127,8 +127,17 @@ The sequence number serves two purposes:
    completed.
 
 2. **Gap detection.** A gap in sequence numbers seen by the consumer
-   indicates dropped events due to ring buffer overflow. The overflow
+   indicates events discarded by ring buffer overflow. The overflow
    counter in the ring buffer header tracks the total count.
+
+3. **Post-call sequence guard.** The trampoline pushes the event's
+   sequence number onto the stack. When the original function returns,
+   the post-call handler compares this saved sequence against the
+   entry's current sequence number. If they differ, the slot has been
+   reused by a new event (due to ring wrap or circular overwrite), and
+   the handler skips writing `retval` and `valid=1` to avoid
+   corrupting the new occupant. This prevents ghost events caused by
+   dangling writes to reused slots.
 
 The counter wraps at 2^32 (approximately 4.3 billion events).
 
@@ -188,9 +197,10 @@ For `void` functions, this field is written but its value is meaningless.
 The daemon checks the per-function `result_type` metadata to determine
 how to format and classify the return value.
 
-Written by the stub post-call handler (suffix byte 30): `move.l d0,
-28(a0)` (where a0 = event entry pointer retrieved from the stack after
-the trampoline return).
+Written by the stub post-call handler: `move.l d0, 28(a0)` (where a0 =
+event entry pointer retrieved from the stack after the trampoline
+return). Only written after the post-call sequence guard confirms the
+slot has not been reused.
 
 For in-progress events (`valid=2`), this field may contain stale data
 from a previous ring buffer occupant. The daemon accounts for this when
@@ -228,8 +238,8 @@ because EClock capture is mandatory (timer.device must be open for
 atrace to load). The flag exists for forward compatibility -- a future
 version could conditionally disable EClock capture.
 
-**FLAG_HAS_IOERR** is set in the post-call handler (suffix bytes 68--73)
-using a bit-OR instruction: `or.b #2, 33(a0)`. It is only set when both
+**FLAG_HAS_IOERR** is set in the post-call handler using a bit-OR
+instruction: `or.b #2, 33(a0)`. It is only set when both
 conditions are met:
 1. The function belongs to dos.library (`lib_id == LIB_DOS`).
 2. The function returned zero (indicating failure for most DOS
@@ -295,7 +305,7 @@ dereference strategy:
 | 2 | DEREF_IOREQUEST | `IORequest->io_Device->ln_Name` (offsets 20, then 10) | DoIO, SendIO, WaitIO, AbortIO, CheckIO, CloseDevice |
 | 3 | DEREF_TEXTATTR | `TextAttr->ta_Name` (offset 0) | OpenFont |
 | 4 | DEREF_LOCK_VOLUME | Lock BPTR -> `fl_Volume` -> `dol_Name` BSTR | CurrentDir |
-| 5 | DEREF_NW_TITLE | `NewWindow->Title` (offset 26) | OpenWindow, OpenWindowTagList |
+| 5 | DEREF_NW_TITLE | `NewWindow->Title` (offset 26), or tag list walking for WA_Title | OpenWindow, OpenWindowTagList |
 | 6 | DEREF_WIN_TITLE | `Window->Title` (offset 32) | CloseWindow, ActivateWindow, WindowToFront, WindowToBack |
 | 7 | DEREF_NS_TITLE | `NewScreen->DefaultTitle` (offset 20) | OpenScreen, OpenScreenTagList |
 | 8 | DEREF_SCR_TITLE | `Screen->Title` (offset 22) | CloseScreen |
@@ -309,6 +319,14 @@ any patch descriptor that has both `string_args != 0` and
 
 All indirect capture paths include NULL pointer checks at each level of
 indirection to prevent crashes from invalid struct pointers.
+
+For `DEREF_NW_TITLE` with `OpenWindowTagList`, the NewWindow pointer
+(first argument) may be NULL. When it is NULL, the stub walks the
+tag list (second argument) looking for `WA_Title` (tag ID
+`0x8000006E`). The walker iterates up to 64 tags, handling
+`TAG_DONE` (stop), `TAG_IGNORE` (skip), `TAG_MORE` (follow chain
+pointer), and `TAG_SKIP` (skip N following tags). If `WA_Title` is
+found, its `ti_Data` value is used as the title string pointer.
 
 For `DEREF_LOCK_VOLUME`, the stub performs three BPTR-to-pointer
 conversions (`asl.l #2`) and reads a BSTR (length-prefixed string),
@@ -343,9 +361,8 @@ The `FLAG_HAS_IOERR` bit in `flags` indicates whether this field
 contains valid data. When the flag is not set, this field should be
 ignored.
 
-Written by the stub post-call handler (suffix byte 64): `move.b d0,
-98(a0)`. The FLAG_HAS_IOERR bit is then set at suffix bytes 68--73:
-`or.b #2, 33(a0)`.
+Written by the stub post-call handler: `move.b d0, 98(a0)`. The
+FLAG_HAS_IOERR bit is then set: `or.b #2, 33(a0)`.
 
 
 ### bsd_flag (offset 99, 1 byte)
@@ -421,16 +438,23 @@ The capture logic follows a two-tier resolution:
    `pr_CLI` (Process offset 172) is non-NULL, the stub reads the CLI
    command name via `pr_CLI -> cli_CommandName` (CLI struct offset 16).
    The command name is a BSTR (BPTR to a length-prefixed string). The
-   BPTR is converted to a real address with `asl.l #2`, and up to 21
-   bytes of the string data are copied. No basename extraction is
-   performed at the stub level -- the full command name (potentially
+   BPTR is converted to a real address with `asl.l #2`. Before copying,
+   a `cmpi.b #0x20` validation check ensures the first character of
+   the BSTR data is a printable ASCII character (>= 0x20). Strings
+   starting with control characters are rejected as stale or corrupted
+   name pointers, and the stub falls back to the `ln_Name` path. Up
+   to 21 bytes of valid string data are copied. No basename extraction
+   is performed at the stub level -- the full command name (potentially
    including path components) is stored as-is. Basename extraction
    happens on the daemon side.
 
 2. **Non-CLI tasks.** If the task is not an NT_PROCESS or has no CLI
    structure, the stub falls back to `tc_Node.ln_Name` (Node offset 10),
-   which is a standard C string pointer. Up to 21 characters are copied
-   with a `dbeq` loop.
+   which is a standard C string pointer. Before copying, a `cmpi.b
+   #0x20` validation check ensures the first character is a printable
+   ASCII character (>= 0x20). Strings starting with control characters
+   are rejected and `task_name[0]` is set to NUL. Up to 21 characters
+   of valid strings are copied with a `dbeq` loop.
 
 The NT_PROCESS type check is critical: a plain `struct Task` is only 92
 bytes, while `pr_CLI` lives at Process offset 172 -- reading that offset
@@ -477,14 +501,18 @@ All fields except `retval`, `ioerr`, and FLAG_HAS_IOERR:
 
 ### Post-call (suffix post-call handler)
 
-Completed after the original function returns via the trampoline:
+Completed after the original function returns via the trampoline. All
+writes are guarded by a sequence check: the saved sequence number
+(pushed onto the stack during the trampoline) is compared against
+the entry's current sequence. On mismatch (slot reused), these writes
+are skipped.
 
 | Field | Written by |
 |-------|-----------|
-| retval | Suffix (byte 30) |
-| ioerr | Suffix (byte 64), dos.library failures only |
-| flags | Suffix (bytes 68--73), OR with FLAG_HAS_IOERR |
-| valid | Suffix (byte 74), set to 1 |
+| retval | Suffix post-call (after sequence guard) |
+| ioerr | Suffix post-call, dos.library failures only |
+| flags | Suffix post-call, OR with FLAG_HAS_IOERR |
+| valid | Suffix post-call (byte 86), set to 1 |
 
 
 ## Patch Descriptor (struct atrace_patch)
@@ -535,7 +563,7 @@ entry array in memory:
 | capacity | 0 | 4 | ULONG | Number of event slots |
 | write_pos | 4 | 4 | volatile ULONG | Next slot to be written by a producer (stub) |
 | read_pos | 8 | 4 | volatile ULONG | Next slot to be read by the consumer (daemon) |
-| overflow | 12 | 4 | volatile ULONG | Cumulative count of dropped events |
+| overflow | 12 | 4 | volatile ULONG | Cumulative count of old events discarded by circular overwrite |
 
 Compile-time assertion: `sizeof(struct atrace_ringbuf) == 16`.
 
@@ -548,4 +576,6 @@ process's exit.
 Slot reservation is performed under `Disable()`/`Enable()` to prevent
 concurrent stubs from claiming the same slot. The producer advances
 `write_pos`, and if `write_pos` would equal `read_pos` (buffer full),
-the `overflow` counter is incremented and the event is dropped.
+the oldest event is discarded by advancing `read_pos`, the `overflow`
+counter is incremented, and the stub branches back to write the new
+event into the freed slot.

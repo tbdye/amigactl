@@ -133,22 +133,24 @@ See [event-format.md](event-format.md) for the ioerr field layout.
 
 ## Ring Buffer Limits
 
-### No Backpressure on Producers
+### Circular Overwrite Discards Oldest Events
 
 When the ring buffer is full (write position would equal read position
-after advancing), the stub increments an `overflow` counter and skips
-event recording. The traced function call still executes normally -- only
-the trace event is lost.
+after advancing), the stub advances `read_pos` to discard the oldest
+unread event, increments the `overflow` counter, and writes the new
+event into the freed slot. The traced function call is always recorded
+-- only older events that the consumer has not yet read are lost.
 
 **Why:** The stub runs in the context of the calling task with interrupts
 disabled (`Disable()`/`Enable()` around slot reservation). Blocking the
 producer would freeze the calling task and potentially deadlock the
 system, since the daemon (consumer) might need CPU time to drain events.
+The circular overwrite strategy ensures the most recent events are
+always preserved.
 
-**Impact:** Under high call rates, events are silently dropped. The
-daemon detects overflow by checking the ring's `overflow` counter and
-reports it to clients as `# OVERFLOW <n> events dropped`. The dropped
-events are unrecoverable.
+**Impact:** Under sustained high call rates, old events are silently
+discarded. The overflow count is reported in the session-end summary
+and in TRACE STATUS output. The discarded events are unrecoverable.
 
 **Workaround:** Increase ring buffer capacity with the `BUFSZ` argument
 to `atrace_loader` (default 8192 entries). Disable high-frequency
@@ -618,13 +620,20 @@ Stubs set `valid=2` before calling the original function and `valid=1`
 after the function returns. The daemon's consumer may encounter events
 with `valid=2` for blocking functions (e.g., `WaitSelect`, `Execute`,
 `RunCommand`). After `INFLIGHT_PATIENCE` consecutive encounters (3
-encounters, approximately 60 ms of waiting), the daemon consumes the event as-is with
-a potentially stale return value of 0.
+encounters, approximately 60 ms of waiting), the daemon consumes the
+event as-is with a potentially stale return value of 0.
 
 **Impact:** For long-blocking functions, the event may appear in the
 output before the function has returned. The return value and IoErr
 fields are unreliable for such events. The daemon suppresses IoErr
 display for `valid=2` events to avoid showing misleading error codes.
 
+When a patience-consumed event's slot is later reused by a new event,
+the original event's post-call handler will eventually run (when the
+blocking function returns). The post-call sequence guard detects that
+the slot has been reused (saved sequence != entry sequence) and skips
+the `retval` and `valid=1` writes, preventing corruption of the new
+occupant. The `use_count` is still decremented correctly.
+
 See [ring-buffer.md](ring-buffer.md) for details on the valid flag
-protocol.
+protocol and the sequence guard mechanism.

@@ -635,8 +635,8 @@ The validation sequence before READY is:
 
 1. Missing arguments: `ERR 100 Usage: WRITE <path> <size>`
 2. Invalid size (non-numeric, negative, or exceeds 32-bit signed integer range): `ERR 100 Invalid size`
-3. Path too long (exceeds 497 characters; path plus `.amigactld.tmp` suffix
-   must fit in a 512-byte buffer): `ERR 300 Path too long`
+3. Path too long (must fit in a 512-byte buffer with room for the temp file
+   name): `ERR 300 Path too long`
 4. Cannot open temporary file: `ERR <code> <dos error message>`
 
 ### Data Transfer
@@ -658,10 +658,10 @@ The `<bytes_written>` field confirms the number of bytes written.
 
 ### Atomic Write
 
-Data is written to a temporary file (`<path>.amigactld.tmp`) on the same
-volume as the target. On successful completion, the temporary file is
-renamed to the target path. If the target already exists, it is deleted
-before the rename.
+Data is written to a temporary file (`~act.tmp`) in the same directory as
+the target. On successful completion, the temporary file is renamed to the
+target path. If the target already exists, it is deleted before the rename.
+The fixed temp name avoids AmigaOS's 30-character filename truncation.
 
 ### Error Handling During Transfer
 
@@ -3207,7 +3207,7 @@ If atrace is not loaded, only `loaded=0` is returned.
 | `patches` | Number of installed function patches |
 | `events_produced` | Total events written to the ring buffer |
 | `events_consumed` | Total events read from the ring buffer |
-| `events_dropped` | Total events lost due to ring buffer overflow |
+| `events_dropped` | Total oldest events overwritten due to ring buffer overflow |
 | `buffer_capacity` | Ring buffer slot count |
 | `buffer_used` | Slots currently occupied |
 | `patch_N` | Per-patch status: library.function and enabled state |
@@ -3314,7 +3314,7 @@ Argument formatting varies by function:
 
 Comment lines may appear in the stream, prefixed with `#`:
 
-- `# OVERFLOW N events dropped` -- ring buffer overflow notification
+- `# OVERFLOW N old events discarded` -- ring buffer overflow notification (emitted once at session end)
 - `# ATRACE SHUTDOWN` -- atrace module is being unloaded
 
 Comment lines are also delivered via DATA chunks.
