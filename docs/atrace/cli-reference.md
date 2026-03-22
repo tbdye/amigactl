@@ -258,7 +258,7 @@ buffer_used=3
 | `patches` | Number of function patches installed. |
 | `events_produced` | Total events written to the ring buffer. |
 | `events_consumed` | Total events read from the ring buffer by the daemon. |
-| `events_dropped` | Events lost due to ring buffer overflow. |
+| `events_dropped` | Oldest events overwritten due to ring buffer overflow. |
 | `buffer_capacity` | Ring buffer size in event slots. |
 | `buffer_used` | Current number of unconsumed events in the buffer. |
 

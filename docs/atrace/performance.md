@@ -164,7 +164,7 @@ size is the sum of three regions:
   UnlockPubScreen)
 - **Variable region**: depends on argument count, string capture mode,
   and indirect deref type
-- **Suffix**: 126 bytes (identical for all functions)
+- **Suffix**: 156 bytes (identical for all functions)
 
 Representative stub sizes (prefix + variable + suffix):
 
@@ -209,7 +209,8 @@ Amiga memory total (ring buffer + stubs + fixed structures).
 The ring buffer is the bridge between the 68k stubs (producers) and the
 daemon (consumer). Its capacity determines how many events can
 accumulate before the consumer must drain them. When the buffer is full,
-new events are silently dropped and the `overflow` counter increments.
+the oldest unread event is overwritten to make room for the new event,
+and the `overflow` counter increments.
 
 ### Configuring Capacity
 
@@ -263,12 +264,12 @@ functions.
 ### Overflow Behavior
 
 When the ring buffer is full (write_pos + 1 == read_pos after wrapping),
-the stub increments the `overflow` counter, calls Enable() to leave the
-critical section, restores registers, and tail-calls the original
-function normally. The traced function call still executes -- only the
-trace event is lost.
+the stub increments the `overflow` counter, advances `read_pos` to
+discard the oldest unread event, calls Enable() to leave the critical
+section, and branches back to the prefix write path to record the new
+event in the freed slot. The most recent events are always preserved.
 
-Overflow events are reported in the TUI status bar and in
+The overflow count is reported in the session-end summary and in
 `TRACE STATUS` output. See [ring-buffer.md](ring-buffer.md) for the
 full overflow protocol.
 

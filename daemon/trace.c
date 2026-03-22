@@ -4346,6 +4346,13 @@ void trace_poll_events(struct daemon_state *d)
                     }
                     c->trace.sendbuf.len = 0;
                 }
+                if (g_events_dropped > 0) {
+                    static char ov_comment[64];
+                    sprintf(ov_comment,
+                            "# OVERFLOW %lu old events discarded",
+                            (unsigned long)g_events_dropped);
+                    send_trace_data_chunk(c->fd, ov_comment);
+                }
                 send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
                 send_end(c->fd);
                 send_sentinel(c->fd);
@@ -4405,6 +4412,13 @@ void trace_poll_events(struct daemon_state *d)
                         continue;
                     }
                     c->trace.sendbuf.len = 0;
+                }
+                if (g_events_dropped > 0) {
+                    static char ov_comment[64];
+                    sprintf(ov_comment,
+                            "# OVERFLOW %lu old events discarded",
+                            (unsigned long)g_events_dropped);
+                    send_trace_data_chunk(c->fd, ov_comment);
                 }
                 send_trace_data_chunk(c->fd, "# ATRACE SHUTDOWN");
                 send_end(c->fd);
@@ -4563,6 +4577,26 @@ void trace_poll_events(struct daemon_state *d)
             continue;
         }
 
+        /* dos.CurrentDir(NULL) suppression.
+         * CurrentDir calls with lock=NULL (args[0]==0) are noise from
+         * Workbench internal directory polling (bursts of 4 every ~5s
+         * on WB 3.1). No diagnostic value at any tier. CurrentDir with
+         * an actual lock (real directory change) always passes through. */
+        if (ev->lib_id == LIB_DOS &&
+            ev->lvo_offset == -126 &&       /* CurrentDir */
+            ev->args[0] == 0) {             /* lock=NULL */
+            ev->valid = 0;
+            if (pos == g_inflight_stall_pos) {
+                g_inflight_stall_pos = 0xFFFFFFFF;
+                g_inflight_stall_count = 0;
+            }
+            pos = (pos + 1) % ring->capacity;
+            ring->read_pos = pos;
+            total_consumed++;
+            g_self_filtered++;
+            continue;
+        }
+
         /* Resolve task name for formatting and PROC filter matching.
          * resolve_task_name() uses resolve_cli_name() to extract the
          * CLI command basename (e.g. "atrace_test") for CLI processes,
@@ -4647,21 +4681,15 @@ void trace_poll_events(struct daemon_state *d)
 
     g_anchor->events_consumed += total_consumed;
 
-    /* Report overflow */
+    /* Accumulate overflow counter (reset on each poll to prevent
+     * 68k-side ULONG overflow).  The summary is emitted once at
+     * session end rather than every poll cycle. */
     if (ring->overflow > 0) {
         Disable();
         ov = ring->overflow;
         ring->overflow = 0;
         Enable();
         g_events_dropped += ov;
-        sprintf(trace_line_buf, "# OVERFLOW %lu events dropped",
-                (unsigned long)ov);
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            c = &d->clients[i];
-            if (c->fd >= 0 && c->trace.active)
-                sendbuf_append_data_chunk(&c->trace.sendbuf,
-                                          trace_line_buf);
-        }
     }
 
     ReleaseSemaphore(&g_anchor->sem);
@@ -4965,6 +4993,7 @@ static int trace_cmd_start(struct daemon_state *d, int idx,
      * A user starting TRACE START wants new activity, not history. */
     Forbid();
     drain_stale_events();
+    g_events_dropped = 0;
     Permit();
 
     /* Capture EClock epoch for per-event timestamps (v3+) */
@@ -5281,6 +5310,7 @@ static int trace_cmd_run(struct daemon_state *d, int idx,
      * trace_poll_events() from racing past the producer through stale
      * entries with valid=1 from prior activity. */
     drain_stale_events();
+    g_events_dropped = 0;
 
     Permit();
 
@@ -5530,6 +5560,12 @@ void trace_check_run_completed(struct daemon_state *d)
             }
         }
         if (run_client_ok) {
+            if (g_events_dropped > 0) {
+                sprintf(comment, "# OVERFLOW %lu old events discarded",
+                        (unsigned long)g_events_dropped);
+                send_trace_data_chunk(c->fd, comment);
+                sprintf(comment, "# PROCESS EXITED rc=%d", tp->rc);
+            }
             send_trace_data_chunk(c->fd, comment);
             send_end(c->fd);
             send_sentinel(c->fd);
@@ -5813,6 +5849,13 @@ int trace_handle_input(struct daemon_state *d, int idx)
                     return 0;
                 }
                 c->trace.sendbuf.len = 0;
+            }
+            if (g_events_dropped > 0) {
+                static char ov_comment[64];
+                sprintf(ov_comment,
+                        "# OVERFLOW %lu old events discarded",
+                        (unsigned long)g_events_dropped);
+                send_trace_data_chunk(c->fd, ov_comment);
             }
             send_end(c->fd);
             send_sentinel(c->fd);

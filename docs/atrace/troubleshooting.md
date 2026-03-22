@@ -38,7 +38,7 @@ Key fields:
 | `patches` | Total number of installed function patches (99 at full installation). |
 | `events_produced` | Cumulative events written to the ring buffer by stubs. |
 | `events_consumed` | Cumulative events read from the ring buffer by the daemon. |
-| `events_dropped` | Cumulative events lost to ring buffer overflow. |
+| `events_dropped` | Cumulative count of old events discarded by circular overwrite. |
 | `events_self_filtered` | Cumulative events filtered by daemon-side self-filtering and content-based suppression. |
 | `buffer_capacity` | Ring buffer size in entries (default: 8192). |
 | `buffer_used` | Number of entries currently occupied in the ring buffer. |
@@ -218,14 +218,14 @@ the output.
 ### Ring buffer overflow
 
 When events are produced faster than the daemon can consume them, the
-ring buffer overflows. Overflowed events are lost permanently. The
-overflow is reported in the trace stream as a comment line:
+ring buffer's circular overwrite discards older events that the consumer
+has not yet read. The most recent events are always preserved. The
+overflow count is reported in the session-end summary and is visible
+in `trace status`:
 
 ```
-# OVERFLOW 147 events dropped
+events_dropped=147
 ```
-
-The `events_dropped` field in `trace status` shows the cumulative count.
 
 See the [Buffer Overflow](#buffer-overflow) section below for detailed
 remediation.
@@ -257,14 +257,16 @@ entire event stream.
 
 ## Buffer Overflow
 
-**Symptom:** The trace stream contains `# OVERFLOW N events dropped`
-comments, or `trace status` shows a non-zero `events_dropped` value.
+**Symptom:** `trace status` shows a non-zero `events_dropped` value, or
+the session-end summary reports discarded events.
 
 **Cause:** Events are being produced faster than the daemon can format,
 filter, and send them to the client over the network. The ring buffer
 is a fixed-size circular buffer (default 8192 entries, each 128 bytes =
 1 MB). When the producer (stubs) catches up to the consumer (daemon),
-new events increment the overflow counter and are discarded.
+old unread events are overwritten by new ones and the overflow counter
+is incremented. The circular overwrite strategy ensures the most recent
+events are always preserved, at the cost of losing older events.
 
 **Diagnostic steps:**
 

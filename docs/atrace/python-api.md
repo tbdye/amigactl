@@ -58,7 +58,7 @@ status = conn.trace_status()
 | `patches` | int | Total number of patches installed |
 | `events_produced` | int | Cumulative events written to ring buffer |
 | `events_consumed` | int | Cumulative events read by daemon |
-| `events_dropped` | int | Events lost to ring buffer overflow |
+| `events_dropped` | int | Oldest events overwritten due to ring buffer overflow |
 | `buffer_capacity` | int | Ring buffer slot count |
 | `buffer_used` | int | Slots currently occupied |
 | `filter_task` | str | Hex Task pointer for TRACE RUN filter (e.g. `"0x0e300200"`), or `"0x00000000"` if none. Only present when loaded. |

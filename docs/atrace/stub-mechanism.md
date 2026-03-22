@@ -41,9 +41,9 @@ A stub consists of three contiguous regions:
 |   task name capture,       |
 |   valid=2 marker)          |
 +----------------------------+
-|  Suffix                    |   126 bytes (standard)
-|  (MOVEM restore,           |   196 bytes (OpenLibrary, +70 BSD patching)
-|   trampoline,              |   152 bytes (accept, +26 sockaddr capture)
+|  Suffix                    |   156 bytes (standard)
+|  (MOVEM restore,           |   226 bytes (OpenLibrary, +70 BSD patching)
+|   trampoline,              |   182 bytes (accept, +26 sockaddr capture)
 |   post-call handler,       |
 |   disabled path,           |
 |   overflow path)           |
@@ -62,7 +62,7 @@ assembly, placeholder addresses and struct field displacements in the
 templates are patched with actual runtime values.
 
 Source: `stub_gen.c`, lines 1--19 (file header), `STUB_PREFIX_BYTES`
-(216), `STUB_SUFFIX_BYTES` (126).
+(216), `STUB_SUFFIX_BYTES` (156).
 
 
 ## Register Conventions
@@ -669,8 +669,9 @@ clr.b   34(a5)                           ; Empty string_data
 **DEREF_NW_TITLE** (type 5), **DEREF_WIN_TITLE** (type 6),
 **DEREF_NS_TITLE** (type 7), **DEREF_SCR_TITLE** (type 8)
 
-Each is 18 words (36 bytes) and follows the same pattern as
-`DEREF_LN_NAME` but with a different field offset:
+DEREF_WIN_TITLE, DEREF_NS_TITLE, and DEREF_SCR_TITLE are each 18
+words (36 bytes) and follow the same pattern as `DEREF_LN_NAME` but
+with a different field offset:
 
 | Type | Struct | Field | Offset |
 |---|---|---|---|
@@ -678,6 +679,18 @@ Each is 18 words (36 bytes) and follows the same pattern as
 | DEREF_WIN_TITLE | Window | Title | 32 |
 | DEREF_NS_TITLE | NewScreen | DefaultTitle | 20 |
 | DEREF_SCR_TITLE | Screen | Title | 22 |
+
+DEREF_NW_TITLE has an extended code path for `OpenWindowTagList`. When
+the NewWindow pointer (first argument) is NULL, the stub walks the tag
+list (second argument) looking for `WA_Title` (tag ID `0x8000006E`).
+The tag walker iterates up to 64 tags with a safety limit, handling
+the standard Utility tag protocol: `TAG_DONE` (0, terminates),
+`TAG_IGNORE` (1, skip this tag), `TAG_MORE` (2, follow `ti_Data` as a
+pointer to a continuation tag list), and `TAG_SKIP` (3, skip `ti_Data`
+following tags). If `WA_Title` is found, its `ti_Data` value is used
+as the title string pointer for the standard string copy loop. If the
+NewWindow pointer is non-NULL, the original `offset 26` dereference
+is used.
 
 ### 5. Task Name Capture
 
@@ -753,11 +766,18 @@ Key details:
 - CLI command names are BSTRs (BCPL strings): a BPTR to a length-prefixed
   string with no NUL terminator. The code converts the BPTR to a real
   address with `asl.l #2`, reads the length byte, clamps to 21
-  characters, and copies the string data.
+  characters, and copies the string data. Before copying, a `cmpi.b
+  #0x20` validation check ensures the first byte of the BSTR data is
+  a printable ASCII character (>= 0x20). Strings starting with control
+  characters are treated as stale or corrupted pointers, and the stub
+  falls through to the `ln_Name` fallback.
 
 - The `ln_Name` fallback uses `dbeq` (stop on NUL) because `ln_Name`
   is a NUL-terminated C string, while the CLI path uses `dbf` (stop on
-  count only) because BSTRs are not NUL-terminated.
+  count only) because BSTRs are not NUL-terminated. A `cmpi.b #0x20`
+  validation check on the `ln_Name` string's first character rejects
+  strings starting with control characters, setting `task_name[0]` to
+  NUL instead.
 
 ### 6. valid=2 Pre-Call Marker
 
@@ -785,42 +805,42 @@ See [event-format.md](event-format.md) for the full semantics of the
 `valid` field.
 
 
-## Suffix Region (126/152/196 bytes)
+## Suffix Region (156/182/226 bytes)
 
-The suffix template is defined in `stub_suffix[]` (63 UWORDs = 126
+The suffix template is defined in `stub_suffix[]` (78 UWORDs = 156
 bytes). The absolute byte offsets within the assembled stub shift based
 on the variable region size.
 
 Two function-specific variants insert additional code between the
-return value capture (suffix byte 30) and the IoErr check (suffix byte
-34), expanding the suffix:
+return value capture and the IoErr check, expanding the suffix:
 
 - **OpenLibrary** stubs insert a 70-byte bsdsocket per-opener patching
-  block, bringing the suffix to 196 bytes.
+  block, bringing the suffix to 226 bytes.
 - **accept()** stubs insert a 26-byte sockaddr capture block, bringing
-  the suffix to 152 bytes.
+  the suffix to 182 bytes.
 
-All suffix-relative offsets after byte 34 shift by the insertion size
-(70 or 26 bytes) when these blocks are present.
+All suffix-relative offsets after the variant insertion point shift by
+the insertion size (70 or 26 bytes) when these blocks are present.
 
 The suffix contains four functional blocks (standard suffix):
 
-1. MOVEM restore and trampoline (bytes 0--23)
-2. Post-call handler (bytes 24--93)
-3. Disabled fast path (bytes 94--103)
-4. Overflow path (bytes 104--125)
+1. MOVEM restore and trampoline (bytes 0--29)
+2. Post-call handler (bytes 30--105)
+3. Disabled fast path (bytes 106--115)
+4. Overflow path (bytes 116--155)
 
-### MOVEM Restore and Trampoline (suffix bytes 0--23)
+### MOVEM Restore and Trampoline (suffix bytes 0--29)
 
 The trampoline mechanism calls the original library function while
-preserving the entry pointer across the call. The challenge is passing
-the entry pointer through the call without clobbering any registers
-that the original function might use.
+preserving the entry pointer and sequence number across the call. The
+challenge is passing these values through the call without clobbering
+any registers that the original function might use.
 
-The solution uses the stack: the entry pointer is smuggled beneath the
-caller's original saved a5 value. After the original function returns,
-it lands at `.post_call` (via a pushed return address), where the entry
-pointer is accessible at a known stack offset.
+The solution uses the stack: the entry pointer and the event's sequence
+number are smuggled beneath the caller's original saved a5 value.
+After the original function returns, it lands at `.post_call` (via a
+pushed return address), where these values are accessible at known
+stack offsets.
 
 ```
 Byte   Encoding              Instruction                     Purpose
@@ -828,10 +848,12 @@ Byte   Encoding              Instruction                     Purpose
   0    4CDF 5FFF             movem.l (sp)+, d0-d7/a0-a4/a6  Restore all saved regs
   4    2F17                  move.l (sp), -(sp)              Duplicate saved_a5 on stack
   6    2F4D 0004             move.l a5, 4(sp)                Store entry ptr over old slot
- 10    2A5F                  movea.l (sp)+, a5               Restore a5 from duplicate
- 12    487A 000A             pea 10(pc)                      Push .post_call address
- 16    2F3C 0000 0000        move.l #ORIG_ADDR, -(sp)        Push original func address [1]
- 22    4E75                  rts                             "Jump" to original function
+ 10    2F03                  move.l d3, -(sp)                Push saved sequence number
+ 12    2A6F 000C             movea.l 12(sp), a5              Restore a5 from duplicate
+ 16    2F7C 0000 0000 000C   move.l #0, 12(sp)               Clear duplicate slot
+ 24    487A 000A             pea 10(pc)                      Push .post_call address
+ 28    2F3C 0000 0000        move.l #ORIG_ADDR, -(sp)        Push original func address [1]
+ 34    4E75                  rts                             "Jump" to original function
 ```
 
 Stack state evolution through the trampoline:
@@ -846,67 +868,84 @@ After move.l (sp), -(sp) (byte 4):
 After move.l a5, 4(sp) (byte 6):
   sp -> [saved_a5]  [entry_ptr]  [caller's return addr]  ...
 
-After movea.l (sp)+, a5 (byte 10):
-  sp -> [entry_ptr]  [caller's return addr]  ...
+After move.l d3, -(sp) (byte 10):
+  sp -> [saved_seq]  [saved_a5]  [entry_ptr]  [caller's return addr]  ...
+
+After movea.l 12(sp), a5 (byte 12):
+  sp -> [saved_seq]  [saved_a5]  [entry_ptr]  [caller's return addr]  ...
   a5 = caller's original a5 (restored)
 
-After pea 10(pc) (byte 12):
-  sp -> [.post_call]  [entry_ptr]  [caller's return addr]  ...
+After pea 10(pc) (byte 24):
+  sp -> [.post_call]  [saved_seq]  [saved_a5]  [entry_ptr]  [caller's return addr]  ...
 
-After move.l #ORIG_ADDR, -(sp) (byte 16):
-  sp -> [ORIG_ADDR]  [.post_call]  [entry_ptr]  [caller's return addr]  ...
+After move.l #ORIG_ADDR, -(sp) (byte 28):
+  sp -> [ORIG_ADDR]  [.post_call]  [saved_seq]  [saved_a5]  [entry_ptr]  [caller's return addr]  ...
 
-After rts (byte 22):
+After rts (byte 34):
   Pops ORIG_ADDR into PC -> executes original function
-  sp -> [.post_call]  [entry_ptr]  [caller's return addr]  ...
+  sp -> [.post_call]  [saved_seq]  [saved_a5]  [entry_ptr]  [caller's return addr]  ...
 ```
 
 When the original function executes `rts`, it pops `.post_call` into PC,
-returning execution to the post-call handler. The entry pointer is at
-`4(sp)` (under d0 which gets pushed immediately).
+returning execution to the post-call handler. The stack frame is:
+`[retval] [saved_seq] [entry_ptr] [caller's return addr]` (where
+retval is pushed immediately by the post-call handler).
 
-The `pea 10(pc)` instruction uses PC-relative addressing. The
-displacement 10 (0x000A) is calculated from the address of the extension
-word (byte 14 in suffix) to `.post_call` (byte 24 in suffix):
-24 - 14 = 10.
+### Post-Call Handler (suffix bytes 30--105, or extended with variant blocks)
 
-### Post-Call Handler (suffix bytes 24--93, or extended with variant blocks)
-
-This block executes after the original function returns. It captures the
-return value, optionally runs a function-specific post-call block
-(OpenLibrary BSD patching or accept() sockaddr capture), optionally
-captures `IoErr()` for dos.library functions, marks the event as
-complete, and returns to the original caller.
+This block executes after the original function returns. It saves the
+return value, performs a sequence guard check to detect reused slots,
+optionally runs a function-specific post-call block (OpenLibrary BSD
+patching or accept() sockaddr capture), optionally captures `IoErr()`
+for dos.library functions, marks the event as complete, and returns to
+the original caller.
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 24    2F00                  move.l d0, -(sp)                Save retval (d0)
- 26    206F 0004             movea.l 4(sp), a0               a0 = entry ptr (under d0)
- 30    2140 001C             move.l d0, 28(a0)               entry->retval = d0
+ 30    2F00                  move.l d0, -(sp)                Save retval (d0)
+ 32    206F 0008             movea.l 8(sp), a0               a0 = entry ptr (under retval, saved_seq)
+ 36    B2AF 0004             cmp.l 4(sp), d1                 Compare saved_seq with entry->sequence
+                                                             (d1 loaded from 4(a0) at byte 38)
+ ...                         beq.s .seq_ok                   Match -> proceed with writes
+                             ; Mismatch: slot reused, skip writes
+                             ; (still decrements use_count)
+                             bra.s .skip_writes
+       ; .seq_ok:
+ ...   2140 001C             move.l d0, 28(a0)               entry->retval = d0
 ```
 
-#### IoErr Capture (suffix bytes 34--73)
+The sequence guard compares the sequence number saved on the stack
+during the trampoline setup against the sequence number currently in
+the entry slot. If they match, the slot still belongs to this event
+and the handler writes `retval` and sets `valid=1`. On mismatch, the
+slot has been reused by a different event (due to circular overwrite
+or ring wrap), so the handler skips the data writes but still
+decrements `use_count`.
+
+#### IoErr Capture (suffix, within post-call handler)
 
 IoErr is only captured for dos.library functions that returned 0
 (failure). This conditional avoids calling `IoErr()` for every traced
 function, which would be both wasteful and incorrect (IoErr is
-per-process state, only meaningful after a DOS failure).
+per-process state, only meaningful after a DOS failure). The IoErr
+capture is skipped on sequence mismatch (the `.skip_writes` path
+bypasses it).
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 34    0C28 0001 0001        cmp.b #LIB_DOS, 1(a0)          Is this a DOS function?
- 40    6620                  bne.s +32                       No -> .skip_ioerr (byte 74)
- 42    4A80                  tst.l d0                        retval == 0? (failure)
- 44    661C                  bne.s +28                       Success -> .skip_ioerr
- 46    2F0E                  move.l a6, -(sp)                Save caller's a6
- 48    2C7C 0000 0000        movea.l #DOS_BASE, a6           Load DOSBase
- 54    4EAE FF7C             jsr -132(a6)                    IoErr() = LVO -132
- 58    2C5F                  movea.l (sp)+, a6               Restore a6
- 60    206F 0004             movea.l 4(sp), a0               Reload entry ptr
- 64    1140 0062             move.b d0, 98(a0)               entry->ioerr = (UBYTE)d0
- 68    0028 0002 0021        or.b #2, 33(a0)                 entry->flags |= FLAG_HAS_IOERR
+ ...   0C28 0001 0001        cmp.b #LIB_DOS, 1(a0)          Is this a DOS function?
+       6620                  bne.s .skip_ioerr               No -> skip
+       4A80                  tst.l d0                        retval == 0? (failure)
+       661C                  bne.s .skip_ioerr               Success -> skip
+       2F0E                  move.l a6, -(sp)                Save caller's a6
+       2C7C 0000 0000        movea.l #DOS_BASE, a6           Load DOSBase
+       4EAE FF7C             jsr -132(a6)                    IoErr() = LVO -132
+       2C5F                  movea.l (sp)+, a6               Restore a6
+       206F 0008             movea.l 8(sp), a0               Reload entry ptr
+       1140 0062             move.b d0, 98(a0)               entry->ioerr = (UBYTE)d0
+       0028 0002 0021        or.b #2, 33(a0)                 entry->flags |= FLAG_HAS_IOERR
 ```
 
 The IoErr result is stored as a single byte (`UBYTE`) at event offset
@@ -916,14 +955,15 @@ truncated. In practice, AmigaOS IoErr values fit within this range.
 The `or.b #2, 33(a0)` sets `FLAG_HAS_IOERR` (0x02) in the flags field
 without disturbing `FLAG_HAS_ECLOCK` (0x01) that was set earlier.
 
-Note that a0 is reloaded from the stack after the `IoErr()` call at
-suffix byte 60 because the call may have clobbered a0.
+Note that a0 is reloaded from the stack after the `IoErr()` call
+because the call may have clobbered a0. The entry pointer is at
+`8(sp)` (under the saved retval and saved sequence number).
 
-#### OpenLibrary BSD Patching Block (70 bytes, suffix bytes 34--103)
+#### OpenLibrary BSD Patching Block (70 bytes)
 
 For the OpenLibrary stub (exec.library, LVO -552), a 70-byte block is
-inserted at suffix byte 34, between the return value capture and the
-IoErr check. This implements stub-side bsdsocket per-opener patching,
+inserted between the return value capture and the IoErr check. This
+implements stub-side bsdsocket per-opener patching,
 which eliminates the race window that existed with daemon-side patching.
 
 When a program calls `OpenLibrary("bsdsocket.library", ...)`, the
@@ -976,10 +1016,11 @@ avoid clobbering values needed by the rest of the post-call handler.
 After restore, a0 and d0 are reloaded from the stack since they were
 used as scratch.
 
-#### Accept Sockaddr Capture Block (26 bytes, suffix bytes 34--59)
+#### Accept Sockaddr Capture Block (26 bytes)
 
 For the accept() stub (bsdsocket.library, LVO -48), a 26-byte block is
-inserted at suffix byte 34 to capture the sockaddr_in of the accepted
+inserted between the return value capture and the IoErr check to
+capture the sockaddr_in of the accepted
 connection. The variable region pre-clears `string_data[0..7]` so that
 failed accepts show zero bytes.
 
@@ -1008,30 +1049,33 @@ bytes 0--3 contain `sin_family` (2 bytes) and `sin_port` (2 bytes,
 network byte order), and bytes 4--7 contain `sin_addr` (4 bytes,
 network byte order). The daemon decodes these fields for display.
 
-#### Event Completion and Return (suffix bytes 74--93)
+#### Event Completion and Return (suffix bytes 86--105)
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 74    10BC 0001             move.b #1, (a0)                 entry->valid = 1 (complete)
- 78    207C 0000 0000        movea.l #PATCH_ADDR, a0         Load patch descriptor [4]
- 84    53A8 0000             subq.l #1, use_count(a0)        Decrement use_count
- 88    201F                  move.l (sp)+, d0                Restore retval
- 90    588F                  addq.l #4, sp                   Pop entry pointer
- 92    4E75                  rts                             Return to original caller
+ 86    10BC 0001             move.b #1, (a0)                 entry->valid = 1 (complete)
+       ; .skip_writes:
+ 90    207C 0000 0000        movea.l #PATCH_ADDR, a0         Load patch descriptor [4]
+ 96    53A8 0000             subq.l #1, use_count(a0)        Decrement use_count
+100    201F                  move.l (sp)+, d0                Restore retval
+102    508F                  addq.l #8, sp                   Pop saved_seq + entry pointer
+104    4E75                  rts                             Return to original caller
 ```
 
 Setting `valid` to 1 signals the daemon's consumer that all event fields
-(including retval and ioerr) are now populated. The `use_count`
-decrement allows the global disable procedure to detect when all
-in-flight stubs have completed.
+(including retval and ioerr) are now populated. On a sequence mismatch,
+execution jumps to `.skip_writes`, bypassing the `valid=1` and `retval`
+writes but still decrementing `use_count`. The `use_count` decrement
+allows the global disable procedure to detect when all in-flight stubs
+have completed.
 
-Stack cleanup: d0 (retval) is popped first, then the entry pointer is
-discarded with `addq.l #4, sp`. Finally, `rts` returns to the original
-caller using the return address that was on the stack when the stub was
-first entered.
+Stack cleanup: d0 (retval) is popped first, then the saved sequence
+number and entry pointer are discarded with `addq.l #8, sp`. Finally,
+`rts` returns to the original caller using the return address that was
+on the stack when the stub was first entered.
 
-### Disabled Fast Path (suffix bytes 94--103)
+### Disabled Fast Path (suffix bytes 106--115)
 
 This is the target of all `.disabled` branches in the prefix (and the
 daemon task check and optional NULL-argument filter). It executes when
@@ -1041,9 +1085,9 @@ rejects the current task, or when the calling task is the daemon itself.
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
- 94    2A5F                  movea.l (sp)+, a5               Restore caller's a5
- 96    2F3C 0000 0000        move.l #ORIG_ADDR, -(sp)        Push original function [2]
-102    4E75                  rts                             Tail-call original
+106    2A5F                  movea.l (sp)+, a5               Restore caller's a5
+108    2F3C 0000 0000        move.l #ORIG_ADDR, -(sp)        Push original function [2]
+114    4E75                  rts                             Tail-call original
 ```
 
 This path is minimal: 3 instructions, 10 bytes. When the stub is
@@ -1052,44 +1096,52 @@ branch, restore a5, push original, rts. The original function address
 is pushed onto the stack and the `rts` instruction pops it into PC,
 effectively performing a tail-call with the original stack frame intact.
 
-### Overflow Path (suffix bytes 104--125)
+### Overflow Path (suffix bytes 116--155)
 
 Executed when the ring buffer is full (write_pos + 1 == read_pos). This
-path increments the overflow counter, re-enables interrupts (since the
-slot reservation runs under `Disable()`), restores all registers, and
-tail-calls the original function.
+path implements circular overwrite: it increments the overflow counter,
+advances `read_pos` to discard the oldest event, re-enables interrupts,
+and branches back to the prefix write path to record the new event in
+the freed slot.
 
 ```
 Byte   Encoding              Instruction                     Purpose
 ----   --------              -----------                     -------
-104    52A8 0000             addq.l #1, overflow(a0)         ring->overflow++
-108    4EAE FF82             jsr _LVOEnable(a6)              Re-enable interrupts (-126)
-112    4CDF 5FFF             movem.l (sp)+, d0-d7/a0-a4/a6  Restore saved registers
-116    2A5F                  movea.l (sp)+, a5               Restore caller's a5
-118    2F3C 0000 0000        move.l #ORIG_ADDR, -(sp)        Push original function [3]
-124    4E75                  rts                             Tail-call original
+116    52A8 0000             addq.l #1, overflow(a0)         ring->overflow++
+120    2028 0008             move.l read_pos(a0), d0         d0 = current read_pos
+124    5280                  addq.l #1, d0                   d0 = read_pos + 1
+126    B0A8 0000             cmp.l capacity(a0), d0          d0 >= capacity?
+130    6502                  bcs.s .nowrap2 (+2)             No wrap needed
+132    7000                  moveq #0, d0                    Wrap to 0
+       ; .nowrap2:
+134    2140 0008             move.l d0, read_pos(a0)         Commit new read_pos
+138    4EAE FF82             jsr _LVOEnable(a6)              Re-enable interrupts (-126)
+142    ...                   bra.w .prefix_write             Branch back to prefix write path
 ```
 
 Note that a6 still holds SysBase at this point (loaded at prefix byte
-80 for the `Disable()` call), so the `Enable()` call at byte 108 is
-valid. After `Enable()`, the full MOVEM restore and a5 restore undo all
-stub-side stack changes, and the tail-call to the original function
-proceeds with the caller's original register and stack state.
+80 for the `Disable()` call), so the `Enable()` call is valid. After
+enabling interrupts, execution branches back to the prefix's event fill
+code (the entry pointer calculation and event population), using the
+slot that was just freed by advancing `read_pos`. The original function
+is still traced -- unlike the old drop-new-event design, the circular
+buffer always records the newest events.
 
 ### Suffix Placeholder Summary
 
 | Placeholder | Occurrences | Suffix-relative offsets (high word) | Patched with |
 |---|---|---|---|
-| ORIG_ADDR | 3 | 18, 98+pri, 120+pri | Return value of `SetFunction()` |
-| PATCH_ADDR | 1 | 80+pri | `(ULONG)patch` |
-| DOS_BASE_ADDR | 1 | 50+pri | dos.library base address |
+| ORIG_ADDR | 3 | 30, 110+pri, 144+pri | Return value of `SetFunction()` |
+| PATCH_ADDR | 1 | 92+pri | `(ULONG)patch` |
+| DOS_BASE_ADDR | 1 | 62+pri | dos.library base address |
 | BSD_TABLE | 1 | 58 (OpenLibrary only) | `(ULONG)anchor->bsd_table` |
-| use_count displacement | 1 | 86+pri | `offsetof(atrace_patch, use_count)` |
-| overflow displacement | 1 | 106+pri | `offsetof(atrace_ringbuf, overflow)` |
+| use_count displacement | 1 | 98+pri | `offsetof(atrace_patch, use_count)` |
+| overflow displacement | 1 | 118+pri | `offsetof(atrace_ringbuf, overflow)` |
 
 Where `pri` is the post-retval insertion size: 0 for standard stubs,
-70 for OpenLibrary, 26 for accept(). Offsets at or after suffix byte 34
-(the insertion point) shift by `pri`; offsets before 34 are unaffected.
+70 for OpenLibrary, 26 for accept(). Offsets at or after the variant
+insertion point shift by `pri`; offsets before the insertion point are
+unaffected.
 
 
 ## Address and Displacement Patching
@@ -1128,9 +1180,9 @@ All address patches, showing which runtime value is written and where:
 | ANCHOR_ADDR | `(ULONG)anchor` | 1 | Prefix: 18 |
 | RING_ENTRIES_ADDR | `(ULONG)entries` | 1 | Prefix: 150+ns |
 | TIMER_BASE_ADDR | `(ULONG)anchor->timer_base` | 1 | Prefix: 158+ns |
-| DOS_BASE_ADDR | `dos_base` (dos.library) | 1 | Suffix: start+50+pri |
+| DOS_BASE_ADDR | `dos_base` (dos.library) | 1 | Suffix: start+62+pri |
 | BSD_TABLE | `anchor->bsd_table` | 1 | Suffix: start+58 (OpenLibrary only) |
-| ORIG_ADDR | `SetFunction()` return | 3 | Suffix: start+18, start+98+pri, start+120+pri |
+| ORIG_ADDR | `SetFunction()` return | 3 | Suffix: start+30, start+110+pri, start+144+pri |
 
 Where `ns` is the null shift (0 or 8), `start` is `suffix_start`
 (prefix_bytes + variable region bytes), and `pri` is the post-retval
@@ -1175,8 +1227,8 @@ from `offsetof()`:
 
 | Suffix-relative offset | Instruction | Patched with |
 |---|---|---|
-| 86+pri | `subq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
-| 106+pri | `addq.l #1, overflow(a0)` | `offsetof(atrace_ringbuf, overflow)` = 12 |
+| 98+pri | `subq.l #1, use_count(a0)` | `offsetof(atrace_patch, use_count)` = 12 |
+| 118+pri | `addq.l #1, overflow(a0)` | `offsetof(atrace_ringbuf, overflow)` = 12 |
 
 ### Branch Displacement Calculation
 
@@ -1200,22 +1252,22 @@ displacement word immediately follows it.
 
 | Branch | Opcode byte | Displacement byte | Target |
 |---|---|---|---|
-| `beq.w .disabled` | 12 | 14 | suffix_start + 94 + pri |
-| `beq.w .disabled` | 26 | 28 | suffix_start + 94 + pri |
-| `bne.w .disabled` | 52 | 54 | suffix_start + 94 + pri |
-| `beq.w .disabled` (daemon) | 72 | 74 | suffix_start + 94 + pri |
-| `beq.w .overflow` | 112+ns | 114+ns | suffix_start + 104 + pri |
+| `beq.w .disabled` | 12 | 14 | suffix_start + 106 + pri |
+| `beq.w .disabled` | 26 | 28 | suffix_start + 106 + pri |
+| `bne.w .disabled` | 52 | 54 | suffix_start + 106 + pri |
+| `beq.w .disabled` (daemon) | 72 | 74 | suffix_start + 106 + pri |
+| `beq.w .overflow` | 112+ns | 114+ns | suffix_start + 116 + pri |
 
 Where `pri` is the post-retval insertion size: 0 for standard stubs,
 70 for OpenLibrary, 26 for accept(). The `.disabled` and `.overflow`
 labels in the suffix shift by the insertion size because they are
-located after the insertion point (suffix byte 34).
+located after the variant insertion point.
 
 **NULL-argument filter branch** (when present):
 
 | Branch | Opcode byte | Displacement byte | Target |
 |---|---|---|---|
-| `beq.w .disabled` | 80 | 82 | suffix_start + 94 + pri |
+| `beq.w .disabled` | 80 | 82 | suffix_start + 106 + pri |
 
 Displacement calculations from the source code:
 
@@ -1225,6 +1277,9 @@ p[BEQ_DISABLED_2 / 2] = (UWORD)(disabled_byte - (26 + 2));
 p[BNE_DISABLED_3 / 2] = (UWORD)(disabled_byte - (52 + 2));
 p[BEQ_DISABLED_4 / 2] = (UWORD)(disabled_byte - (72 + 2));
 p[(BEQ_OVERFLOW + ns) / 2] = (UWORD)(overflow_byte - (112 + ns + 2));
+
+/* disabled_byte = suffix_start + 106 + pri */
+/* overflow_byte = suffix_start + 116 + pri */
 ```
 
 Note that branches at byte offsets below 76 are NOT shifted in position

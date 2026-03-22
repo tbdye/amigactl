@@ -277,9 +277,9 @@ Server: OK <bytes_written>\n.\n
 
 - After the last chunk, the client sends `END\n`.
 
-- The server writes the data to a temporary file on the same volume as
-  the target path (`<path>.amigactld.tmp`), then atomically renames it
-  to the target.  On success, the server responds with
+- The server writes the data to a temporary file (`~act.tmp`) in the
+  same directory as the target path, then atomically renames it to the
+  target.  On success, the server responds with
   `OK <bytes_written>\n.\n`.
 
 - **Error during transfer:** If the server encounters a write error
@@ -514,8 +514,7 @@ Known comment formats:
 | `# disabled: <funcs> (manually disabled)` | Stream start: functions manually disabled |
 | `# PROCESS EXITED rc=<N>` | TRACE RUN: launched process has exited |
 | `# ATRACE SHUTDOWN` | The atrace module was unloaded during streaming |
-| `# DROPPED <N> events` | Ring buffer overflow: N events were lost |
-| `# OVERFLOW <N> events dropped` | Ring buffer overflow detected during polling |
+| `# OVERFLOW <N> old events discarded` | Ring buffer overflow: N oldest events were overwritten (emitted once at session end) |
 | `# WARNING: ...` | Diagnostic warning (e.g., unexpected LVO state) |
 | `# Patched bsdsocket base 0x<addr> (<N> LVOs)` | bsdsocket per-opener patching diagnostic |
 
