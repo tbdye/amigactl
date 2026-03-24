@@ -301,7 +301,7 @@ def cmd_arexx(conn, args):
         print("Error: no command specified", file=sys.stderr)
         sys.exit(1)
     command = " ".join(parts)
-    rc, result = conn.arexx(args.port, command)
+    rc, result = conn.arexx(args.rexx_port, command)
     if result:
         print(result)
     if rc != 0:
@@ -841,7 +841,7 @@ def main() -> None:
 
     p_arexx = subparsers.add_parser("arexx",
                                      help="Send ARexx command to named port")
-    p_arexx.add_argument("port", help="ARexx port name")
+    p_arexx.add_argument("rexx_port", metavar="PORT", help="ARexx port name")
     p_arexx.add_argument("cmd", nargs=argparse.REMAINDER,
                           help="ARexx command string (use -- before flags)")
 

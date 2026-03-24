@@ -12,7 +12,7 @@
 #include <dos/dos.h>
 
 /* Version string -- single source of truth */
-#define AMIGACTLD_VERSION "0.8.1"
+#define AMIGACTLD_VERSION "0.8.2"
 
 /* Limits */
 #define MAX_CLIENTS      8
