@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+build/
 
 # Local planning and notes docs (not part of the repo)
 *_plan.md
